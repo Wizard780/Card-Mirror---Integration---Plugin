@@ -216,6 +216,9 @@ textarea.du-input{resize:vertical;min-height:3.4em}
 .du-new{margin-left:8px;font-size:.72rem;font-weight:600;letter-spacing:.02em;color:var(--pmd-c-success)}
 .du-empty{padding:22px 12px;text-align:center;font-size:.88rem;color:var(--pmd-c-text-muted)}
 .du-tabs{margin-top:12px;width:max-content}
+.du-filters{display:flex;align-items:center;flex-wrap:wrap;gap:8px 10px;margin-top:10px}
+.du-filters select.du-input{width:auto;min-width:200px;max-width:100%;padding:5px 8px;font-size:.85rem}
+.du-filters .du-seg button{flex:none;padding:5px 12px;font-size:.85rem}
 .du-tabs button{flex:none;padding:5px 14px;font-size:.85rem}
 .du-tabs button[aria-selected="true"]{background:var(--pmd-c-accent);color:var(--pmd-c-text-on-accent);font-weight:600}
 .du-team{height:min(86vh,680px)}
@@ -531,7 +534,25 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         d.head.append(tabs);
         let tab = 'rounds';
         const sel = { rounds: 0, cites: 0 };
-        const items = () => spec[tab];
+        // Filters apply to both tabs.
+        const filter = { tournament: '', side: '' };
+        const matches = (it) => (!filter.tournament || it.tournament === filter.tournament) && (!filter.side || it.side === filter.side);
+        const filtering = () => !!(filter.tournament || filter.side);
+        const items = () => spec[tab].filter(matches);
+        const tournaments = [...new Set([...spec.rounds, ...spec.cites].map((it) => it.tournament).filter(Boolean))];
+        const tournSel = el('select', { class: 'du-input', data: { field: 'filter-tournament' }, attrs: { 'aria-label': 'Filter by tournament' } });
+        tournSel.append(new Option('All tournaments', ''));
+        for (const t of tournaments) tournSel.append(new Option(t, t));
+        tournSel.addEventListener('change', () => { filter.tournament = tournSel.value; sel.rounds = 0; sel.cites = 0; render(); });
+        const sideSeg = el('div', { class: 'du-seg', data: { field: 'filter-side' }, attrs: { role: 'group', 'aria-label': 'Filter by side' } });
+        const sideBtns = [['', 'All'], ['A', (spec.sideLabels || {}).A || 'Aff'], ['N', (spec.sideLabels || {}).N || 'Neg']].map(([v, text]) => {
+          const b = el('button', { type: 'button', textContent: text, data: { value: v } });
+          b.addEventListener('click', () => { filter.side = v; sel.rounds = 0; sel.cites = 0; render(); });
+          sideSeg.append(b);
+          return b;
+        });
+        const filters = el('div', { class: 'du-filters' }, [tournSel, sideSeg]);
+        d.head.append(filters);
         const current = () => items()[sel[tab]];
         const tabBtns = [['rounds', 'Rounds'], ['cites', 'Cites']].map(([key, text]) => {
           const b = el('button', { type: 'button', textContent: `${text} (${spec[key].length})`, data: { value: key }, attrs: { role: 'tab' } });
@@ -593,7 +614,14 @@ textarea.du-input{resize:vertical;min-height:3.4em}
           keepFocus();
         };
         const render = () => {
-          tabBtns.forEach((b) => b.setAttribute('aria-selected', b.dataset.value === tab ? 'true' : 'false'));
+          tabBtns.forEach((b) => {
+            const key = b.dataset.value;
+            const shown = spec[key].filter(matches).length;
+            const total = spec[key].length;
+            b.textContent = `${key === 'rounds' ? 'Rounds' : 'Cites'} (${filtering() ? `${shown} of ${total}` : total})`;
+            b.setAttribute('aria-selected', key === tab ? 'true' : 'false');
+          });
+          sideBtns.forEach((b) => b.setAttribute('aria-pressed', b.dataset.value === filter.side ? 'true' : 'false'));
           list.textContent = '';
           rows = items().map((it, i) => {
             // Two lines: what (tournament / cite title) on top, the specifics underneath.
@@ -609,7 +637,10 @@ textarea.du-input{resize:vertical;min-height:3.4em}
             list.append(row);
             return row;
           });
-          if (!items().length) list.append(el('div', { class: 'du-empty', textContent: 'Nothing here yet.' }));
+          if (!items().length) {
+            const what = tab === 'rounds' ? 'rounds' : 'cites';
+            list.append(el('div', { class: 'du-empty', textContent: filtering() && spec[tab].length ? `No ${what} match these filters.` : 'Nothing here yet.' }));
+          }
           select(Math.min(sel[tab], Math.max(items().length - 1, 0)));
         };
         list.addEventListener('dblclick', () => {
@@ -619,6 +650,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         const close = () => { d.close(); resolve(); };
         d.onDismiss(close);
         d.dialog.addEventListener('keydown', (e) => {
+          if (e.target && (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT')) return; // the dropdown keeps its own keys
           const n = items().length;
           if (e.key === 'ArrowDown' && n) { e.preventDefault(); select(Math.min(sel[tab] + 1, n - 1)); }
           else if (e.key === 'ArrowUp' && n) { e.preventDefault(); select(Math.max(sel[tab] - 1, 0)); }
@@ -1009,10 +1041,12 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         ].filter(([, v]) => v),
         report: r.report || '',
         cites: citesByRound.get(r.id) || [],
+        tournament: displayTournament(r.tournament),
+        side: r.side,
       };
     });
     const cites = data.cites.map((c) => ({
-      key: c.id, label: c.title || 'Untitled', text: c.cites,
+      key: c.id, label: c.title || 'Untitled', text: c.cites, tournament: displayTournament(c.tournament), side: c.side,
       detail: [displayTournament(c.tournament), roundName(c.round)].filter(Boolean).join(' · '),
     }));
     const openExternal = window.electronAPI && window.electronAPI.openExternal;
@@ -1021,6 +1055,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
       subtitle: `${cl.label} · ${plural(rounds.length, 'round')} · ${cites.length} cite ${cites.length === 1 ? 'entry' : 'entries'}`,
       rounds,
       cites,
+      sideLabels: sl,
       pageUrl: `https://opencaselist.com/${cl.name}/${team.school}/${team.team}`,
       onViewOnline: openExternal ? (url) => openExternal(url) : null,
       onOpen: async (key) => {

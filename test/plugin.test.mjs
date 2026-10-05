@@ -875,3 +875,56 @@ test('team page hides the caselist sort prefix in every spelling ("03 -- Name", 
   assert.equal(h.pages[0].rounds[0].info[0][1], 'Mid America Cup');
   assert.equal(h.pages[0].cites[0].detail, 'Mid America Cup · Round 3');
 });
+
+test('team page spec carries tournament and side on rounds and cites, plus side labels, for filtering', async () => {
+  const h = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/scout': SCOUT_HIT, '/caselist/team': TEAM } });
+  await cmd('caselistScout').run(h.api);
+  const p = h.pages[0];
+  assert.deepEqual(p.sideLabels, { A: 'Pro', N: 'Con' });
+  assert.deepEqual(p.rounds.map((r) => [r.tournament, r.side]), [['Glenbrooks', 'N'], ['Yale', 'A']]);
+  assert.deepEqual(p.cites.map((c) => [c.tournament, c.side]), [['Glenbrooks', 'N']]);
+});
+
+test('DOM team page filters: tournament + side narrow rounds and cites; counts show "x of y"; dropdown keys stay in the dropdown', async () => {
+  const dom = fakeDom();
+  const saved = { document: globalThis.document, Option: globalThis.Option, ui: window.__debateUploaderUI };
+  globalThis.document = dom.doc; globalThis.Option = dom.Option;
+  const team = { rounds: [
+    { ...TEAM.rounds[0], id: 31, tournament: '03 -- Yale', side: 'N', round: '5' },
+    { ...TEAM.rounds[0], id: 32, tournament: '03 -- Yale', side: 'A', round: '4' },
+    { ...TEAM.rounds[0], id: 33, tournament: '02 - Mid America', side: 'N', round: 'Finals' },
+  ], cites: [{ ...TEAM.cites[0], roundId: 33, tournament: '02 - Mid America', side: 'N' }] };
+  const h = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/scout': SCOUT_HIT, '/caselist/team': team } });
+  delete window.__debateUploaderUI;
+  try {
+    const running = cmd('caselistScout').run(h.api);
+    for (let i = 0; i < 300 && !dom.all(dom.doc.body).some((n) => n.dataset.field === 'pane'); i++) await new Promise((r) => setTimeout(r, 20));
+    const dialog = dom.all(dom.doc.body).find((n) => typeof n.className === 'string' && n.className.startsWith('du-dialog'));
+    const rows = () => dom.byField('list').children.filter((n) => n.className.startsWith('du-row'));
+    const tabs = () => dom.byField('tabs').children.map((b) => b.textContent);
+    const tourn = dom.byField('filter-tournament');
+    assert.deepEqual(tourn.children.map((o) => o.textContent), ['All tournaments', 'Yale', 'Mid America']);
+    assert.equal(rows().length, 3);
+    tourn.value = 'Yale'; tourn.dispatch('change');
+    assert.equal(rows().length, 2);
+    assert.deepEqual(tabs(), ['Rounds (2 of 3)', 'Cites (0 of 1)']);
+    const side = dom.byField('filter-side');
+    assert.deepEqual(side.children.map((b) => b.textContent), ['All', 'Pro', 'Con']);
+    side.children[2].dispatch('click');
+    assert.equal(rows().length, 1);
+    assert.match(dom.all(dom.byField('pane')).map((n) => n.textContent).join('|'), /Round 5/);
+    tourn.dispatch('keydown', { key: 'ArrowRight' });
+    assert.equal(dom.byField('tabs').children[0].getAttribute('aria-selected'), 'true', 'arrow keys in the dropdown do not switch tabs');
+    tourn.value = 'Mid America'; tourn.dispatch('change');
+    side.children[1].dispatch('click');
+    assert.equal(rows().length, 0);
+    assert.ok(dom.all(dom.byField('list')).some((n) => n.textContent === 'No rounds match these filters.'));
+    side.children[0].dispatch('click');
+    tourn.value = ''; tourn.dispatch('change');
+    assert.deepEqual(tabs(), ['Rounds (3)', 'Cites (1)']);
+    dialog.dispatch('keydown', { key: 'Escape' });
+    await running;
+  } finally {
+    globalThis.document = saved.document; globalThis.Option = saved.Option; window.__debateUploaderUI = saved.ui;
+  }
+});

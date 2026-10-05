@@ -83,8 +83,14 @@ before uploading again. Requires **Log in to Tabroom…** first.
 
 The team page lists their **Rounds** (newest first; rounds with only cites are greyed) and **Cites**. Selecting a
 round shows its tournament, round, side, opponent, judge, upload date, file, the full round report and that round's
-cites. **Enter** or **Open doc** downloads the doc to `~/Downloads/Caselist/<caselist>/<school>-<team>/` and opens it
+cites. Filter by **tournament** (dropdown) and **side** (All / Pro / Con) above the list; both tabs follow the filters
+and show "x of y" counts. **Enter** or **Open doc** downloads the doc to `~/Downloads/Caselist/<caselist>/<school>-<team>/` and opens it
 in CardMirror; **Copy report** / **Copy cites** copy text; ←→ switches tabs; Esc closes. Requires **Log in to Tabroom…**.
+
+## Updating
+
+- Plugin: Settings → Plugins → **Update** on Debate Uploader (needs `__plugins('community-on')` still on).
+- Helper: `cd ~/debate-uploader && git pull && launchctl kickstart -k gui/$(id -u)/debate-uploader`
 
 ## Settings
 
