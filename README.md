@@ -1,6 +1,6 @@
 # Debate Uploader
 
-CardMirror commands that upload docs to SpeechDrop, through a small local helper.
+CardMirror commands that upload docs to SpeechDrop and open docs from it, through a small local helper.
 
 ## Install (once)
 
@@ -23,6 +23,10 @@ In CardMirror:
 - **Upload newest send doc to SpeechDrop**: uploads the newest `.docx` in your send doc folder.
 - **Upload file to SpeechDrop…**: pick any file (`.docx .doc .pdf .txt .rtf .odt`, 10 MB max).
 - **Set send doc folder for SpeechDrop…**: change the folder.
+- **Browse SpeechDrop room…**: lists a room's files, newest first. ↑↓ + Enter (or click) downloads one to
+  `~/Downloads/SpeechDrop/<room>/` and opens it: `.docx`/`.cmir` in CardMirror, anything else in its default app.
+  The list stays open so you can open several; Esc closes it. A file you already have is reused; a different
+  file with the same name is saved as `name (2).docx`, so nothing you have open is overwritten.
 
 Both upload commands ask for the room code (pre-filled with the last one). Pasting the whole room URL works too.
 Uploads are never retried automatically. If a toast says to check the room, look before uploading again.
