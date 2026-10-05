@@ -133,3 +133,53 @@ test('setFolder: cancel keeps the old folder; the declared setting wins over sto
   await cmd('sdNewest').run(h.api);
   assert.equal(h.calls[0].body.folder, '/from-settings');
 });
+
+const CHECK_ROOM = /Check the room before re-uploading/;
+
+test('I2: start call timing out says the upload may have started, not "try again"', async () => {
+  const h = harness({ responses: [{ ok: false, error: 'timeout' }] });
+  await cmd('sdPick').run(h.api);
+  assert.match(h.toasts.at(-1), /may have started/);
+  assert.match(h.toasts.at(-1), /abc12/);
+  assert.doesNotMatch(h.toasts.at(-1), /Try again/);
+});
+
+test('I2: a few failed polls are tolerated and the job still completes', async () => {
+  const h = harness({ responses: [ok({ ok: true, job: 'j' }), { ok: false, error: 'timeout' }, { ok: false, error: 'app-not-running' },
+    ok({ state: 'done', result: { room: 'abc12', name: 'a.docx' } })] });
+  await cmd('sdPick').run(h.api);
+  assert.equal(h.toasts.at(-1), 'Uploaded "a.docx" to SpeechDrop room abc12');
+});
+
+test('I2: polling that never recovers, or a lost job, says check the room', async () => {
+  const dead = harness({ responses: (() => { let first = true; return () => (first ? ((first = false), ok({ ok: true, job: 'j' })) : { ok: false, error: 'timeout' }); })() });
+  await cmd('sdPick').run(dead.api);
+  assert.match(dead.toasts.at(-1), CHECK_ROOM);
+  const lost = harness({ responses: [ok({ ok: true, job: 'j' }), ok({ state: 'error', message: 'unknown_job' })] });
+  await cmd('sdPick').run(lost.api);
+  assert.match(lost.toasts.at(-1), CHECK_ROOM);
+});
+
+test('I3: a file that cannot be read ends in a toast, not silence', async () => {
+  const h = harness({ file: { name: 'gone.docx', size: 10, read: async () => { throw new Error('NotFoundError'); } } });
+  await cmd('sdPick').run(h.api);
+  assert.equal(h.calls.length, 0);
+  assert.equal(h.toasts.at(-1), "Couldn't read that file. Pick it again.");
+});
+
+test('I4: a second trigger while one is in progress is refused', { timeout: 2000 }, async () => {
+  let release;
+  const h = harness({ responses: [ok({ ok: true, job: 'j' }), ok({ state: 'done', result: { room: 'abc12', name: 'a.docx' } })] });
+  window.__debateUploaderUI.prompt = (label, initial) => { h.prompts.push([label, initial]); return new Promise((r) => { release = r; }); };
+  const first = cmd('sdPick').run(h.api);
+  await new Promise((r) => setImmediate(r));
+  await cmd('sdPick').run(h.api);
+  assert.equal(h.prompts.length, 1);
+  assert.equal(h.toasts.at(-1), 'An upload is already in progress.');
+  release('abc12');
+  await first;
+  assert.equal(h.toasts.at(-1), 'Uploaded "a.docx" to SpeechDrop room abc12');
+  const again = harness({ room: null });
+  await cmd('sdPick').run(again.api);
+  assert.equal(again.prompts.length, 1, 'guard is released after finishing');
+});

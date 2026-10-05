@@ -120,6 +120,9 @@ test('upload: 200 with an index counts as success even if the name is spelled di
   assert.deepEqual(r, { room: 'abc12', name: '1AC — Ports.docx' });
 });
 
-test('upload: 200 with non-JSON is bad_response', async () => {
-  await assert.rejects(uploadToSpeechDrop(doc(), opts(fakeSD({ uploadBody: '<html>' }))), /^Error: bad_response$/);
+test('upload: ambiguous answers after the POST are upload_unknown (non-JSON 200, 5xx, broken body)', async () => {
+  await assert.rejects(uploadToSpeechDrop(doc(), opts(fakeSD({ uploadBody: '<html>' }))), /^Error: upload_unknown$/);
+  await assert.rejects(uploadToSpeechDrop(doc(), opts(fakeSD({ uploadStatus: 502, uploadBody: 'bad gateway' }))), /^Error: upload_unknown$/);
+  const broken = new ReadableStream({ start(c) { c.error(new TypeError('terminated')); } });
+  await assert.rejects(uploadToSpeechDrop(doc(), opts(fakeSD({ uploadBody: broken }))), /^Error: upload_unknown$/);
 });

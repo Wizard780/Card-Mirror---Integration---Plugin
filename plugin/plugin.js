@@ -23,7 +23,10 @@
       case 'too_large': return "File is over SpeechDrop's 10 MB limit.";
       case 'no_folder': return `Set your send doc folder first: run "${SET_FOLDER_LABEL}".`;
       case 'unreachable': return "Couldn't reach speechdrop.net. Upload not sent.";
-      case 'upload_unknown': return "SpeechDrop didn't answer after the upload started. Check the room before re-uploading.";
+      case 'upload_unknown':
+      case 'unknown_job': return "SpeechDrop didn't answer after the upload started. Check the room before re-uploading.";
+      case 'start_unknown': return `The upload may have started. Check room ${ctx.room} on SpeechDrop before re-uploading.`;
+      case 'read_failed': return "Couldn't read that file. Pick it again.";
       case 'still_running': return 'Still running in helper. Check SpeechDrop before re-uploading.';
       default: return `Upload failed: ${code}`;
     }
@@ -37,11 +40,28 @@
     return r.body;
   }
 
+  const MAX_POLL_FAILURES = 5;
+
   async function runJob(api, route, body, sleep) {
-    const { job } = await call(api, route, body);
+    let job;
+    try {
+      ({ job } = await call(api, route, body));
+    } catch (err) {
+      // A timeout or garbled reply may come after the helper started the job.
+      if (err.message === 'timeout' || err.message === 'bad-response') throw new Error('start_unknown');
+      throw err; // helper down / restarted / unsupported: nothing was sent
+    }
+    let failures = 0;
     for (let waited = 0; waited < MAX_WAIT_MS; waited += POLL_MS) {
       await sleep(POLL_MS);
-      const s = await call(api, '/job', { id: job });
+      let s;
+      try {
+        s = await call(api, '/job', { id: job });
+      } catch {
+        if (++failures >= MAX_POLL_FAILURES) throw new Error('upload_unknown');
+        continue;
+      }
+      failures = 0;
       if (s.state === 'done') return s.result;
       if (s.state === 'error') throw new Error(s.message);
     }
@@ -124,7 +144,22 @@
     api.showToast(`Send doc folder set to ${folder}`);
   }
 
+  let busy = false;
+
   async function uploadToSpeechDrop(api, mode) {
+    if (busy) return api.showToast('An upload is already in progress.');
+    busy = true;
+    const ctx = { room: '' };
+    try {
+      await upload(api, mode, ctx);
+    } catch (err) {
+      api.showToast(message(err.message, ctx));
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function upload(api, mode, ctx) {
     const u = ui();
     const folder = mode === 'newest' ? sendDocFolder(api) : '';
     if (mode === 'newest' && !folder) return api.showToast(message('no_folder'));
@@ -132,6 +167,7 @@
     const raw = await u.prompt('SpeechDrop room code', api.storage.get('lastRoom') || '');
     if (raw == null) return;
     const room = normalizeRoom(raw);
+    ctx.room = room;
     if (!room) return api.showToast(`"${String(raw).trim()}" doesn't look like a SpeechDrop room code.`);
 
     let body;
@@ -141,17 +177,15 @@
       const picked = await u.pickFile();
       if (!picked) return;
       if (picked.size > MAX_BYTES) return api.showToast(message('too_large'));
-      body = { room, file: { name: picked.name, base64: await picked.read() } };
+      let base64;
+      try { base64 = await picked.read(); } catch { throw new Error('read_failed'); }
+      body = { room, file: { name: picked.name, base64 } };
     }
 
     api.showToast(`Uploading to SpeechDrop room ${room}…`);
-    try {
-      const result = await runJob(api, '/speechdrop/upload', body, u.sleep);
-      api.storage.set('lastRoom', room);
-      api.showToast(`Uploaded "${result.name}" to SpeechDrop room ${result.room}`);
-    } catch (err) {
-      api.showToast(message(err.message, { room }));
-    }
+    const result = await runJob(api, '/speechdrop/upload', body, u.sleep);
+    api.storage.set('lastRoom', room);
+    api.showToast(`Uploaded "${result.name}" to SpeechDrop room ${result.room}`);
   }
 
   window.__registerCardMirrorPlugin && window.__registerCardMirrorPlugin({
