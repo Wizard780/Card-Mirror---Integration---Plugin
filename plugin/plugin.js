@@ -19,7 +19,7 @@
         case 'bad_login': return 'Tabroom rejected that email or password.';
         case 'not_logged_in': return 'Not logged in to Tabroom. Run "Log in to Tabroom…".';
         case 'login_expired': return 'Tabroom login expired. Run "Log in to Tabroom…".';
-        case 'keychain_failed': return "Couldn't save your login to Keychain. Is Keychain locked?";
+        case 'keychain_failed': return "Couldn't use Keychain. Is it locked?";
         case 'unreachable': return "Couldn't reach Tabroom. Try again.";
         case 'start_unknown':
         case 'upload_unknown':

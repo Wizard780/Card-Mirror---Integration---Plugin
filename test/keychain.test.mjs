@@ -31,3 +31,10 @@ test('set failure (locked keychain) is keychain_failed; remove never throws', as
   await kc.remove();
   assert.deepEqual(broken.calls.at(-1).slice(1), ['delete-generic-password', '-s', 'debate-uploader', '-a', 'caselist_token']);
 });
+
+test('get: only "item not found" (exit 44) means logged out; a locked or broken keychain is keychain_failed', async () => {
+  const locked = fakeRun(() => { throw Object.assign(new Error('User interaction is not allowed.'), { code: 36 }); });
+  await assert.rejects(createKeychain({ run: locked.run }).get(), /^Error: keychain_failed$/);
+  const noBinary = fakeRun(() => { throw Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' }); });
+  await assert.rejects(createKeychain({ run: noBinary.run }).get(), /^Error: keychain_failed$/);
+});

@@ -321,7 +321,7 @@ test('tabroom login: cancel at either prompt sends nothing; wrong password and l
     await cmd('tabroomLogin').run(h.api);
     assert.equal(h.calls.length, 0);
   }
-  for (const [code, text] of [['bad_login', 'Tabroom rejected that email or password.'], ['keychain_failed', "Couldn't save your login to Keychain. Is Keychain locked?"], ['unreachable', "Couldn't reach Tabroom. Try again."]]) {
+  for (const [code, text] of [['bad_login', 'Tabroom rejected that email or password.'], ['keychain_failed', "Couldn't use Keychain. Is it locked?"], ['unreachable', "Couldn't reach Tabroom. Try again."]]) {
     const h = harness({ responses: [ok({ ok: true, job: 'j' }), ok({ state: 'error', message: code })] });
     await cmd('tabroomLogin').run(h.api);
     assert.equal(h.toasts.at(-1), text);
@@ -347,6 +347,7 @@ test('tabroom rounds: none, not logged in, expired each toast; recent rounds get
     [{ state: 'done', result: { current: false, rounds: [] } }, 'No rounds. Is your Tabroom account linked to your student record?'],
     [{ state: 'error', message: 'not_logged_in' }, 'Not logged in to Tabroom. Run "Log in to Tabroom…".'],
     [{ state: 'error', message: 'login_expired' }, 'Tabroom login expired. Run "Log in to Tabroom…".'],
+    [{ state: 'error', message: 'keychain_failed' }, "Couldn't use Keychain. Is it locked?"],
   ]) {
     const h = harness({ responses: [ok({ ok: true, job: 'j' }), ok(state)] });
     await cmd('tabroomRounds').run(h.api);

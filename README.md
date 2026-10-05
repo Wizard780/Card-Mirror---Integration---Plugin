@@ -41,6 +41,7 @@ Uploads are never retried automatically. If a toast says to check the room, look
 - **Log out of Tabroom**: deletes the stored token.
 
 If the list is always empty, link your Tabroom account to your student record on tabroom.com.
+If a toast says Keychain is locked, unlock your login keychain (Keychain Access) and run the command again.
 
 ## Troubleshooting
 
