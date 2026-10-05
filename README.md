@@ -2,21 +2,29 @@
 
 CardMirror commands that upload docs to SpeechDrop and open docs from it, through a small local helper.
 
-## Install (once)
+## Install
+
+Debate Uploader has two parts: a **CardMirror plugin** (the commands and dialogs) and a small **local helper**
+(does the network work, since CardMirror plugins can't). macOS only for now.
+
+**1. The helper** (once):
 
 ```bash
-cd /Users/ryanchan/Downloads/debateskills/debate-uploader
-./install.sh
+git clone https://github.com/Wizard780/Card-Mirror---Integration---Plugin.git ~/debate-uploader
+cd ~/debate-uploader && ./install.sh
 ```
 
-The helper starts at login and restarts itself if it crashes. Log: `~/Library/Logs/debate-uploader.log`.
+It starts at login and restarts itself if it crashes. Log: `~/Library/Logs/debate-uploader.log`.
 
-In CardMirror:
-1. Settings → Plugins → turn on **Enable plugins**, then relaunch CardMirror.
-2. Settings → Plugins → **Load plugin from file…** → pick `plugin/plugin.js`.
-   CardMirror loads file plugins **for that session only**, so repeat this step after each relaunch.
-3. Run **Set send doc folder for SpeechDrop…** once (where Save Send Doc writes). It's remembered.
-4. Optional: bind **Upload newest send doc to SpeechDrop** to a key in Settings → Keyboard.
+**2. The plugin** (from GitHub, survives relaunches):
+1. CardMirror → Settings → Plugins → turn on **Enable plugins**, then relaunch CardMirror.
+2. CardMirror only installs plugins from its curated list by default. To allow this one, open the developer
+   console (View → Toggle Developer Tools → Console) and run `__plugins('community-on')`.
+3. Settings → Plugins → paste `Wizard780/Card-Mirror---Integration---Plugin` into the install field → accept the
+   consent prompt → enable it.
+4. Optional: bind your favorite commands under Settings → Keyboard.
+
+For development you can instead use **Load plugin from file…** → `plugin/plugin.js` (session only).
 
 ## Commands
 
