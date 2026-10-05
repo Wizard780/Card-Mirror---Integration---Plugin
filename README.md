@@ -55,6 +55,17 @@ If a toast says Keychain is locked, unlock your login keychain (Keychain Access)
 Uploads are public and never retried automatically. If a toast says to check the caselist page, look there
 before uploading again. Requires **Log in to Tabroom…** first.
 
+## Scouting
+
+- **Scout next opponent…**: takes your current Tabroom round's opponent (or pick a round) and opens their page on
+  your caselist. If the name doesn't match exactly, pick from the closest teams.
+- **Search the caselist…**: pick a caselist (yours first), type a team or school, pick a team.
+
+The team page lists their **Rounds** (newest first; rounds with only cites are greyed) and **Cites**. Selecting a
+round shows its tournament, round, side, opponent, judge, upload date, file, the full round report and that round's
+cites. **Enter** or **Open doc** downloads the doc to `~/Downloads/Caselist/<caselist>/<school>-<team>/` and opens it
+in CardMirror; **Copy report** / **Copy cites** copy text; ←→ switches tabs; Esc closes. Requires **Log in to Tabroom…**.
+
 ## Troubleshooting
 
 - "Uploader helper isn't running" → `launchctl kickstart gui/$(id -u)/debate-uploader`
