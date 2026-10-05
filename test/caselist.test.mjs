@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { login, getRounds } from '../lib/caselist.mjs';
+import { login, getRounds, listCaselists, listSchools, listTeams, normalizeSide, createRound } from '../lib/caselist.mjs';
 
 function fake(routes) {
   const calls = [];
@@ -56,4 +56,67 @@ test('getRounds errors: 401 is login_expired; network is unreachable; non-array 
   await assert.rejects(getRounds('TOK', fake({ '/tabroom/rounds?current=true': { status: 401, body: { message: 'Not Authorized' } } }).opts), /^Error: login_expired$/);
   await assert.rejects(getRounds('TOK', fake({ '/tabroom/rounds?current=true': new TypeError('x') }).opts), /^Error: unreachable$/);
   await assert.rejects(getRounds('TOK', fake({ '/tabroom/rounds?current=true': { body: { not: 'array' } } }).opts), /^Error: bad_response$/);
+});
+
+test('listCaselists hides archived ones and maps display_name/name/event; token only in Cookie', async () => {
+  const f = fake({ '/caselists': { body: [
+    { name: 'hspf26', display_name: 'HS PF 2026', event: 'pf', archived: false },
+    { name: 'hspf25', display_name: 'HS PF 2025', event: 'pf', archived: true },
+    { slug: 'ndtceda26', name: 'NDT CEDA 2026', event: 'cx' },
+  ] } });
+  assert.deepEqual(await listCaselists('TOK', f.opts), [
+    { name: 'hspf26', label: 'HS PF 2026', event: 'pf' },
+    { name: 'NDT CEDA 2026', label: 'NDT CEDA 2026', event: 'cx' },
+  ]);
+  assert.equal(f.calls[0].init.headers.Cookie, 'caselist_token=TOK');
+});
+
+test('listSchools / listTeams build encoded paths; 401 is login_expired', async () => {
+  const f = fake({
+    '/caselists/hspf26/schools': { body: [{ name: 'StMarks', display_name: "St. Mark's" }] },
+    "/caselists/hspf26/schools/St%20Mark's/teams": { body: [{ name: 'StMarksAB', display_name: "St. Mark's AB" }] },
+  });
+  assert.deepEqual(await listSchools('TOK', 'hspf26', f.opts), [{ name: 'StMarks', label: "St. Mark's" }]);
+  assert.deepEqual(await listTeams('TOK', 'hspf26', "St Mark's", f.opts), [{ name: 'StMarksAB', label: "St. Mark's AB" }]);
+  await assert.rejects(listSchools('TOK', 'x', fake({ '/caselists/x/schools': { status: 401, body: {} } }).opts), /^Error: login_expired$/);
+});
+
+test('normalizeSide maps Aff/Pro → A and Neg/Con → N, anything else null', () => {
+  for (const s of ['A', 'a', 'Aff', 'AFF', 'Pro', ' pro ']) assert.equal(normalizeSide(s), 'A', s);
+  for (const s of ['N', 'Neg', 'con', 'CON']) assert.equal(normalizeSide(s), 'N', s);
+  for (const s of ['', null, undefined, 'both', 'Affirmative']) assert.equal(normalizeSide(s), null, String(s));
+});
+
+const TARGET = { caselist: 'hspf26', school: "St Mark's", team: 'AB' };
+const ROUND = { tournament: ' Glenbrooks ', side: 'Con', round: '3', opponent: 'Lexington AB', judge: 'Smith', report: '', filename: '1NC.docx', base64: 'RE9D' };
+const ROUNDS_PATH = "/caselists/hspf26/schools/St%20Mark's/teams/AB/rounds";
+
+test("createRound posts Verbatim's exact body to the encoded team path", async () => {
+  const f = fake({ [ROUNDS_PATH]: { status: 201, body: { round_id: 5 } } });
+  assert.deepEqual(await createRound('TOK', TARGET, ROUND, f.opts), { filename: '1NC.docx' });
+  const c = f.calls[0];
+  assert.equal(c.init.method, 'POST');
+  assert.equal(c.init.headers.Cookie, 'caselist_token=TOK');
+  assert.deepEqual(JSON.parse(c.init.body), {
+    tournament: 'Glenbrooks', side: 'N', round: '3', opponent: 'Lexington AB', judge: 'Smith', report: '', opensource: 'RE9D', filename: '1NC.docx',
+  });
+});
+
+test('createRound validates before sending', async () => {
+  for (const [patch, err] of [
+    [{ tournament: '' }, 'bad_round'], [{ round: ' ' }, 'bad_round'], [{ side: 'both' }, 'bad_round'],
+    [{ base64: '' }, 'no_file'], [{ filename: '' }, 'no_file'],
+  ]) {
+    const f = fake({});
+    await assert.rejects(createRound('TOK', TARGET, { ...ROUND, ...patch }, f.opts), new RegExp(`^Error: ${err}$`));
+    assert.equal(f.calls.length, 0, err);
+  }
+  await assert.rejects(createRound('TOK', { ...TARGET, team: '' }, ROUND, fake({}).opts), /^Error: no_team$/);
+});
+
+test('createRound errors: 401 login_expired, 4xx rejected with message, 5xx and network upload_unknown', async () => {
+  await assert.rejects(createRound('TOK', TARGET, ROUND, fake({ [ROUNDS_PATH]: { status: 401, body: {} } }).opts), /^Error: login_expired$/);
+  await assert.rejects(createRound('TOK', TARGET, ROUND, fake({ [ROUNDS_PATH]: { status: 400, body: { message: 'Round already exists' } } }).opts), /^Error: caselist_rejected:Round already exists$/);
+  await assert.rejects(createRound('TOK', TARGET, ROUND, fake({ [ROUNDS_PATH]: { status: 502, body: {} } }).opts), /^Error: upload_unknown$/);
+  await assert.rejects(createRound('TOK', TARGET, ROUND, fake({ [ROUNDS_PATH]: new TypeError('x') }).opts), /^Error: upload_unknown$/);
 });
