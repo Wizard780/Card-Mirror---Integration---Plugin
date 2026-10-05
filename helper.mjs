@@ -15,9 +15,11 @@ import { uploadToSpeechDrop, newestDocx, MAX_BYTES, listRoom, downloadFile, save
 import { createEvidenceIndex } from './lib/evidence.mjs';
 import { cardDocx, headingsOf } from './lib/docx.mjs';
 import { draftReport } from './lib/report-draft.mjs';
+import { compare, skippedQualifiers, verdict, urlsIn } from './lib/cardcheck.mjs';
+import { getSource, safeFetch } from './lib/fetchsafe.mjs';
 import { readFile, stat } from 'node:fs/promises';
 
-const VERSION = '0.1.6';
+const VERSION = '0.1.7';
 const bridgeDir = process.env.DEBATE_UPLOADER_BRIDGE_DIR || defaultBridgeDir();
 const sdBase = process.env.DEBATE_UPLOADER_SD_BASE || SD_BASE;
 const sdMedia = process.env.DEBATE_UPLOADER_SD_MEDIA || SD_MEDIA;
@@ -51,6 +53,8 @@ function rescan(folders) {
     (err) => log('evidence scan failed', err.message),
   );
 }
+// Tests point Card Check at a local server; real runs only ever fetch public addresses.
+const sourceOpts = process.env.DEBATE_UPLOADER_TEST_ALLOW_PRIVATE === '1' ? { fetchImpl: (u) => safeFetch(u, { allowPrivate: true }) } : {};
 const cardFileName = (tag) => `${String(tag).replace(/[^A-Za-z0-9 ,'’-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60).trim() || 'Card'}.docx`;
 const clBase = process.env.DEBATE_UPLOADER_CASELIST_BASE || CASELIST_BASE;
 const keychain = createKeychain({ bin: process.env.DEBATE_UPLOADER_SECURITY_BIN || '/usr/bin/security' });
@@ -251,6 +255,45 @@ const routes = {
       const { report, used } = draftReport(docs);
       log('caselist report draft', `${used.length} of ${docs.length} docs`, pdfs ? `${pdfs} non-docx skipped` : '');
       return { report, used, skipped: pdfs };
+    }),
+  }),
+
+  // Card Check: each card against the page its cite links to. 4 sources at a time;
+  // results stream out through the job's progress.
+  '/cardcheck/run': ({ cards }) => ({
+    ok: true,
+    job: jobs.start(async (report) => {
+      const list = (Array.isArray(cards) ? cards : []).slice(0, 400);
+      const sources = new Map();
+      const source = (url) => { if (!sources.has(url)) sources.set(url, getSource(url, sourceOpts)); return sources.get(url); };
+      const results = new Array(list.length).fill(null);
+      let next = 0;
+      const t0 = Date.now();
+      async function worker() {
+        while (next < list.length) {
+          const i = next++;
+          const c = list[i] || {};
+          const runs = Array.isArray(c.runs) ? c.runs.map((r) => ({ t: String(r.t ?? ''), h: !!r.h })) : [];
+          const text = runs.map((r) => r.t).join('');
+          const url = [...(Array.isArray(c.urls) ? c.urls : []), ...urlsIn(c.cite)].find((u) => /^https?:\/\//i.test(u));
+          let src = null;
+          let result = null;
+          if (url) {
+            src = await source(url);
+            if (!src.error) result = compare(text, src.text);
+          }
+          const v = verdict({ result, source: src, cite: c.cite });
+          results[i] = {
+            key: c.key, ...v, url: url || null, archived: !!(src && src.archived), pdf: !!(src && src.pdf),
+            reason: src && src.error ? src.error : null, qualifiers: skippedQualifiers(runs).slice(0, 5),
+          };
+          report({ done: results.filter(Boolean).length, total: list.length, results });
+        }
+      }
+      await Promise.all([worker(), worker(), worker(), worker()]);
+      const tally = results.reduce((m, r) => ({ ...m, [r.status]: (m[r.status] || 0) + 1 }), {});
+      log('cardcheck', list.length, 'cards', sources.size, 'sources', JSON.stringify(tally), Date.now() - t0, 'ms');
+      return { done: list.length, total: list.length, results };
     }),
   }),
 

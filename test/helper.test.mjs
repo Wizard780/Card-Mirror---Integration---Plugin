@@ -155,6 +155,7 @@ esac
       DEBATE_UPLOADER_OPENER: opener,
       DEBATE_UPLOADER_CASELIST_DIR: join(downloadDir, 'caselist'),
       DEBATE_UPLOADER_PREFS_FILE: join(downloadDir, 'prefs', 'prefs.json'),
+      DEBATE_UPLOADER_TEST_ALLOW_PRIVATE: '1',
       DEBATE_UPLOADER_EVIDENCE_FILE: join(downloadDir, 'prefs', 'evidence-index.json'), DEBATE_UPLOADER_CARDS_DIR: join(downloadDir, 'cards'),
       DEBATE_UPLOADER_SD_WS: `ws://127.0.0.1:${fakeSD.address().port}/sock/websocket`,
       DEBATE_UPLOADER_CASELIST_BASE: `http://127.0.0.1:${fakeCL.address().port}/v1`, DEBATE_UPLOADER_SECURITY_BIN: security },
@@ -491,6 +492,30 @@ test('report draft: the round\'s room docs from both teams, in speech order; old
   assert.deepEqual(done.result, { report: '1AC -- False Profits, Fool’s Gold\n1NC -- Econ', used: ['Acton 1NC.docx', 'Univ 1AC.docx'], skipped: 1 });
   const none = await waitJob((await call('/caselist/report-draft', { room: 'nope' })).body.job);
   assert.deepEqual(none.result, { report: '', used: [], skipped: 0 });
+});
+
+test('card check: each card against its linked page, with progress; no link and dead links are reported, not guessed', async () => {
+  const article = '<html><head><meta property="article:published_time" content="2025-02-01"></head><body><p>By Xin Chen.</p><p>Hyperscale loads trigger cascading collapse across the regional grid during peak demand.</p><p>Operators cannot see these loads coming.</p></body></html>';
+  const page = createServer((req, res) => {
+    if (req.url === '/a') { res.writeHead(200, { 'Content-Type': 'text/html' }); return res.end(article); }
+    res.writeHead(404); res.end();
+  });
+  await new Promise((r) => page.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${page.address().port}`;
+  try {
+    const cards = [
+      { key: 0, cite: "Chen '25", urls: [`${base}/a`], runs: [{ t: 'Hyperscale loads trigger cascading collapse across the regional grid during peak demand.', h: true }] },
+      { key: 1, cite: "Chen '25", urls: [`${base}/a`], runs: [{ t: 'Hyperscale loads trigger cascading collapse. Experts agree every grid will certainly fail within the year.', h: true }] },
+      { key: 2, cite: 'Smith 19, no link', urls: [], runs: [{ t: 'Text.', h: true }] },
+      { key: 3, cite: `Doe 20 ${base}/gone`, urls: [], runs: [{ t: 'Text.', h: true }] },
+    ];
+    const { body } = await call('/cardcheck/run', { cards });
+    const done = await waitJob(body.job);
+    assert.equal(done.state, 'done');
+    assert.deepEqual(done.result.results.map((r) => r.status), ['matches', 'differences', 'no_link', 'unreachable']);
+    assert.deepEqual(done.result.results[1].issues, ['Not found in the source: "Experts agree every grid will certainly fail within the year."']);
+    assert.equal(done.result.results[3].reason, 'http_404');
+  } finally { page.close(); }
 });
 
 test('SIGTERM removes the session file but keeps identity', async () => {

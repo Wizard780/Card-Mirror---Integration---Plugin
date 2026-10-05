@@ -113,6 +113,26 @@ in CardMirror; **Copy report** / **Copy cites** copy text; ←→ switches tabs;
 The plugin API can't edit documents, so this reaches CardMirror's editor through ProseMirror internals. If a
 CardMirror update changes those, the command says it couldn't reach the editor instead of doing anything.
 
+## Card Check
+
+- **Card Check this document…**: checks every card in the open document against the page its cite links to.
+  Results fill in as sources load (4 at a time); select one for details, **Enter** / **Go to card** jumps to it,
+  **Open source** opens the page. **Show last Card Check results** reopens the list.
+- What it looks at:
+  - text in the card that isn't on the page (CardMirror's condense notes, `[bracketed]` insertions and your own
+    `---` note lines are ignored);
+  - text joined from far-apart or out-of-order places in the source;
+  - the cite's author not named on the page, or a year that differs from the page's date;
+  - highlighting that skips a qualifier ("not", "may", "could", "unless", …) between read words. This one only
+    needs the doc, so it works even without a link.
+- Results: **Matches source** · **Differences found** · **Couldn't verify** (the page doesn't contain the card:
+  paywall, a different version, a landing page, or the wrong link) · **Couldn't reach the source** · **No link in
+  cite**. It reports differences; it doesn't decide that a card is fake. Read the source before accusing anyone.
+- Dead or blocked links fall back to the Wayback Machine's copy. PDFs need PyMuPDF (`pip install pymupdf`) or
+  `pdftotext` (`brew install poppler`); without them PDF sources show as couldn't reach.
+- Links come from other people's docs, so the helper only fetches public web addresses (never your own Mac or
+  local network), caps each page at 8 MB and 15 s, and keeps nothing.
+
 ## Search my files
 
 - **Set evidence folders…**: the folders to search, separated by `;` (e.g. `~/Downloads/Ryan Files; ~/Downloads/Caselist`).

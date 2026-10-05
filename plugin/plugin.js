@@ -128,7 +128,7 @@
 
   const MAX_POLL_FAILURES = 5;
 
-  async function runJob(api, route, body, sleep) {
+  async function runJob(api, route, body, sleep, { onProgress, maxPolls = MAX_POLLS } = {}) {
     let job;
     try {
       ({ job } = await call(api, route, body));
@@ -138,7 +138,7 @@
       throw err; // helper down / restarted / unsupported: nothing was sent
     }
     let failures = 0;
-    for (let polls = 0; polls < MAX_POLLS; polls++) {
+    for (let polls = 0; polls < maxPolls; polls++) {
       const asked = Date.now();
       let s;
       try {
@@ -150,6 +150,7 @@
       }
       failures = 0;
       if (s.state === 'done') return s.result;
+      if (onProgress && s.progress) onProgress(s.progress);
       if (s.state === 'error') throw new Error(s.message);
       if (Date.now() - asked < 100) await sleep(250); // an older helper answers at once: don't spin
     }
@@ -271,6 +272,12 @@ textarea.du-input{resize:vertical;min-height:3.4em}
 .du-row[aria-checked="true"] .du-row-main{color:#d81e1e}
 .du-marks .du-row{align-items:flex-start}
 .du-hint{font-size:.78rem;color:var(--pmd-c-text-muted);overflow-wrap:anywhere}
+.du-st{flex:none;width:1.2em;text-align:center;font-weight:700}
+.du-st-matches{color:var(--pmd-c-success)}
+.du-st-differences{color:var(--pmd-c-warning)}
+.du-st-unverified,.du-st-unreachable,.du-st-no_link,.du-st-pending{color:var(--pmd-c-text-muted)}
+.du-issues{margin:0;padding-left:1.1em}
+.du-issues li+li{margin-top:6px}
 .du-btn:disabled{opacity:.5;cursor:default}
 .du-btn:disabled:hover{background:var(--pmd-c-bg)}
 `;
@@ -607,6 +614,86 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         render();
         input.focus();
       });
+    },
+
+    // Card Check results: cards on the left (status as they finish), details on the right.
+    // Returns { closed, update(items, subtitle) }.
+    checkResults(spec) {
+      const d = openDialog({ title: spec.title, subtitle: spec.subtitle, width: '820px' });
+      d.dialog.className += ' du-team';
+      d.foot.className += ' du-foot-end';
+      const list = el('div', { class: 'du-list', data: { field: 'list' }, attrs: { role: 'listbox', 'aria-label': spec.title } });
+      const pane = el('div', { class: 'du-pane', data: { field: 'pane' } });
+      d.body.remove();
+      const split = el('div', { class: 'du-split' }, [list, pane]);
+      if (d.dialog.insertBefore) d.dialog.insertBefore(split, d.foot); else d.dialog.append(split);
+      const sub = [...(d.head.children || [])].find((n) => n.className === 'du-sub') || null;
+      let items = spec.items;
+      let selKey = items.length ? items[0].key : null;
+      let rows = [];
+      let resolveClosed;
+      const closed = new Promise((r) => { resolveClosed = r; });
+      const close = () => { d.close(); resolveClosed(); };
+      d.onDismiss(close);
+      const current = () => items.find((it) => it.key === selKey) || null;
+      const renderPane = () => {
+        pane.textContent = '';
+        const it = current();
+        if (!it) return;
+        pane.append(el('h2', { class: 'du-pane-title', textContent: it.label }), el('p', { class: 'du-pane-meta', textContent: [it.statusText, it.sub].filter(Boolean).join(' · ') }));
+        if (it.issues.length) pane.append(el('h3', { textContent: 'What it found' }), el('ul', { class: 'du-issues' }, it.issues.map((t) => el('li', { textContent: t }))));
+        if (it.notes.length) pane.append(el('h3', { textContent: 'Check the highlighting' }), el('ul', { class: 'du-issues' }, it.notes.map((t) => el('li', { textContent: t }))));
+        if (it.url) pane.append(el('h3', { textContent: it.archived ? 'Source (archived copy)' : 'Source' }), el('p', { class: 'du-pre', textContent: it.url }));
+      };
+      const renderFoot = () => {
+        d.foot.textContent = '';
+        const it = current();
+        if (it && it.url && spec.onSource) d.foot.append(button('Open source', false, () => spec.onSource(it)));
+        const go = button('Go to card', true, () => { const x = current(); if (x) { close(); spec.onGo(x); } });
+        go.title = 'Enter';
+        go.disabled = !it;
+        d.foot.append(go);
+      };
+      const paint = () => {
+        rows.forEach((r, i) => r.setAttribute('aria-selected', items[i].key === selKey ? 'true' : 'false'));
+        renderPane();
+        renderFoot();
+        if (d.dialog.contains && !d.dialog.contains(document.activeElement)) d.dialog.focus();
+      };
+      const render = () => {
+        list.textContent = '';
+        rows = items.map((it) => {
+          const row = el('div', { class: 'du-row', attrs: { role: 'option' } }, [
+            el('span', { class: `du-st du-st-${it.status}`, textContent: it.glyph, attrs: { 'aria-label': it.statusText } }),
+            el('span', { class: 'du-row-text' }, [
+              el('span', { class: 'du-row-main', textContent: it.label, title: it.label }),
+              el('span', { class: 'du-row-sub', textContent: it.statusText }),
+            ]),
+          ]);
+          row.addEventListener('mousedown', (e) => { e.preventDefault(); selKey = it.key; paint(); });
+          row.addEventListener('dblclick', () => { selKey = it.key; close(); spec.onGo(it); });
+          list.append(row);
+          return row;
+        });
+        paint();
+      };
+      d.dialog.addEventListener('keydown', (e) => {
+        const i = items.findIndex((it) => it.key === selKey);
+        if (e.key === 'ArrowDown' && items.length) { e.preventDefault(); selKey = items[Math.min(i + 1, items.length - 1)].key; paint(); }
+        else if (e.key === 'ArrowUp' && items.length) { e.preventDefault(); selKey = items[Math.max(i - 1, 0)].key; paint(); }
+        else if (e.key === 'Enter' && e.target === d.dialog) { e.preventDefault(); const it = current(); if (it) { close(); spec.onGo(it); } }
+      });
+      render();
+      d.dialog.focus();
+      return {
+        closed,
+        update(next, subtitle) {
+          items = next;
+          if (!items.some((it) => it.key === selKey)) selKey = items.length ? items[0].key : null;
+          if (sub && subtitle) sub.textContent = subtitle;
+          render();
+        },
+      };
     },
 
     // Filterable single-select. Resolves with the chosen index, or null.
@@ -1585,6 +1672,129 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     }
   }
 
+  // ---------------------------------------------------------------- Card Check
+  const CHECK = {
+    pending: ['…', 'Checking…'],
+    matches: ['✓', 'Matches source'],
+    differences: ['!', 'Differences found'],
+    unverified: ['?', "Couldn't verify (paywall, other version, or wrong link)"],
+    unreachable: ['×', "Couldn't reach the source"],
+    no_link: ['–', 'No link in cite'],
+  };
+  let lastCheck = null; // { title, items } for "Show last Card Check results"
+
+  // Each card's cite links and its body as runs, h = highlighted (read aloud).
+  function cardsForCheck(doc) {
+    return cardsIn(doc).map((c, i) => {
+      const node = doc.nodeAt(c.from);
+      const urls = [];
+      const runs = [];
+      let cite = '';
+      // CardMirror marks cites (cite_paragraph); some imports leave them as plain paragraphs,
+      // so without one the first unhighlighted body paragraph is the cite (Verbatim layout).
+      let hasCite = false;
+      node.forEach((child) => { if (child.type.name === 'cite_paragraph') hasCite = true; });
+      let fallback = null;
+      if (!hasCite) {
+        node.forEach((child) => {
+          if (fallback || child.type.name !== 'card_body' || !child.textContent.trim()) return;
+          let lit = false;
+          child.descendants((t) => { if (t.isText && t.marks.some((m) => m.type.name === 'highlight' || m.type.name === 'shading')) lit = true; return true; });
+          fallback = lit ? 'none' : child;
+        });
+      }
+      node.forEach((child) => {
+        if (child.type.name === 'cite_paragraph' || child === fallback) {
+          cite += `${child.textContent} `;
+          child.descendants((t) => {
+            if (t.isText) for (const m of t.marks) if (m.type.name === 'link' && m.attrs && m.attrs.href) urls.push(m.attrs.href);
+            return true;
+          });
+        } else if (child.type.name === 'card_body') {
+          child.descendants((t) => {
+            if (t.isText) runs.push({ t: t.text, h: t.marks.some((m) => m.type.name === 'highlight' || m.type.name === 'shading') });
+            return true;
+          });
+          runs.push({ t: '\n', h: false });
+        }
+      });
+      return { key: i, from: c.from, tag: c.tag, cite: cite.trim(), urls: [...new Set(urls)], runs };
+    });
+  }
+
+  const checkItem = (card, r) => {
+    const status = r ? r.status : 'pending';
+    const notes = r && r.qualifiers ? r.qualifiers.map((q) => `"${q.context}": the highlighting skips "${q.word}".`) : [];
+    const text = CHECK[status][1] + (r && r.reason && status === 'unreachable' ? ` (${r.reason})` : '') + (notes.length ? ' · check highlighting' : '');
+    return { key: card.key, label: card.tag, sub: card.cite, status, glyph: CHECK[status][0], statusText: text, issues: r ? r.issues : [], notes, url: r ? r.url : null, archived: !!(r && r.archived) };
+  };
+  const checkSummary = (results, total) => {
+    const n = (s) => results.filter((r) => r && r.status === s).length;
+    const done = results.filter(Boolean).length;
+    const parts = [[n('matches'), 'match'], [n('differences'), 'with differences'], [n('unverified') + n('unreachable'), "couldn't check"], [n('no_link'), 'no link']].filter(([k]) => k).map(([k, w]) => `${k} ${w}`);
+    return `${done < total ? `Checked ${done} of ${total} · ` : ''}${parts.join(' · ') || 'Starting…'}`;
+  };
+
+  function goToCard(api, view, tag, key) {
+    // Positions may have moved since the check started; find the card by its order and tag.
+    const now = cardsIn(view.state.doc);
+    const c = now[key] && now[key].tag === tag ? now[key] : now.find((x) => x.tag === tag);
+    if (!c) return api.showToast(`Couldn't find "${short(tag)}" any more.`);
+    try {
+      const Sel = view.state.selection.constructor;
+      if (Sel && Sel.near) view.dispatch(view.state.tr.setSelection(Sel.near(view.state.doc.resolve(Math.min(c.from + 2, view.state.doc.content.size)))).scrollIntoView());
+      const dom = view.nodeDOM && view.nodeDOM(c.from);
+      if (dom && dom.scrollIntoView) dom.scrollIntoView({ block: 'center' });
+      if (view.focus) view.focus();
+    } catch {
+      api.showToast(`Couldn't jump to "${short(tag)}".`);
+    }
+  }
+
+  async function showResults(api, view, title, items, run) {
+    const open = openExternal();
+    const ctl = ui().checkResults({
+      title,
+      subtitle: run ? 'Starting…' : lastCheck.subtitle,
+      items,
+      onGo: (it) => goToCard(api, view, it.label, it.key),
+      onSource: open ? (it) => open(it.url) : null,
+    });
+    if (run) await run(ctl);
+    await ctl.closed;
+  }
+
+  async function cardCheck(api) {
+    const u = ui();
+    const view = u.editorView ? await u.editorView() : await editor.view(u.sleep);
+    if (!view) return api.showToast("Couldn't reach the editor. Click into your document, then run Card Check again.");
+    const cards = cardsForCheck(view.state.doc);
+    if (!cards.length) return api.showToast('No cards in this document.');
+    const info = typeof api.docInfo === 'function' ? api.docInfo() : null;
+    const title = `Card Check${info && info.docTitle ? `: ${info.docTitle}` : ''}`;
+    let results = [];
+    const items = () => cards.map((c, i) => checkItem(c, results[i]));
+    await showResults(api, view, title, items(), async (ctl) => {
+      try {
+        const body = { cards: cards.map(({ key, cite, urls, runs }) => ({ key, cite, urls, runs })) };
+        const final = await runJob(api, '/cardcheck/run', body, u.sleep, {
+          maxPolls: 900,
+          onProgress: (p) => { results = p.results || []; ctl.update(items(), checkSummary(results, cards.length)); },
+        });
+        results = final.results;
+        lastCheck = { title, subtitle: checkSummary(results, cards.length), items: items(), view };
+        ctl.update(lastCheck.items, lastCheck.subtitle);
+      } catch (err) {
+        ctl.update(items(), message(err.message, { evidence: true }));
+      }
+    });
+  }
+
+  async function lastCardCheck(api) {
+    if (!lastCheck) return api.showToast('No Card Check results yet. Run "Card Check this document…" first.');
+    await showResults(api, lastCheck.view, lastCheck.title, lastCheck.items, null);
+  }
+
   // ---------------------------------------------------------------- Search my files
   const fmt = (n) => Number(n || 0).toLocaleString('en-US');
   const short = (s) => (s.length > 70 ? `${s.slice(0, 70)}…` : s);
@@ -1783,6 +1993,20 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         keywords: ['mark', 'marked', 'red', 'cards', 'select'],
         defaultKey: null,
         run: (api) => withPrefs(api, () => markCards(api)),
+      },
+      {
+        id: `${ID}.cardCheck`,
+        label: 'Card Check this document…',
+        keywords: ['check', 'verify', 'source', 'cite', 'cards', 'evidence', 'miscut'],
+        defaultKey: null,
+        run: (api) => withPrefs(api, () => cardCheck(api)),
+      },
+      {
+        id: `${ID}.cardCheckLast`,
+        label: 'Show last Card Check results',
+        keywords: ['check', 'verify', 'results', 'cards'],
+        defaultKey: null,
+        run: (api) => withPrefs(api, () => lastCardCheck(api)),
       },
       {
         id: `${ID}.evidenceSearch`,

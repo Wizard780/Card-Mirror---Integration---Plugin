@@ -42,10 +42,10 @@ function harness({ prefs = {}, responses = [], settings = {}, storage = {}, room
   return { api, calls, toasts, prompts, store, prefsReply, prefsSets };
 }
 
-test('registers fourteen commands and one setting under the plugin id', () => {
+test('registers sixteen commands and one setting under the plugin id', () => {
   assert.equal(def.id, 'debate-uploader');
   assert.equal(def.apiVersion, 1);
-  assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.caselistScout', 'debate-uploader.caselistSearch', 'debate-uploader.caselistTeam', 'debate-uploader.caselistUpload', 'debate-uploader.evidenceFolders', 'debate-uploader.evidenceSearch', 'debate-uploader.markCards', 'debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdPick', 'debate-uploader.setFolder',
+  assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.cardCheck', 'debate-uploader.cardCheckLast', 'debate-uploader.caselistScout', 'debate-uploader.caselistSearch', 'debate-uploader.caselistTeam', 'debate-uploader.caselistUpload', 'debate-uploader.evidenceFolders', 'debate-uploader.evidenceSearch', 'debate-uploader.markCards', 'debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdPick', 'debate-uploader.setFolder',
  'debate-uploader.tabroomLogin', 'debate-uploader.tabroomLogout', 'debate-uploader.tabroomRounds']);
   assert.deepEqual(def.settings.map((s) => [s.key, s.type, s.default]), [['sendDocFolder', 'text', '']]);
 });
@@ -1128,6 +1128,7 @@ function pm(name, kids = [], text = null, marks = []) {
   n.nodeSize = n.isText ? text.length : 2 + kids.reduce((a, k) => a + k.nodeSize, 0);
   n.textContent = n.isText ? text : kids.map((k) => k.textContent).join('');
   n.firstChild = kids[0] || null;
+  n.content = { size: n.isText ? 0 : n.nodeSize - 2 };
   n.forEach = (f) => { let p = 0; for (const k of kids) { f(k, p); p += k.nodeSize; } };
   const walk = (node, base, f, from = -Infinity, to = Infinity) => {
     let p = base;
@@ -1138,6 +1139,7 @@ function pm(name, kids = [], text = null, marks = []) {
     }
   };
   n.descendants = (f) => walk(n, 0, f);
+  n.nodeAt = (pos) => { let found = null; walk(n, 0, (k, p) => { if (p === pos && !found) found = k; return p < pos; }); return found; };
   n.nodesBetween = (from, to, f) => walk(n, 0, f, from, to);
   return n;
 }
@@ -1291,4 +1293,76 @@ test('caselist form: the round report is drafted from the room and send doc, wit
   await cmd('caselistUpload').run(none.api);
   assert.equal(none.forms[0].fields.report, '');
   assert.equal(none.forms[0].reportNote, '', 'a failed draft never blocks the form');
+});
+
+// ---------------------------------------------------------------- Card Check
+const LINK = (href) => ({ type: { name: 'link' }, attrs: { href } });
+const HL = { type: { name: 'highlight' }, attrs: { color: 'yellow' } };
+const CHECK_DOC = () => pm('doc', [
+  pm('block', [txt('AT: Grid')]),
+  pm('card', [pm('tag', [txt('Grid collapses')]), pm('cite_paragraph', [txt('Chen 25 '), txt('arxiv', LINK('https://arxiv.org/pdf/1'))]), pm('card_body', [txt('Loads ', HL), txt('may '), txt('trip the grid.', HL)])]),
+  pm('card', [pm('tag', [txt('No link card')]), pm('cite_paragraph', [txt('Smith 19, https://x.org/a')]), pm('card_body', [txt('Text.')])]),
+]);
+
+test('card check: sends each card\'s cite links and highlighted runs; results fill in; Go to card finds it by tag', async () => {
+  const view = fakeView(CHECK_DOC());
+  const h = harness();
+  const jobs = [];
+  h.api.flowPost = async (app, route, body) => {
+    const pr = h.prefsReply(route, body); if (pr) return pr;
+    h.calls.push({ route, body });
+    if (route === '/cardcheck/run') return ok({ ok: true, job: 'cc' });
+    if (route === '/job') {
+      jobs.push(1);
+      const r1 = { key: 0, status: 'differences', issues: ['Not found in the source: "x"'], url: 'https://arxiv.org/pdf/1', qualifiers: [{ word: 'may', context: 'loads [may] trip the' }] };
+      if (jobs.length === 1) return ok({ state: 'running', progress: { done: 1, total: 2, results: [r1, null] } });
+      return ok({ state: 'done', result: { done: 2, total: 2, results: [r1, { key: 1, status: 'unreachable', issues: [], url: 'https://x.org/a', reason: 'http_403', qualifiers: [] }] } });
+    }
+    return ok({ ok: true });
+  };
+  const updates = [];
+  let spec;
+  window.__debateUploaderUI.editorView = async () => view;
+  window.__debateUploaderUI.sleep = async () => {};
+  window.__debateUploaderUI.checkResults = (s) => { spec = s; return { closed: Promise.resolve(), update: (items, sub) => updates.push([items, sub]) }; };
+  h.api.docInfo = () => ({ docId: 'd', docTitle: 'Grid Aff' });
+  await cmd('cardCheck').run(h.api);
+  const sent = h.calls.find((c) => c.route === '/cardcheck/run').body.cards;
+  assert.deepEqual(sent.map((c) => [c.key, c.cite, c.urls]), [[0, 'Chen 25 arxiv', ['https://arxiv.org/pdf/1']], [1, 'Smith 19, https://x.org/a', []]]);
+  assert.deepEqual(sent[0].runs, [{ t: 'Loads ', h: true }, { t: 'may ', h: false }, { t: 'trip the grid.', h: true }, { t: '\n', h: false }]);
+  assert.equal(spec.title, 'Card Check: Grid Aff');
+  assert.deepEqual(spec.items.map((i) => i.statusText), ['Checking…', 'Checking…']);
+  assert.equal(updates[0][1], 'Checked 1 of 2 · 1 with differences');
+  const [final, sub] = updates.at(-1);
+  assert.equal(sub, "1 with differences · 1 couldn't check");
+  assert.deepEqual(final.map((i) => [i.glyph, i.statusText]), [['!', 'Differences found · check highlighting'], ['×', "Couldn't reach the source (http_403)"]]);
+  assert.deepEqual(final[0].notes, ['"loads [may] trip the": the highlighting skips "may".']);
+
+  view.state.selection = { constructor: { near: ($pos) => ({ near: $pos }) } };
+  view.state.doc.resolve = (p) => ({ pos: p });
+  const sels = [];
+  const origTr = Object.getOwnPropertyDescriptor(view.state, 'tr').get;
+  Object.defineProperty(view.state, 'tr', { get() { const tr = origTr(); tr.setSelection = (sel) => { sels.push(sel); return tr; }; tr.scrollIntoView = () => tr; return tr; } });
+  spec.onGo(final[1]);
+  assert.equal(sels.length, 1, 'selection moved to the card');
+  const second = []; view.state.doc.forEach((n, p) => second.push(p));
+  assert.equal(sels[0].near.pos, second[2] + 2, 'lands inside the second card');
+
+  // Results stay available
+  let again;
+  window.__debateUploaderUI.checkResults = (s) => { again = s; return { closed: Promise.resolve(), update() {} }; };
+  await cmd('cardCheckLast').run(h.api);
+  assert.equal(again.subtitle, "1 with differences · 1 couldn't check");
+});
+
+test('card check: a card without a marked cite uses its first unhighlighted paragraph as the cite', async () => {
+  const doc = pm('doc', [pm('card', [pm('tag', [txt('T')]), pm('card_body', [txt('Chen 25 '), txt('link', LINK('https://a.org/1'))]), pm('card_body', [txt('Read this.', HL)])])]);
+  const view = fakeView(doc);
+  const h = harness();
+  h.api.flowPost = async (app, route, body) => { const pr = h.prefsReply(route, body); if (pr) return pr; h.calls.push({ route, body }); return route === '/job' ? ok({ state: 'done', result: { results: [] } }) : ok({ ok: true, job: 'j' }); };
+  window.__debateUploaderUI.editorView = async () => view;
+  window.__debateUploaderUI.checkResults = () => ({ closed: Promise.resolve(), update() {} });
+  await cmd('cardCheck').run(h.api);
+  const [c] = h.calls.find((x) => x.route === '/cardcheck/run').body.cards;
+  assert.deepEqual([c.cite, c.urls, c.runs.map((r) => r.t).join('')], ['Chen 25 link', ['https://a.org/1'], 'Read this.\n']);
 });
