@@ -667,13 +667,15 @@ const TEAM = { rounds: [
   { id: 12, side: 'A', tournament: '01---Yale', round: '2', opponent: '', judge: '', report: '', opensource: null, video: null, updated: '2026-09-20 10:00:00' },
 ], cites: [{ id: 5, roundId: 11, title: '1NC', cites: 'Smith 24', side: 'N', tournament: '03---Glenbrooks', round: '3' }] };
 const LEX = [{ school: 'Lexington', team: 'AlHu', label: 'Lexington AlHu', schoolLabel: 'Lexington' }];
+const LEXT = { school: 'Lexington', team: 'AlHu', label: 'Lexington AlHu', schoolLabel: 'Lexington', debaters: ['Ali', 'Hu'], names: ['Simal Ali', 'Christina Hu'] };
+const SCOUT_HIT = { match: LEXT, candidates: [LEXT] };
 const ONE_ROUND = { current: true, rounds: [{ id: 9, tournament: 'Glenbrooks', round: '4', side: 'Pro', opponent: 'lexington-alhu', judge: 'Lee', start_time: null }] };
 
-test('scout: single current round → exact match (case/punctuation-insensitive) → team page with details', async () => {
-  const h = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/search': LEX, '/caselist/team': TEAM, '/caselist/open': { name: 'a.docx', path: '/p', app: 'CardMirror' } } });
+test('scout: single current round → helper matches the debater pair → team page with details', async () => {
+  const h = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/scout': SCOUT_HIT, '/caselist/team': TEAM, '/caselist/open': { name: 'a.docx', path: '/p', app: 'CardMirror' } } });
   await cmd('caselistScout').run(h.api);
   assert.equal(h.chooseTitles.length, 0, 'no pickers needed');
-  assert.deepEqual(h.calls.find((c) => c.route === '/caselist/search').body, { caselist: 'hspf26', q: 'lexington-alhu' });
+  assert.deepEqual(h.calls.find((c) => c.route === '/caselist/scout').body, { caselist: 'hspf26', opponent: 'lexington-alhu' });
   const p = h.pages[0];
   assert.equal(p.title, 'Lexington AlHu');
   assert.equal(p.subtitle, 'HS PF 2026 · 2 rounds · 1 cite entry');
@@ -693,40 +695,56 @@ test('scout: single current round → exact match (case/punctuation-insensitive)
   assert.equal(h.calls.filter((c) => c.route === '/caselist/open').length, 1, 'cites-only round opens nothing');
 });
 
-test('scout: several rounds → pick one; no exact match → pick a team; nothing found → toast', async () => {
+test('scout: several rounds → pick one; no unique match → pick a team (debater names shown); nothing found → toast', async () => {
   const two = { current: false, rounds: [ONE_ROUND.rounds[0], { ...ONE_ROUND.rounds[0], id: 10, round: '5', opponent: 'Strake KM' }] };
-  const pick = scoutHarness({ storage: { caselistTarget: TARGET }, choose: [1, 0], results: { '/tabroom/rounds': two, '/caselist/search': LEX, '/caselist/team': TEAM } });
+  const other = { ...LEXT, school: 'StrakeJesuit', team: 'KaMo', label: 'Strake Jesuit KaMo', names: ['Kai Kim', 'Mo Ma'] };
+  const pick = scoutHarness({ storage: { caselistTarget: TARGET }, choose: [1, 1], results: { '/tabroom/rounds': two, '/caselist/scout': { match: null, candidates: [LEXT, other] }, '/caselist/team': TEAM } });
   await cmd('caselistScout').run(pick.api);
-  assert.deepEqual(pick.chooseTitles.map(([t]) => t), ['Scout which round?', 'Which team is Strake KM?']);
-  assert.equal(pick.pages[0].title, 'Lexington AlHu');
+  assert.deepEqual(pick.chooseTitles.map(([t, l]) => [t, l]), [
+    ['Scout which round?', ['Glenbrooks · Round 4 · vs lexington-alhu', 'Glenbrooks · Round 5 · vs Strake KM']],
+    ['Which team is Strake KM?', ['Lexington AlHu (Simal Ali & Christina Hu)', 'Strake Jesuit KaMo (Kai Kim & Mo Ma)']],
+  ]);
+  assert.deepEqual(pick.calls.find((c) => c.route === '/caselist/team').body, { caselist: 'hspf26', school: 'StrakeJesuit', team: 'KaMo' });
 
-  const none = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/search': [] } });
+  const none = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/scout': { match: null, candidates: [] } } });
   await cmd('caselistScout').run(none.api);
-  assert.equal(none.toasts.at(-1), 'No caselist page for lexington-alhu on HS PF 2026 yet.');
+  assert.equal(none.toasts.at(-1), 'No caselist page for lexington-alhu on HS PF 2026 yet. Try Search the caselist…');
 
   const out = scoutHarness({ results: { '/tabroom/rounds': new Error('not_logged_in') } });
   await cmd('caselistScout').run(out.api);
   assert.equal(out.toasts.at(-1), 'Not logged in to Tabroom. Run "Log in to Tabroom…".');
 });
 
-test('search: your caselist is offered first, the query is remembered, one match opens directly', async () => {
-  const h = scoutHarness({ storage: { caselistTarget: { ...TARGET, caselist: 'ndt26', caselistLabel: 'NDT 2026' } }, prompt: ' Lexington ', choose: [0],
-    results: { '/caselist/caselists': LISTS['/caselist/caselists'], '/caselist/search': LEX, '/caselist/team': TEAM } });
+test('search: pick a caselist (yours first) → a school from the list → a team → team page; no text box', async () => {
+  const h = scoutHarness({ storage: { caselistTarget: { ...TARGET, caselist: 'ndt26', caselistLabel: 'NDT 2026' } }, choose: [0, 1, 0],
+    results: { '/caselist/caselists': LISTS['/caselist/caselists'], '/caselist/schools': [{ name: 'Acton', label: 'Acton-Boxborough' }, { name: 'Lexington', label: 'Lexington' }],
+      '/caselist/teams': [{ name: 'AlHu', label: 'Lexington AlHu' }, { name: 'ChLi', label: 'Lexington ChLi' }], '/caselist/team': TEAM } });
   await cmd('caselistSearch').run(h.api);
-  assert.deepEqual(h.chooseTitles[0], ['Pick a caselist', ['NDT 2026', 'HS PF 2026']]);
+  assert.deepEqual(h.chooseTitles.map(([t, l]) => [t, l]), [
+    ['Pick a caselist', ['NDT 2026', 'HS PF 2026']],
+    ['NDT 2026: pick a school', ['Acton-Boxborough', 'Lexington']],
+    ['Lexington: pick a team', ['Lexington AlHu', 'Lexington ChLi']],
+  ]);
   assert.deepEqual(h.store.get('scoutCaselist'), { name: 'ndt26', label: 'NDT 2026', event: 'cx' });
-  assert.equal(h.store.get('lastCaselistSearch'), 'Lexington');
-  assert.deepEqual(h.calls.find((c) => c.route === '/caselist/search').body, { caselist: 'ndt26', q: 'Lexington' });
+  assert.deepEqual(h.calls.find((c) => c.route === '/caselist/teams').body, { caselist: 'ndt26', school: 'Lexington' });
+  assert.deepEqual(h.calls.find((c) => c.route === '/caselist/team').body, { caselist: 'ndt26', school: 'Lexington', team: 'AlHu' });
   assert.equal(h.pages[0].title, 'Lexington AlHu');
   assert.equal(h.pages[0].rounds[0].label, 'Glenbrooks · Round 3 · Neg vs Strake KM', 'policy caselist shows Aff/Neg');
+  assert.equal(h.prompts.length, 0, 'no free-text search box');
 
-  const empty = scoutHarness({ prompt: 'zzz', choose: [0], results: { '/caselist/caselists': LISTS['/caselist/caselists'], '/caselist/search': [] } });
-  await cmd('caselistSearch').run(empty.api);
-  assert.equal(empty.toasts.at(-1), 'No teams matching "zzz" on HS PF 2026.');
+  const one = scoutHarness({ choose: [0, 0], results: { '/caselist/caselists': LISTS['/caselist/caselists'], '/caselist/schools': [{ name: 'Lexington', label: 'Lexington' }], '/caselist/teams': [{ name: 'AlHu', label: 'Lexington AlHu' }], '/caselist/team': TEAM } });
+  await cmd('caselistSearch').run(one.api);
+  assert.equal(one.chooseTitles.length, 2, 'a school with one team opens it directly');
+  assert.equal(one.pages.length, 1);
+
+  const cancel = scoutHarness({ choose: [0, null], results: { '/caselist/caselists': LISTS['/caselist/caselists'], '/caselist/schools': [{ name: 'Lexington', label: 'Lexington' }] } });
+  await cmd('caselistSearch').run(cancel.api);
+  assert.equal(cancel.pages.length, 0);
+  assert.equal(cancel.calls.filter((c) => c.route === '/caselist/teams').length, 0);
 });
 
 test('team page actions: copy without a clipboard explains; a vanished file says so', async () => {
-  const h = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/search': LEX, '/caselist/team': TEAM, '/caselist/open': new Error('removed') } });
+  const h = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/scout': SCOUT_HIT, '/caselist/team': TEAM, '/caselist/open': new Error('removed') } });
   await cmd('caselistScout').run(h.api);
   await h.pages[0].onCopy('text', 'report');
   assert.equal(h.toasts.at(-1), "Couldn't copy to the clipboard.");
@@ -738,7 +756,7 @@ test('DOM team page: selecting a round shows its report and cites; Enter opens o
   const dom = fakeDom();
   const saved = { document: globalThis.document, Option: globalThis.Option, ui: window.__debateUploaderUI };
   globalThis.document = dom.doc; globalThis.Option = dom.Option;
-  const h = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/search': LEX, '/caselist/team': TEAM, '/caselist/open': { name: 'a.docx', path: '/p', app: 'CardMirror' } } });
+  const h = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/scout': SCOUT_HIT, '/caselist/team': TEAM, '/caselist/open': { name: 'a.docx', path: '/p', app: 'CardMirror' } } });
   delete window.__debateUploaderUI; // drive the real DOM UI (one current round: no pickers needed)
   try {
     const running = cmd('caselistScout').run(h.api);
@@ -764,7 +782,7 @@ test('DOM team page: selecting a round shows its report and cites; Enter opens o
 });
 
 test('scouting toasts: read errors never say "Upload failed"; saved-not-opened and Finder reveals explain', async () => {
-  const load = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/search': LEX, '/caselist/team': new Error('http_500') } });
+  const load = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/scout': SCOUT_HIT, '/caselist/team': new Error('http_500') } });
   await cmd('caselistScout').run(load.api);
   assert.equal(load.toasts.at(-1), "Couldn't load from openCaselist (http_500).");
   for (const [result, text] of [
@@ -772,7 +790,7 @@ test('scouting toasts: read errors never say "Upload failed"; saved-not-opened a
     [{ name: 'a.docx', path: '/p', app: 'CardMirror', opened: false }, 'Saved "a.docx" but couldn\'t open it.'],
     [{ name: 'notes.webloc', path: '/p', app: 'finder' }, 'Saved "notes.webloc" and showed it in Finder (not opened: unusual file type).'],
   ]) {
-    const h = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/search': LEX, '/caselist/team': TEAM, '/caselist/open': result } });
+    const h = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/scout': SCOUT_HIT, '/caselist/team': TEAM, '/caselist/open': result } });
     await cmd('caselistScout').run(h.api);
     await h.pages[0].onOpen(11);
     assert.equal(h.toasts.at(-1), text);
@@ -783,7 +801,7 @@ test('DOM team page: Enter on a button never opens the doc; row clicks keep focu
   const dom = fakeDom();
   const saved = { document: globalThis.document, Option: globalThis.Option, ui: window.__debateUploaderUI };
   globalThis.document = dom.doc; globalThis.Option = dom.Option;
-  const h = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/search': LEX, '/caselist/team': TEAM, '/caselist/open': { name: 'a.docx', path: '/p', app: 'CardMirror' } } });
+  const h = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/scout': SCOUT_HIT, '/caselist/team': TEAM, '/caselist/open': { name: 'a.docx', path: '/p', app: 'CardMirror' } } });
   delete window.__debateUploaderUI;
   try {
     const running = cmd('caselistScout').run(h.api);

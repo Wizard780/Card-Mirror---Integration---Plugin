@@ -8,7 +8,8 @@ import { homedir } from 'node:os';
 import { promisify } from 'node:util';
 import { createKeychain } from './lib/keychain.mjs';
 import { createRoomWatcher } from './lib/roomwatch.mjs';
-import { login, getRounds, listCaselists, listSchools, listTeams, createRound, searchTeams, getTeam, downloadOpenSource, CASELIST_BASE } from './lib/caselist.mjs';
+import { login, getRounds, listCaselists, listSchools, listTeams, createRound, searchTeams, getTeam, downloadOpenSource, listTeamsDetailed, CASELIST_BASE } from './lib/caselist.mjs';
+import { parseOpponent, schoolScore, pickTeam } from './lib/scout.mjs';
 import { uploadToSpeechDrop, newestDocx, MAX_BYTES, listRoom, downloadFile, saveUnique, SD_BASE, SD_MEDIA } from './lib/speechdrop.mjs';
 
 const VERSION = '0.1.0';
@@ -177,6 +178,23 @@ const routes = {
     await createRound(t, { caselist, school, team }, { ...(round || {}), filename: doc.name, base64: doc.bytes.toString('base64') }, clOpts);
     log('caselist upload ok', caselist, school, team, doc.name);
     return { name: doc.name };
+  }),
+
+  // Tabroom "School CODE" → caselist team: rank schools by name, then match the debater pair.
+  '/caselist/scout': ({ caselist, opponent }) => authedJob('caselist scout', async (t) => {
+    const { school } = parseOpponent(opponent);
+    const schools = await listSchools(t, caselist, clOpts);
+    const likely = schools
+      .map((s, i) => ({ s, i, score: schoolScore(school, s.label) }))
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score || a.i - b.i)
+      .slice(0, 6)
+      .map((x) => x.s);
+    const teams = (await Promise.all(likely.map((s) =>
+      listTeamsDetailed(t, caselist, s.name, clOpts).then((ts) => ts.map((x) => ({ ...x, schoolLabel: s.label })))))).flat();
+    const { match, candidates } = pickTeam(opponent, teams);
+    log('caselist scout', caselist, opponent, match ? `${match.school}/${match.team}` : `${candidates.length} candidates`);
+    return { match, candidates: candidates.slice(0, 15) };
   }),
 
   '/caselist/search': ({ caselist, q }) => authedJob('caselist search', (t) => searchTeams(t, caselist, q, clOpts)),

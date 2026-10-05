@@ -945,7 +945,6 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     const d = new Date(Date.parse(String(s ?? '').replace(' ', 'T')));
     return Number.isFinite(d.getTime()) ? d.toLocaleDateString([], { month: 'short', day: 'numeric' }) : '';
   };
-  const normName = (s) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
   const sideLabelsFor = (cl) => (/pf|public forum/i.test(`${cl.event || ''} ${cl.label || ''}`) ? { A: 'Pro', N: 'Con' } : { A: 'Aff', N: 'Neg' });
   const ownCaselist = (api) => {
@@ -1040,13 +1039,14 @@ textarea.du-input{resize:vertical;min-height:3.4em}
       }
       const cl = ownCaselist(api) || api.storage.get('scoutCaselist') || (await pickCaselist(api, u));
       if (!cl) return;
-      const teams = await runJob(api, '/caselist/search', { caselist: cl.name, q: round.opponent }, u.sleep);
-      let team = teams.find((t) => normName(t.label) === normName(round.opponent));
+      // The helper matches Tabroom's "School CODE" to a caselist team by the debater pair.
+      const found = await runJob(api, '/caselist/scout', { caselist: cl.name, opponent: round.opponent }, u.sleep);
+      let team = found.match;
       if (!team) {
-        if (!teams.length) return api.showToast(`No caselist page for ${round.opponent} on ${cl.label} yet.`);
-        const i = await u.choose(`Which team is ${round.opponent}?`, teams.map((t) => t.label));
+        if (!found.candidates.length) return api.showToast(`No caselist page for ${round.opponent} on ${cl.label} yet. Try Search the caselist…`);
+        const i = await u.choose(`Which team is ${round.opponent}?`, found.candidates.map((t) => (t.names && t.names.length ? `${t.label} (${t.names.join(' & ')})` : t.label)));
         if (i == null) return;
-        team = teams[i];
+        team = found.candidates[i];
       }
       await openTeamPage(api, u, cl, team, ctx);
     } catch (err) {
@@ -1054,25 +1054,28 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     }
   }
 
+  // Browse like the upload team picker: caselist → school → team, all type-to-filter lists.
   async function caselistSearch(api) {
     const u = ui();
     const ctx = { caselist: true, scouting: true };
     try {
       const cl = await pickCaselist(api, u);
       if (!cl) return;
-      const raw = await u.prompt(`Search ${cl.label} (team or school)`, api.storage.get('lastCaselistSearch') || '');
-      const q = raw == null ? '' : String(raw).trim();
-      if (!q) return;
-      api.storage.set('lastCaselistSearch', q);
-      const teams = await runJob(api, '/caselist/search', { caselist: cl.name, q }, u.sleep);
-      if (!teams.length) return api.showToast(`No teams matching "${q}" on ${cl.label}.`);
-      const i = teams.length === 1 ? 0 : await u.choose(`Teams matching "${q}"`, teams.map((t) => t.label));
-      if (i == null) return;
-      await openTeamPage(api, u, cl, teams[i], ctx);
+      const schools = await runJob(api, '/caselist/schools', { caselist: cl.name }, u.sleep);
+      if (!schools.length) return api.showToast(`No schools on ${cl.label} yet.`);
+      const si = await u.choose(`${cl.label}: pick a school`, schools.map((x) => x.label));
+      if (si == null) return;
+      const school = schools[si];
+      const teams = await runJob(api, '/caselist/teams', { caselist: cl.name, school: school.name }, u.sleep);
+      if (!teams.length) return api.showToast(`No teams for ${school.label} on ${cl.label} yet.`);
+      const ti = teams.length === 1 ? 0 : await u.choose(`${school.label}: pick a team`, teams.map((x) => x.label));
+      if (ti == null) return;
+      await openTeamPage(api, u, cl, { school: school.name, team: teams[ti].name, label: teams[ti].label }, ctx);
     } catch (err) {
       api.showToast(message(err.message, ctx));
     }
   }
+
 
   window.__registerCardMirrorPlugin && window.__registerCardMirrorPlugin({
     id: ID,

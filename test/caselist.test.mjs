@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { login, getRounds, listCaselists, listSchools, listTeams, normalizeSide, createRound, searchTeams, getTeam, downloadOpenSource } from '../lib/caselist.mjs';
+import { login, getRounds, listCaselists, listSchools, listTeams, normalizeSide, createRound, searchTeams, getTeam, downloadOpenSource, listTeamsDetailed } from '../lib/caselist.mjs';
 
 function fake(routes) {
   const calls = [];
@@ -164,4 +164,15 @@ test('downloadOpenSource returns bytes and a safe filename; failures are downloa
   assert.equal(calls[0].init.headers.Cookie, 'caselist_token=TOK');
   await assert.rejects(downloadOpenSource('TOK', 'bad', opts), /^Error: download_failed$/);
   await assert.rejects(downloadOpenSource('TOK', 'expired', opts), /^Error: login_expired$/);
+});
+
+test('listTeamsDetailed returns each team with its debaters (last names and full names)', async () => {
+  const f = fake({ '/caselists/hspf26/schools/Lexington/teams': { body: [
+    { name: 'AlHu', display_name: 'Lexington AlHu', debater1_first: 'Simal', debater1_last: 'Ali', debater2_first: 'Christina', debater2_last: 'Hu', debater3_first: null, debater3_last: null },
+    { name: 'All', display_name: 'Lexington All', debater1_first: 'All', debater1_last: 'Teams', debater2_first: null, debater2_last: null },
+  ] } });
+  assert.deepEqual(await listTeamsDetailed('TOK', 'hspf26', 'Lexington', f.opts), [
+    { school: 'Lexington', team: 'AlHu', label: 'Lexington AlHu', debaters: ['Ali', 'Hu'], names: ['Simal Ali', 'Christina Hu'] },
+    { school: 'Lexington', team: 'All', label: 'Lexington All', debaters: ['Teams'], names: ['All Teams'] },
+  ]);
 });

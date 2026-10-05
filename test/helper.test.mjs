@@ -72,7 +72,14 @@ before(async () => {
       { name: 'hspf26', display_name: 'HS PF 2026', event: 'pf', archived: false },
       { name: 'hspf25', display_name: 'HS PF 2025', event: 'pf', archived: true },
     ]);
-    if (req.url === '/v1/caselists/hspf26/schools') return send(200, [{ name: 'StMarks', display_name: "St. Mark's" }]);
+    if (req.url === '/v1/caselists/hspf26/schools') return send(200, [{ name: 'StMarks', display_name: "St. Mark's" }, { name: 'Lexington', display_name: 'Lexington' }, { name: 'LexingtonCath', display_name: 'Lexington Catholic' }]);
+    if (req.url === '/v1/caselists/hspf26/schools/Lexington/teams') return send(200, [
+      { name: 'AlHu', display_name: 'Lexington AlHu', debater1_first: 'Simal', debater1_last: 'Ali', debater2_first: 'Christina', debater2_last: 'Hu' },
+      { name: 'All', display_name: 'Lexington All', debater1_first: 'All', debater1_last: 'Teams' },
+    ]);
+    if (req.url === '/v1/caselists/hspf26/schools/LexingtonCath/teams') return send(200, [
+      { name: 'AnHa', display_name: 'Lexington Catholic AnHa', debater1_first: 'Ava', debater1_last: 'Ang', debater2_first: 'Hal', debater2_last: 'Hart' },
+    ]);
     if (req.url === '/v1/caselists/hspf26/schools/StMarks/teams') return send(200, [{ name: 'StMarksAB', display_name: "St. Mark's AB" }]);
     if (req.url.startsWith('/v1/search?')) return send(200, [
       { type: 'team', school: 'Lexington', team: 'AlHu', team_display_name: 'Lexington AlHu', school_display_name: 'Lexington' },
@@ -279,7 +286,7 @@ test('caselist: not logged in → not_logged_in for lists and upload', async () 
 test('caselist: caselist → school → team lists (archived hidden)', async () => {
   await loginOk();
   assert.deepEqual((await waitJob((await call('/caselist/caselists', {})).body.job)).result, [{ name: 'hspf26', label: 'HS PF 2026', event: 'pf' }]);
-  assert.deepEqual((await waitJob((await call('/caselist/schools', { caselist: 'hspf26' })).body.job)).result, [{ name: 'StMarks', label: "St. Mark's" }]);
+  assert.deepEqual((await waitJob((await call('/caselist/schools', { caselist: 'hspf26' })).body.job)).result.map((x) => x.name), ['StMarks', 'Lexington', 'LexingtonCath']);
   assert.deepEqual((await waitJob((await call('/caselist/teams', { caselist: 'hspf26', school: 'StMarks' })).body.job)).result, [{ name: 'StMarksAB', label: "St. Mark's AB" }]);
 });
 
@@ -369,6 +376,14 @@ test('scouting: if opening fails the file is still saved and the result says so'
   assert.equal(r.state, 'done');
   assert.equal(r.result.opened, false);
   assert.equal(await readFile(r.result.path, 'utf8'), 'LEXDOC');
+});
+
+test('scout match: Tabroom "Lexington AH" → the team whose debaters are A… & H…, the closer school wins a tie', async () => {
+  const r = await waitJob((await call('/caselist/scout', { caselist: 'hspf26', opponent: 'Lexington AH' })).body.job);
+  assert.equal(r.state, 'done');
+  assert.deepEqual(r.result.match, { school: 'Lexington', team: 'AlHu', label: 'Lexington AlHu', debaters: ['Ali', 'Hu'], names: ['Simal Ali', 'Christina Hu'], schoolLabel: 'Lexington' });
+  const none = await waitJob((await call('/caselist/scout', { caselist: 'hspf26', opponent: 'Nowhere ZZ' })).body.job);
+  assert.deepEqual(none.result, { match: null, candidates: [] });
 });
 
 test('scouting: a path not in the team round list is refused without downloading', async () => {
