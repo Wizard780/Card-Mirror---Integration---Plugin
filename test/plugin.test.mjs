@@ -35,10 +35,10 @@ function harness({ responses = [], settings = {}, storage = {}, room = 'abc12', 
   return { api, calls, toasts, prompts, store };
 }
 
-test('registers seven commands and one setting under the plugin id', () => {
+test('registers nine commands and one setting under the plugin id', () => {
   assert.equal(def.id, 'debate-uploader');
   assert.equal(def.apiVersion, 1);
-  assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdPick', 'debate-uploader.setFolder',
+  assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.caselistTeam', 'debate-uploader.caselistUpload', 'debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdPick', 'debate-uploader.setFolder',
  'debate-uploader.tabroomLogin', 'debate-uploader.tabroomLogout', 'debate-uploader.tabroomRounds']);
   assert.deepEqual(def.settings.map((s) => [s.key, s.type, s.default]), [['sendDocFolder', 'text', '']]);
 });
@@ -365,4 +365,142 @@ test('tabroom logout calls the helper and confirms', async () => {
   await cmd('tabroomLogout').run(h.api);
   assert.deepEqual(h.calls.map((c) => c.route), ['/tabroom/logout']);
   assert.equal(h.toasts.at(-1), 'Logged out of Tabroom.');
+});
+
+// Caselist harness: each route's job answers from `results[route]`
+// (a value, an Error, or a function of the request body).
+function caselistHarness({ results = {}, choose = [], form = () => null, storage = {}, settings = {}, file } = {}) {
+  const h = harness({ storage, settings, file });
+  const jobs = new Map();
+  let n = 0;
+  h.api.flowPost = async (app, route, body) => {
+    h.calls.push({ app, route, body });
+    if (route === '/job') {
+      const r = jobs.get(body.id);
+      return ok(r instanceof Error ? { state: 'error', message: r.message } : { state: 'done', result: r });
+    }
+    const id = `J${n++}`;
+    const r = results[route];
+    jobs.set(id, typeof r === 'function' ? r(body) : r);
+    return ok({ ok: true, job: id });
+  };
+  h.chooseTitles = [];
+  h.forms = [];
+  const picks = [...choose];
+  window.__debateUploaderUI.choose = async (title, labels) => { h.chooseTitles.push([title, labels]); return picks.shift() ?? null; };
+  window.__debateUploaderUI.form = async (spec) => { h.forms.push(spec); return form(spec); };
+  return h;
+}
+
+const LISTS = {
+  '/caselist/caselists': [{ name: 'hspf26', label: 'HS PF 2026', event: 'pf' }, { name: 'ndt26', label: 'NDT 2026', event: 'cx' }],
+  '/caselist/schools': [{ name: 'StMarks', label: "St. Mark's" }],
+  '/caselist/teams': [{ name: 'StMarksAB', label: "St. Mark's AB" }],
+};
+const TARGET = { caselist: 'hspf26', caselistLabel: 'HS PF 2026', event: 'pf', school: 'StMarks', schoolLabel: "St. Mark's", team: 'StMarksAB', teamLabel: "St. Mark's AB" };
+const TAB = { current: true, rounds: [{ id: 9, tournament: 'Glenbrooks', round: '3', side: 'Neg', opponent: 'Lexington AB', judge: 'Smith', start_time: null }] };
+const uploadCall = (h) => h.calls.find((c) => c.route === '/caselist/upload');
+
+test('caselist first run: choose caselist → school → team, then the form; team is remembered', async () => {
+  const h = caselistHarness({
+    results: { ...LISTS, '/tabroom/rounds': TAB, '/caselist/upload': { name: '1NC.docx' } },
+    choose: [0, 0, 0],
+    form: (spec) => ({ ...spec.choices[0].fields, fileMode: 'pick' }),
+  });
+  await cmd('caselistUpload').run(h.api);
+  assert.deepEqual(h.chooseTitles.map(([t, l]) => [t, l]), [
+    ['Pick a caselist', ['HS PF 2026', 'NDT 2026']],
+    ['HS PF 2026: pick your school', ["St. Mark's"]],
+    ["St. Mark's: pick your team", ["St. Mark's AB"]],
+  ]);
+  assert.deepEqual(h.store.get('caselistTarget'), TARGET);
+  assert.deepEqual(uploadCall(h).body, {
+    caselist: 'hspf26', school: 'StMarks', team: 'StMarksAB',
+    round: { tournament: 'Glenbrooks', side: 'N', round: '3', opponent: 'Lexington AB', judge: 'Smith', report: '' },
+    file: { name: 'a.docx', base64: 'QUJD' },
+  });
+  assert.equal(h.toasts.at(-1), `Uploaded "1NC.docx" to HS PF 2026 · St. Mark's · St. Mark's AB`);
+});
+
+test('caselist form: Tabroom rounds become fill choices (PF shows Pro/Con) plus General disclosure; fields start empty', async () => {
+  const h = caselistHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': TAB } });
+  await cmd('caselistUpload').run(h.api);
+  const spec = h.forms[0];
+  assert.equal(spec.title, `Upload to HS PF 2026 · St. Mark's · St. Mark's AB`);
+  assert.deepEqual(spec.sideLabels, { A: 'Pro', N: 'Con' });
+  assert.deepEqual(spec.fields, { tournament: '', side: '', round: '', opponent: '', judge: '', report: '' });
+  assert.deepEqual(spec.choices.map((c) => c.label), ['Glenbrooks · Round 3 · Con vs Lexington AB', 'General disclosure (all tournaments)']);
+  assert.deepEqual(spec.choices[0].fields, { tournament: 'Glenbrooks', side: 'N', round: '3', opponent: 'Lexington AB', judge: 'Smith', report: '' });
+  assert.deepEqual(spec.choices[1].fields, { tournament: 'All Tournaments', side: '', round: 'All', opponent: '', judge: '', report: '' });
+  assert.equal(spec.fileMode, 'newest');
+  assert.equal(uploadCall(h), undefined, 'form cancelled → nothing sent');
+});
+
+test('caselist form: manual entry with a policy caselist (Aff/Neg) and the newest send doc', async () => {
+  const h = caselistHarness({
+    storage: { caselistTarget: { ...TARGET, event: 'cx', caselistLabel: 'NDT 2026' }, sendDocFolder: '~/Send' },
+    results: { '/tabroom/rounds': { current: false, rounds: [] }, '/caselist/upload': { name: 'Send.docx' } },
+    form: () => ({ tournament: ' Harvard ', side: 'A', round: 'Octas', opponent: 'X', judge: '', report: '', fileMode: 'newest' }),
+  });
+  await cmd('caselistUpload').run(h.api);
+  assert.deepEqual(h.forms[0].sideLabels, { A: 'Aff', N: 'Neg' });
+  assert.deepEqual(h.forms[0].choices.map((c) => c.label), ['General disclosure (all tournaments)']);
+  assert.deepEqual(uploadCall(h).body, {
+    caselist: 'hspf26', school: 'StMarks', team: 'StMarksAB',
+    round: { tournament: 'Harvard', side: 'A', round: 'Octas', opponent: 'X', judge: '', report: '' }, folder: '~/Send',
+  });
+});
+
+test('caselist form: Tabroom unreachable still allows manual entry; not logged in stops early', async () => {
+  const down = caselistHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': new Error('unreachable') } });
+  await cmd('caselistUpload').run(down.api);
+  assert.equal(down.forms.length, 1);
+  assert.deepEqual(down.forms[0].choices.map((c) => c.label), ['General disclosure (all tournaments)']);
+
+  const out = caselistHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': new Error('not_logged_in') } });
+  await cmd('caselistUpload').run(out.api);
+  assert.equal(out.forms.length, 0);
+  assert.equal(out.toasts.at(-1), 'Not logged in to Tabroom. Run "Log in to Tabroom…".');
+});
+
+test('caselist form: missing tournament/side/round or send doc folder is refused before upload', async () => {
+  for (const [values, storage, text] of [
+    [{ tournament: 'T', side: '', round: '1', fileMode: 'pick' }, {}, 'Tournament, side and round are required.'],
+    [{ tournament: '', side: 'N', round: '1', fileMode: 'pick' }, {}, 'Tournament, side and round are required.'],
+    [{ tournament: 'T', side: 'N', round: '1', fileMode: 'newest' }, {}, 'Set your send doc folder first: run "Set send doc folder for SpeechDrop…".'],
+  ]) {
+    const h = caselistHarness({ storage: { caselistTarget: TARGET, ...storage }, results: { '/tabroom/rounds': TAB }, form: () => values });
+    await cmd('caselistUpload').run(h.api);
+    assert.equal(uploadCall(h), undefined);
+    assert.equal(h.toasts.at(-1), text);
+  }
+});
+
+test('caselist upload errors: ambiguous result says check the page; rejection shows the reason; expired login', async () => {
+  for (const [err, text] of [
+    ['upload_unknown', "The caselist didn't confirm the upload. Check your team's caselist page before uploading again."],
+    ['caselist_rejected:Round already exists', 'The caselist rejected the upload: Round already exists'],
+    ['login_expired', 'Tabroom login expired. Run "Log in to Tabroom…".'],
+  ]) {
+    const h = caselistHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': TAB, '/caselist/upload': new Error(err) },
+      form: (spec) => ({ ...spec.choices[0].fields, fileMode: 'pick' }) });
+    await cmd('caselistUpload').run(h.api);
+    assert.equal(h.toasts.at(-1), text);
+  }
+});
+
+test('caselist team chooser: cancel keeps the old team; empty school list explains; Change team overwrites', async () => {
+  const cancel = caselistHarness({ storage: { caselistTarget: TARGET }, results: LISTS, choose: [null] });
+  await cmd('caselistTeam').run(cancel.api);
+  assert.deepEqual(cancel.store.get('caselistTarget'), TARGET);
+
+  const empty = caselistHarness({ results: { ...LISTS, '/caselist/schools': [] }, choose: [0] });
+  await cmd('caselistUpload').run(empty.api);
+  assert.equal(empty.toasts.at(-1), 'No schools on HS PF 2026 yet. Create yours on opencaselist.com first.');
+  assert.equal(empty.forms.length, 0);
+
+  const change = caselistHarness({ storage: { caselistTarget: TARGET }, results: LISTS, choose: [1, 0, 0] });
+  await cmd('caselistTeam').run(change.api);
+  assert.equal(change.store.get('caselistTarget').caselist, 'ndt26');
+  assert.equal(change.toasts.at(-1), `Caselist team set to NDT 2026 · St. Mark's · St. Mark's AB`);
 });

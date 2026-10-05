@@ -34,6 +34,25 @@
         default: return `Tabroom error: ${code}`;
       }
     }
+    if (ctx.caselist) {
+      if (code.startsWith('caselist_rejected:')) return `The caselist rejected the upload: ${code.slice('caselist_rejected:'.length)}`;
+      switch (code) {
+        case 'not_logged_in': return 'Not logged in to Tabroom. Run "Log in to Tabroom…".';
+        case 'login_expired': return 'Tabroom login expired. Run "Log in to Tabroom…".';
+        case 'keychain_failed': return "Couldn't use Keychain. Is it locked?";
+        case 'unreachable': return "Couldn't reach openCaselist. Try again.";
+        case 'bad_round': return 'Tournament, side and round are required.';
+        case 'too_large': return 'File is over the 10 MB upload limit.';
+        case 'start_unknown':
+        case 'upload_unknown':
+        case 'unknown_job':
+        case 'still_running':
+          return ctx.uploading
+            ? "The caselist didn't confirm the upload. Check your team's caselist page before uploading again."
+            : "openCaselist didn't answer in time. Try again.";
+        default: break; // shared messages below (helper down, no_folder, read_failed, …)
+      }
+    }
     if (code.startsWith('no_docx:')) return `No .docx in ${code.slice('no_docx:'.length)}. Set your send doc folder again.`;
     switch (code) {
       case 'app-not-running':
@@ -213,6 +232,145 @@
           render();
         },
       };
+    },
+
+    // Filterable single-select. Resolves with the chosen index, or null.
+    choose(title, labels) {
+      return new Promise((resolve) => {
+        const prev = document.activeElement;
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:flex-start;justify-content:center;padding-top:12vh;background:rgba(0,0,0,.25)';
+        const box = document.createElement('div');
+        box.style.cssText = 'background:#fff;color:#000;padding:12px 0;border-radius:8px;font:14px system-ui;box-shadow:0 8px 30px rgba(0,0,0,.3);width:420px';
+        const head = document.createElement('div');
+        head.style.cssText = 'padding:0 16px 8px;font-weight:600';
+        head.textContent = title;
+        const input = document.createElement('input');
+        input.placeholder = 'Type to filter · ↑↓ + Enter to choose · Esc to cancel';
+        input.style.cssText = 'margin:0 16px 8px;width:calc(100% - 32px);box-sizing:border-box;font:inherit;padding:4px 6px';
+        const list = document.createElement('div');
+        list.style.cssText = 'max-height:50vh;overflow:auto';
+        let shown = [];
+        let sel = 0;
+        const done = (value) => { wrap.remove(); if (prev && prev.focus) prev.focus(); resolve(value); };
+        const render = () => {
+          const q = input.value.trim().toLowerCase();
+          shown = labels.map((l, i) => i).filter((i) => labels[i].toLowerCase().includes(q));
+          sel = Math.min(sel, Math.max(shown.length - 1, 0));
+          list.textContent = '';
+          shown.forEach((idx, pos) => {
+            const row = document.createElement('div');
+            row.textContent = labels[idx];
+            row.style.cssText = `padding:6px 16px;cursor:pointer;${pos === sel ? 'background:#dbe7ff' : ''}`;
+            row.addEventListener('mousedown', (e) => { e.preventDefault(); done(idx); });
+            list.append(row);
+            if (pos === sel) row.scrollIntoView({ block: 'nearest' });
+          });
+        };
+        input.addEventListener('input', () => { sel = 0; render(); });
+        input.addEventListener('keydown', (e) => {
+          e.stopPropagation();
+          if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(sel + 1, shown.length - 1); render(); }
+          else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(sel - 1, 0); render(); }
+          else if (e.key === 'Enter') { e.preventDefault(); if (shown.length) done(shown[sel]); }
+          else if (e.key === 'Escape') { e.preventDefault(); done(null); }
+        });
+        wrap.addEventListener('mousedown', (e) => { if (e.target === wrap) done(null); });
+        box.append(head, input, list);
+        wrap.append(box);
+        document.body.append(wrap);
+        render();
+        input.focus();
+      });
+    },
+
+    // Upload form. Resolves with the field values, or null on Cancel/Esc.
+    form(spec) {
+      return new Promise((resolve) => {
+        const prev = document.activeElement;
+        const wrap = document.createElement('div');
+        wrap.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:flex-start;justify-content:center;padding-top:8vh;background:rgba(0,0,0,.25)';
+        const box = document.createElement('div');
+        box.style.cssText = 'background:#fff;color:#000;padding:14px 16px;border-radius:8px;font:14px system-ui;box-shadow:0 8px 30px rgba(0,0,0,.3);width:460px;display:grid;grid-template-columns:110px 1fr;gap:8px 10px;align-items:center';
+        const done = (value) => { wrap.remove(); if (prev && prev.focus) prev.focus(); resolve(value); };
+        const add = (labelText, control) => {
+          const l = document.createElement('label');
+          l.textContent = labelText;
+          box.append(l, control);
+          return control;
+        };
+        const head = document.createElement('div');
+        head.textContent = spec.title;
+        head.style.cssText = 'grid-column:1/3;font-weight:600';
+        box.append(head);
+        const fill = document.createElement('select');
+        fill.append(new Option('Enter manually', ''));
+        spec.choices.forEach((c, i) => fill.append(new Option(c.label, String(i))));
+        add('Fill from Tabroom', fill);
+        const text = (key) => {
+          const inp = document.createElement('input');
+          inp.value = spec.fields[key] || '';
+          inp.style.cssText = 'font:inherit;padding:4px 6px';
+          return inp;
+        };
+        const tournament = add('Tournament', text('tournament'));
+        const side = document.createElement('select');
+        side.append(new Option('Choose…', ''), new Option(spec.sideLabels.A, 'A'), new Option(spec.sideLabels.N, 'N'));
+        side.value = spec.fields.side || '';
+        add('Side', side);
+        const round = add('Round', text('round'));
+        const opponent = add('Opponent', text('opponent'));
+        const judge = add('Judge', text('judge'));
+        const report = document.createElement('textarea');
+        report.rows = 2;
+        report.value = spec.fields.report || '';
+        report.style.cssText = 'font:inherit;padding:4px 6px';
+        add('Report (optional)', report);
+        const fileMode = document.createElement('select');
+        fileMode.append(new Option('Newest send doc', 'newest'), new Option('Pick a file…', 'pick'));
+        fileMode.value = spec.fileMode;
+        add('File', fileMode);
+        fill.addEventListener('change', () => {
+          const c = spec.choices[Number(fill.value)];
+          if (!c) return;
+          tournament.value = c.fields.tournament;
+          side.value = c.fields.side;
+          round.value = c.fields.round;
+          opponent.value = c.fields.opponent;
+          judge.value = c.fields.judge;
+        });
+        const err = document.createElement('div');
+        err.style.cssText = 'grid-column:1/3;color:#c00;min-height:1em';
+        const buttons = document.createElement('div');
+        buttons.style.cssText = 'grid-column:1/3;display:flex;justify-content:flex-end;gap:8px';
+        const cancel = document.createElement('button');
+        cancel.textContent = 'Cancel';
+        const upload = document.createElement('button');
+        upload.textContent = 'Upload';
+        buttons.append(cancel, upload);
+        box.append(err, buttons);
+        const submit = () => {
+          if (!tournament.value.trim() || !side.value || !round.value.trim()) {
+            err.textContent = 'Tournament, side and round are required.';
+            return;
+          }
+          done({
+            tournament: tournament.value, side: side.value, round: round.value, opponent: opponent.value,
+            judge: judge.value, report: report.value, fileMode: fileMode.value,
+          });
+        };
+        cancel.addEventListener('click', () => done(null));
+        upload.addEventListener('click', submit);
+        box.addEventListener('keydown', (e) => {
+          e.stopPropagation(); // keep CardMirror hotkeys out of the form
+          if (e.key === 'Escape') { e.preventDefault(); done(null); }
+          if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') { e.preventDefault(); submit(); }
+        });
+        wrap.addEventListener('mousedown', (e) => { if (e.target === wrap) done(null); });
+        wrap.append(box);
+        document.body.append(wrap);
+        fill.focus();
+      });
     },
 
     pickFile() {
@@ -402,6 +560,121 @@
     }
   }
 
+  const sideNorm = (s) => {
+    const v = String(s ?? '').trim().toLowerCase();
+    if (['a', 'aff', 'pro'].includes(v)) return 'A';
+    if (['n', 'neg', 'con'].includes(v)) return 'N';
+    return '';
+  };
+  const roundName = (r) => (/^\d+$/.test(String(r ?? '')) ? `Round ${r}` : String(r ?? ''));
+
+  function roundChoices(rounds, sideLabels) {
+    const choices = rounds.map((r) => {
+      const side = sideNorm(r.side);
+      return {
+        label: [r.tournament, roundName(r.round), side ? `${sideLabels[side]} vs ${r.opponent || 'TBA'}` : ''].filter(Boolean).join(' · '),
+        fields: { tournament: r.tournament || '', side, round: String(r.round ?? ''), opponent: r.opponent || '', judge: r.judge || '', report: '' },
+      };
+    });
+    choices.push({
+      label: 'General disclosure (all tournaments)',
+      fields: { tournament: 'All Tournaments', side: '', round: 'All', opponent: '', judge: '', report: '' },
+    });
+    return choices;
+  }
+
+  async function chooseTarget(api, u) {
+    const caselists = await runJob(api, '/caselist/caselists', {}, u.sleep);
+    if (!caselists.length) { api.showToast('No caselists are open right now.'); return null; }
+    const ci = await u.choose('Pick a caselist', caselists.map((c) => c.label));
+    if (ci == null) return null;
+    const c = caselists[ci];
+    const schools = await runJob(api, '/caselist/schools', { caselist: c.name }, u.sleep);
+    if (!schools.length) { api.showToast(`No schools on ${c.label} yet. Create yours on opencaselist.com first.`); return null; }
+    const si = await u.choose(`${c.label}: pick your school`, schools.map((s) => s.label));
+    if (si == null) return null;
+    const s = schools[si];
+    const teams = await runJob(api, '/caselist/teams', { caselist: c.name, school: s.name }, u.sleep);
+    if (!teams.length) { api.showToast(`No teams for ${s.label} on ${c.label} yet. Create yours on opencaselist.com first.`); return null; }
+    const ti = await u.choose(`${s.label}: pick your team`, teams.map((t) => t.label));
+    if (ti == null) return null;
+    const t = teams[ti];
+    const target = { caselist: c.name, caselistLabel: c.label, event: c.event || '', school: s.name, schoolLabel: s.label, team: t.name, teamLabel: t.label };
+    api.storage.set('caselistTarget', target);
+    api.showToast(`Caselist team set to ${c.label} · ${s.label} · ${t.label}`);
+    return target;
+  }
+
+  async function caselistTeam(api) {
+    try {
+      await chooseTarget(api, ui());
+    } catch (err) {
+      api.showToast(message(err.message, { caselist: true }));
+    }
+  }
+
+  async function caselistUpload(api) {
+    if (busy) return api.showToast('An upload is already in progress.');
+    busy = true;
+    const ctx = { caselist: true, uploading: false };
+    try {
+      await caselistFlow(api, ctx);
+    } catch (err) {
+      api.showToast(message(err.message, ctx));
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function caselistFlow(api, ctx) {
+    const u = ui();
+    const target = api.storage.get('caselistTarget') || (await chooseTarget(api, u));
+    if (!target) return;
+    let rounds = [];
+    try {
+      rounds = (await runJob(api, '/tabroom/rounds', {}, u.sleep)).rounds;
+    } catch (err) {
+      // Login problems stop here (the upload would fail too); anything else falls back to manual entry.
+      if (['not_logged_in', 'login_expired', 'keychain_failed'].includes(err.message)) throw err;
+    }
+    const pf = /pf|public forum/i.test(`${target.event} ${target.caselistLabel}`);
+    const sideLabels = pf ? { A: 'Pro', N: 'Con' } : { A: 'Aff', N: 'Neg' };
+    const values = await u.form({
+      title: `Upload to ${target.caselistLabel} · ${target.schoolLabel} · ${target.teamLabel}`,
+      choices: roundChoices(rounds, sideLabels),
+      sideLabels,
+      fields: { tournament: '', side: '', round: '', opponent: '', judge: '', report: '' },
+      fileMode: 'newest',
+    });
+    if (!values) return;
+    const round = {
+      tournament: String(values.tournament || '').trim(),
+      side: sideNorm(values.side),
+      round: String(values.round || '').trim(),
+      opponent: String(values.opponent || '').trim(),
+      judge: String(values.judge || '').trim(),
+      report: String(values.report || '').trim(),
+    };
+    if (!round.tournament || !round.side || !round.round) throw new Error('bad_round');
+    const body = { caselist: target.caselist, school: target.school, team: target.team, round };
+    if (values.fileMode === 'pick') {
+      const picked = await u.pickFile();
+      if (!picked) return;
+      if (picked.size > MAX_BYTES) throw new Error('too_large');
+      let base64;
+      try { base64 = await picked.read(); } catch { throw new Error('read_failed'); }
+      body.file = { name: picked.name, base64 };
+    } else {
+      const folder = sendDocFolder(api);
+      if (!folder) throw new Error('no_folder');
+      body.folder = folder;
+    }
+    ctx.uploading = true;
+    api.showToast('Uploading to the caselist…');
+    const r = await runJob(api, '/caselist/upload', body, u.sleep);
+    api.showToast(`Uploaded "${r.name}" to ${target.caselistLabel} · ${target.schoolLabel} · ${target.teamLabel}`);
+  }
+
   window.__registerCardMirrorPlugin && window.__registerCardMirrorPlugin({
     id: ID,
     name: 'Debate Uploader',
@@ -464,6 +737,20 @@
         keywords: ['tabroom', 'rounds', 'pairings', 'opponent', 'judge'],
         defaultKey: null,
         run: (api) => tabroomRounds(api),
+      },
+      {
+        id: `${ID}.caselistUpload`,
+        label: 'Upload to Caselist…',
+        keywords: ['caselist', 'opencaselist', 'disclose', 'disclosure', 'upload', 'open source'],
+        defaultKey: null,
+        run: (api) => caselistUpload(api),
+      },
+      {
+        id: `${ID}.caselistTeam`,
+        label: 'Change caselist team…',
+        keywords: ['caselist', 'opencaselist', 'team', 'school'],
+        defaultKey: null,
+        run: (api) => caselistTeam(api),
       },
     ],
   });
