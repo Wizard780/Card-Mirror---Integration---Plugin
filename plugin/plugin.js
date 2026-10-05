@@ -115,121 +115,214 @@
     throw new Error('still_running');
   }
 
+  // ---------------------------------------------------------------- UI layer
+  // Every color, font and shadow comes from CardMirror's own --pmd-* tokens,
+  // so the overlays follow its light/dark theme and look built-in.
+  const CSS = `
+.du-scrim{position:fixed;inset:0;z-index:99999;display:flex;align-items:flex-start;justify-content:center;
+  padding:11vh 16px 16px;background:var(--pmd-c-overlay,rgba(0,0,0,.4));font-family:var(--pmd-ui-font,system-ui,sans-serif)}
+.du-dialog{box-sizing:border-box;width:min(var(--du-w,520px),100%);max-height:80vh;display:flex;flex-direction:column;
+  background:var(--pmd-c-bg);color:var(--pmd-c-text);border:1px solid var(--pmd-c-border-soft);border-radius:10px;
+  box-shadow:0 18px 50px var(--pmd-c-shadow-deep,rgba(0,0,0,.28));overflow:hidden;outline:none;
+  animation:du-in .18s cubic-bezier(.25,1,.5,1)}
+@keyframes du-in{from{opacity:0;transform:translateY(6px)}}
+@media (prefers-reduced-motion:reduce){.du-dialog{animation:none}}
+.du-dialog *{box-sizing:border-box}
+.du-head{padding:16px 20px 10px}
+.du-title{margin:0;font-size:1.05rem;font-weight:600;line-height:1.3}
+.du-sub{margin:3px 0 0;font-size:.82rem;line-height:1.35;color:var(--pmd-c-text-muted);overflow-wrap:anywhere}
+.du-body{padding:6px 20px 18px;overflow:auto;min-height:0}
+.du-foot{display:flex;align-items:center;gap:8px;padding:11px 20px;border-top:1px solid var(--pmd-c-divider);background:var(--pmd-c-bg-soft)}
+.du-note{flex:1;min-width:0;display:flex;align-items:center;gap:7px;font-size:.8rem;color:var(--pmd-c-text-muted);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.du-note.du-warn{color:var(--pmd-c-warning)}
+.du-dot{flex:none;width:7px;height:7px;border-radius:50%;background:var(--pmd-c-success)}
+.du-field{display:flex;flex-direction:column;gap:5px;min-width:0}
+.du-label{font-size:.8rem;font-weight:500;color:var(--pmd-c-text-secondary)}
+.du-input{width:100%;min-width:0;font:inherit;font-size:.9rem;line-height:1.35;padding:7px 10px;border:1px solid var(--pmd-c-border);
+  border-radius:6px;background:var(--pmd-c-bg);color:var(--pmd-c-text)}
+.du-input::placeholder{color:var(--pmd-c-text-faint)}
+.du-input:focus{outline:none;border-color:var(--pmd-c-focus);box-shadow:0 0 0 3px var(--pmd-c-accent-soft)}
+textarea.du-input{resize:vertical;min-height:3.4em}
+.du-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px 12px}
+.du-span{grid-column:1/-1}
+.du-fill{margin:4px 0 18px;padding:12px;border-radius:8px;background:var(--pmd-c-bg-soft);border:1px solid var(--pmd-c-divider)}
+.du-seg{display:flex;min-width:0;border:1px solid var(--pmd-c-border);border-radius:6px;overflow:hidden}
+.du-seg button{flex:1;min-width:0;font:inherit;font-size:.9rem;line-height:1.35;padding:7px 10px;border:0;
+  background:var(--pmd-c-bg);color:var(--pmd-c-text);cursor:pointer}
+.du-seg button+button{border-left:1px solid var(--pmd-c-border)}
+.du-seg button:hover{background:var(--pmd-c-hover)}
+.du-seg button[aria-pressed="true"]{background:var(--pmd-c-accent);color:var(--pmd-c-text-on-accent);font-weight:600}
+.du-seg button:focus-visible{outline:2px solid var(--pmd-c-focus);outline-offset:-2px}
+.du-choices{display:flex;flex-direction:column;gap:6px}
+.du-choice{display:flex;align-items:center;gap:10px;width:100%;min-width:0;text-align:left;font:inherit;font-size:.9rem;
+  padding:8px 10px;border:1px solid var(--pmd-c-border);border-radius:6px;background:var(--pmd-c-bg);color:var(--pmd-c-text);cursor:pointer}
+.du-choice:hover{background:var(--pmd-c-hover)}
+.du-choice[aria-checked="true"]{border-color:var(--pmd-c-accent);background:var(--pmd-c-accent-soft)}
+.du-choice:focus-visible{outline:2px solid var(--pmd-c-focus);outline-offset:1px}
+.du-choice[aria-disabled="true"]{opacity:.55;cursor:default}
+.du-radio{flex:none;width:14px;height:14px;border-radius:50%;border:1.5px solid var(--pmd-c-border)}
+.du-choice[aria-checked="true"] .du-radio{border:4px solid var(--pmd-c-accent)}
+.du-choice-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.du-choice-main{font-weight:500}
+.du-choice-detail{color:var(--pmd-c-text-muted);font-size:.82rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.du-choice-detail:empty{display:none}
+.du-btn{flex:none;font:inherit;font-size:.88rem;line-height:1.3;padding:7px 14px;border-radius:6px;border:1px solid var(--pmd-c-border-soft);
+  background:var(--pmd-c-bg);color:var(--pmd-c-text);cursor:pointer}
+.du-btn:hover{background:var(--pmd-c-hover)}
+.du-btn:focus-visible{outline:2px solid var(--pmd-c-accent);outline-offset:2px}
+.du-primary{background:var(--pmd-c-accent);border-color:var(--pmd-c-accent);color:var(--pmd-c-text-on-accent);font-weight:600}
+.du-primary:hover{background:var(--pmd-c-accent-hover)}
+.du-error{margin:12px 0 0;font-size:.82rem;color:var(--pmd-c-error)}
+.du-error:empty{display:none}
+.du-search{display:block;margin:0 20px 10px;width:calc(100% - 40px)}
+.du-list{overflow:auto;min-height:0;max-height:52vh;padding:0 8px 8px}
+.du-row{display:flex;align-items:baseline;gap:12px;padding:8px 12px;border-radius:6px;cursor:pointer}
+.du-row:hover{background:var(--pmd-c-hover)}
+.du-row[aria-selected="true"]{background:var(--pmd-c-accent-soft)}
+.du-row-main{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.92rem}
+.du-row-detail{flex:none;color:var(--pmd-c-text-muted);font-size:.82rem;white-space:nowrap;font-variant-numeric:tabular-nums}
+.du-stacked .du-row{flex-direction:column;align-items:stretch;gap:2px}
+.du-stacked .du-row-detail{white-space:normal}
+.du-new{margin-left:8px;font-size:.72rem;font-weight:600;letter-spacing:.02em;color:var(--pmd-c-success)}
+.du-empty{padding:22px 12px;text-align:center;font-size:.88rem;color:var(--pmd-c-text-muted)}
+`;
+
+  function el(tag, props = {}, kids = []) {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) {
+      if (k === 'class') n.className = v;
+      else if (k === 'data') Object.assign(n.dataset, v);
+      else if (k === 'attrs') for (const [a, val] of Object.entries(v)) n.setAttribute(a, val);
+      else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
+      else n[k] = v;
+    }
+    for (const kid of kids) if (kid) n.append(kid);
+    return n;
+  }
+
+  function ensureStyle() {
+    if (document.getElementById('du-style')) return;
+    (document.head || document.body).append(el('style', { id: 'du-style', textContent: CSS }));
+  }
+
+  // Scrim + dialog shell. Keys stay inside the overlay; Esc and a click on
+  // the scrim dismiss; focus returns to where it was.
+  function openDialog({ title, subtitle, width, stacked }) {
+    ensureStyle();
+    const prev = document.activeElement;
+    const dialog = el('div', { class: `du-dialog${stacked ? ' du-stacked' : ''}`, tabIndex: -1, attrs: { role: 'dialog', 'aria-modal': 'true', 'aria-label': title } });
+    if (width) dialog.style.setProperty('--du-w', width);
+    const head = el('div', { class: 'du-head' }, [
+      el('h2', { class: 'du-title', textContent: title }),
+      subtitle ? el('p', { class: 'du-sub', textContent: subtitle, title: subtitle }) : null,
+    ]);
+    const body = el('div', { class: 'du-body' });
+    const foot = el('div', { class: 'du-foot' });
+    dialog.append(head, body, foot);
+    const scrim = el('div', { class: 'du-scrim' }, [dialog]);
+    let onDismiss = () => {};
+    scrim.addEventListener('mousedown', (e) => { if (e.target === scrim) onDismiss(); });
+    dialog.addEventListener('keydown', (e) => {
+      e.stopPropagation(); // CardMirror hotkeys never see keys typed here
+      if (e.key === 'Escape') { e.preventDefault(); onDismiss(); }
+    });
+    document.body.append(scrim);
+    return {
+      dialog, head, body, foot,
+      onDismiss: (fn) => { onDismiss = fn; },
+      close: () => { scrim.remove(); if (prev && prev.focus) prev.focus(); },
+    };
+  }
+
+  const button = (text, primary, onclick) =>
+    el('button', { type: 'button', class: `du-btn${primary ? ' du-primary' : ''}`, textContent: text, onclick });
+
+  function note(text) {
+    const n = el('div', { class: 'du-note' });
+    const set = (t) => {
+      n.textContent = '';
+      n.className = `du-note${/^Couldn't/.test(t) ? ' du-warn' : ''}`;
+      if (/^Live/.test(t)) n.append(el('span', { class: 'du-dot', attrs: { 'aria-hidden': 'true' } }));
+      n.append(el('span', { textContent: t }));
+    };
+    set(text);
+    return { node: n, set };
+  }
+
   const domUI = {
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
 
     prompt(labelText, initial, opts = {}) {
       return new Promise((resolve) => {
-        const wrap = document.createElement('div');
-        wrap.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:flex-start;justify-content:center;padding-top:15vh;background:rgba(0,0,0,.25)';
-        const box = document.createElement('div');
-        box.style.cssText = 'background:#fff;color:#000;padding:14px 16px;border-radius:8px;font:14px system-ui;box-shadow:0 8px 30px rgba(0,0,0,.3)';
-        const label = document.createElement('div');
-        label.textContent = `${labelText} (Enter to confirm, Esc to cancel)`;
-        label.style.marginBottom = '6px';
-        const input = document.createElement('input');
-        if (opts.secret) input.type = 'password';
-        input.value = initial || '';
-        input.style.cssText = 'width:320px;font:inherit;padding:4px 6px';
-        box.append(label, input);
-        wrap.append(box);
-        document.body.append(wrap);
-        const done = (value) => { wrap.remove(); resolve(value); };
-        input.addEventListener('keydown', (e) => {
-          e.stopPropagation(); // keep CardMirror hotkeys out of the box
-          if (e.key === 'Enter') done(input.value);
-          if (e.key === 'Escape') done(null);
-        });
-        wrap.addEventListener('mousedown', (e) => { if (e.target === wrap) done(null); });
+        const d = openDialog({ title: labelText, width: '420px' });
+        const input = el('input', { class: 'du-input', value: initial || '', type: opts.secret ? 'password' : 'text', attrs: { 'aria-label': labelText } });
+        const done = (v) => { d.close(); resolve(v); };
+        d.onDismiss(() => done(null));
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); done(input.value); } });
+        d.body.append(input);
+        d.foot.append(note('Enter to confirm · Esc to cancel').node, button('Cancel', false, () => done(null)), button('OK', true, () => done(input.value)));
         input.focus();
-        input.select();
+        if (input.select) input.select();
       });
     },
 
-    // Returns { closed: Promise, update(items, status) }. Items carry a
-    // stable `key`, so the selection follows its file across refreshes.
+    // Returns { closed, update(items, status), close() }. Items carry a stable
+    // `key`, so the selection follows its file across refreshes.
     showList(title, initialItems, onPick, opts = {}) {
+      const HINT = '↑↓ + Enter or click to open · Esc to close';
+      const d = openDialog({ title, stacked: opts.stacked, width: '560px' });
       let resolveClosed;
       const closed = new Promise((r) => { resolveClosed = r; });
-      const prev = document.activeElement;
-      const HINT = '↑↓ + Enter or click to open · Esc to close · refreshes every 5 s';
-      const wrap = document.createElement('div');
-      wrap.tabIndex = -1;
-      wrap.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:flex-start;justify-content:center;padding-top:12vh;background:rgba(0,0,0,.25);outline:none';
-      const box = document.createElement('div');
-      box.style.cssText = 'background:#fff;color:#000;padding:12px 0;border-radius:8px;font:14px system-ui;box-shadow:0 8px 30px rgba(0,0,0,.3);width:420px';
-      const head = document.createElement('div');
-      head.style.cssText = 'padding:0 16px 8px;font-weight:600';
-      head.textContent = title;
-      const hint = document.createElement('div');
-      hint.style.cssText = 'padding:0 16px 8px;color:#666;font-size:12px';
-      hint.textContent = opts.hint || HINT;
-      const list = document.createElement('div');
-      list.style.cssText = 'max-height:50vh;overflow:auto';
+      const list = el('div', { class: 'du-list', attrs: { role: 'listbox', 'aria-label': title } });
+      d.body.remove();
+      d.dialog.insertBefore ? d.dialog.insertBefore(list, d.foot) : d.dialog.append(list);
+      const status = note(opts.hint || HINT);
+      d.foot.append(status.node);
       let items = [];
       let rows = [];
       let selKey = null;
       const selIndex = () => Math.max(0, items.findIndex((it) => it.key === selKey));
       const paint = () => rows.forEach((r, i) => {
         const on = items[i].key === selKey;
-        r.style.background = on ? '#dbe7ff' : '';
-        if (on) r.scrollIntoView({ block: 'nearest' });
+        r.setAttribute('aria-selected', on ? 'true' : 'false');
+        if (on && r.scrollIntoView) r.scrollIntoView({ block: 'nearest' });
       });
       const render = () => {
         list.textContent = '';
         rows = [];
         if (!items.length) {
-          const empty = document.createElement('div');
-          empty.style.cssText = 'padding:6px 16px;color:#666';
-          empty.textContent = 'No files yet. Waiting for uploads…';
-          list.append(empty);
+          list.append(el('div', { class: 'du-empty', textContent: 'No files yet. Waiting for uploads…' }));
           return;
         }
         if (!items.some((it) => it.key === selKey)) selKey = items[0].key;
         rows = items.map((it) => {
-          const row = document.createElement('div');
-          row.style.cssText = `padding:6px 16px;cursor:pointer;display:flex;gap:${opts.stacked ? '2px' : '12px'};${opts.stacked ? 'flex-direction:column' : 'justify-content:space-between'}`;
-          const label = document.createElement('span');
-          label.textContent = it.label;
-          if (it.isNew) {
-            const badge = document.createElement('span');
-            badge.textContent = ' new';
-            badge.style.cssText = 'color:#0a7d32;font-weight:600;font-size:12px';
-            label.append(badge);
-          }
-          const detail = document.createElement('span');
-          detail.style.cssText = `color:#666;${opts.stacked ? 'font-size:12px' : 'white-space:nowrap'}`;
-          detail.textContent = it.detail;
-          row.append(label, detail);
+          const main = el('span', { class: 'du-row-main', textContent: it.label, title: it.label });
+          if (it.isNew) main.append(el('span', { class: 'du-new', textContent: 'new' }));
+          const row = el('div', { class: 'du-row', attrs: { role: 'option' } }, [main, el('span', { class: 'du-row-detail', textContent: it.detail })]);
           row.addEventListener('mousedown', (e) => { e.preventDefault(); selKey = it.key; paint(); onPick(it); });
           list.append(row);
           return row;
         });
         paint();
       };
-      const close = () => { wrap.remove(); if (prev && prev.focus) prev.focus(); resolveClosed(); };
-      // Capture phase + focus kept on the overlay: keys never reach the document.
-      wrap.addEventListener('keydown', (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        if (e.key === 'Escape') return close();
+      const close = () => { d.close(); resolveClosed(); };
+      d.onDismiss(close);
+      d.dialog.addEventListener('keydown', (e) => {
         if (!items.length) return;
-        if (e.key === 'ArrowDown') { selKey = items[Math.min(selIndex() + 1, items.length - 1)].key; paint(); }
-        else if (e.key === 'ArrowUp') { selKey = items[Math.max(selIndex() - 1, 0)].key; paint(); }
-        else if (e.key === 'Enter') onPick(items[selIndex()]);
-      }, true);
-      wrap.addEventListener('mousedown', (e) => { if (e.target === wrap) close(); else e.preventDefault(); });
-      box.append(head, hint, list);
-      wrap.append(box);
-      document.body.append(wrap);
-      wrap.focus();
+        if (e.key === 'ArrowDown') { e.preventDefault(); selKey = items[Math.min(selIndex() + 1, items.length - 1)].key; paint(); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); selKey = items[Math.max(selIndex() - 1, 0)].key; paint(); }
+        else if (e.key === 'Enter') { e.preventDefault(); onPick(items[selIndex()]); }
+      });
       items = initialItems;
       render();
+      d.dialog.focus();
       return {
         closed,
-        update(next, status) {
+        close,
+        update(next, statusText) {
           items = next;
-          hint.textContent = status || opts.hint || HINT;
+          status.set(statusText || opts.hint || HINT);
           render();
         },
       };
@@ -238,48 +331,36 @@
     // Filterable single-select. Resolves with the chosen index, or null.
     choose(title, labels) {
       return new Promise((resolve) => {
-        const prev = document.activeElement;
-        const wrap = document.createElement('div');
-        wrap.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:flex-start;justify-content:center;padding-top:12vh;background:rgba(0,0,0,.25)';
-        const box = document.createElement('div');
-        box.style.cssText = 'background:#fff;color:#000;padding:12px 0;border-radius:8px;font:14px system-ui;box-shadow:0 8px 30px rgba(0,0,0,.3);width:420px';
-        const head = document.createElement('div');
-        head.style.cssText = 'padding:0 16px 8px;font-weight:600';
-        head.textContent = title;
-        const input = document.createElement('input');
-        input.placeholder = 'Type to filter · ↑↓ + Enter to choose · Esc to cancel';
-        input.style.cssText = 'margin:0 16px 8px;width:calc(100% - 32px);box-sizing:border-box;font:inherit;padding:4px 6px';
-        const list = document.createElement('div');
-        list.style.cssText = 'max-height:50vh;overflow:auto';
+        const d = openDialog({ title, width: '440px' });
+        const input = el('input', { class: 'du-input du-search', placeholder: 'Type to filter', attrs: { 'aria-label': `Filter: ${title}` } });
+        const list = el('div', { class: 'du-list', attrs: { role: 'listbox', 'aria-label': title } });
+        d.body.remove();
+        if (d.dialog.insertBefore) { d.dialog.insertBefore(input, d.foot); d.dialog.insertBefore(list, d.foot); } else d.dialog.append(input, list);
+        d.foot.append(note('↑↓ + Enter to choose · Esc to cancel').node);
         let shown = [];
         let sel = 0;
-        const done = (value) => { wrap.remove(); if (prev && prev.focus) prev.focus(); resolve(value); };
+        const done = (v) => { d.close(); resolve(v); };
+        d.onDismiss(() => done(null));
         const render = () => {
           const q = input.value.trim().toLowerCase();
           shown = labels.map((l, i) => i).filter((i) => labels[i].toLowerCase().includes(q));
           sel = Math.min(sel, Math.max(shown.length - 1, 0));
           list.textContent = '';
+          if (!shown.length) list.append(el('div', { class: 'du-empty', textContent: 'No matches.' }));
           shown.forEach((idx, pos) => {
-            const row = document.createElement('div');
-            row.textContent = labels[idx];
-            row.style.cssText = `padding:6px 16px;cursor:pointer;${pos === sel ? 'background:#dbe7ff' : ''}`;
+            const row = el('div', { class: 'du-row', attrs: { role: 'option', 'aria-selected': pos === sel ? 'true' : 'false' } },
+              [el('span', { class: 'du-row-main', textContent: labels[idx], title: labels[idx] })]);
             row.addEventListener('mousedown', (e) => { e.preventDefault(); done(idx); });
             list.append(row);
-            if (pos === sel) row.scrollIntoView({ block: 'nearest' });
+            if (pos === sel && row.scrollIntoView) row.scrollIntoView({ block: 'nearest' });
           });
         };
         input.addEventListener('input', () => { sel = 0; render(); });
         input.addEventListener('keydown', (e) => {
-          e.stopPropagation();
           if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(sel + 1, shown.length - 1); render(); }
           else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(sel - 1, 0); render(); }
           else if (e.key === 'Enter') { e.preventDefault(); if (shown.length) done(shown[sel]); }
-          else if (e.key === 'Escape') { e.preventDefault(); done(null); }
         });
-        wrap.addEventListener('mousedown', (e) => { if (e.target === wrap) done(null); });
-        box.append(head, input, list);
-        wrap.append(box);
-        document.body.append(wrap);
         render();
         input.focus();
       });
@@ -288,89 +369,95 @@
     // Upload form. Resolves with the field values, or null on Cancel/Esc.
     form(spec) {
       return new Promise((resolve) => {
-        const prev = document.activeElement;
-        const wrap = document.createElement('div');
-        wrap.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:flex-start;justify-content:center;padding-top:8vh;background:rgba(0,0,0,.25)';
-        const box = document.createElement('div');
-        box.style.cssText = 'background:#fff;color:#000;padding:14px 16px;border-radius:8px;font:14px system-ui;box-shadow:0 8px 30px rgba(0,0,0,.3);width:460px;display:grid;grid-template-columns:110px 1fr;gap:8px 10px;align-items:center';
-        const done = (value) => { wrap.remove(); if (prev && prev.focus) prev.focus(); resolve(value); };
-        const add = (labelText, control) => {
-          const l = document.createElement('label');
-          l.textContent = labelText;
-          box.append(l, control);
-          return control;
-        };
-        const head = document.createElement('div');
-        head.textContent = spec.title;
-        head.style.cssText = 'grid-column:1/3;font-weight:600';
-        box.append(head);
-        const fill = document.createElement('select');
+        const d = openDialog({ title: spec.title, subtitle: spec.subtitle, width: '560px' });
+        const done = (v) => { d.close(); resolve(v); };
+        d.onDismiss(() => done(null));
+        const field = (label, control, span) =>
+          el('label', { class: `du-field${span ? ' du-span' : ''}` }, [el('span', { class: 'du-label', textContent: label }), control]);
+        const text = (key, placeholder) => el('input', { class: 'du-input', value: spec.fields[key] || '', placeholder, data: { field: key } });
+
+        const fill = el('select', { class: 'du-input', data: { field: 'fill' } });
         fill.append(new Option('Enter manually', ''));
         spec.choices.forEach((c, i) => fill.append(new Option(c.label, String(i))));
-        add('Fill from Tabroom', fill);
-        const text = (key) => {
-          const inp = document.createElement('input');
-          inp.value = spec.fields[key] || '';
-          inp.style.cssText = 'font:inherit;padding:4px 6px';
-          return inp;
-        };
-        const tournament = add('Tournament', text('tournament'));
-        const side = document.createElement('select');
-        side.append(new Option('Choose…', ''), new Option(spec.sideLabels.A, 'A'), new Option(spec.sideLabels.N, 'N'));
-        side.value = spec.fields.side || '';
-        add('Side', side);
-        const round = add('Round', text('round'));
-        const opponent = add('Opponent', text('opponent'));
-        const judge = add('Judge', text('judge'));
-        const report = document.createElement('textarea');
-        report.rows = 2;
-        report.value = spec.fields.report || '';
-        report.style.cssText = 'font:inherit;padding:4px 6px';
-        add('Report (optional)', report);
-        const fileMode = document.createElement('select');
-        fileMode.append(new Option(spec.newestLabel, 'newest'), new Option('Pick a file…', 'pick'));
-        fileMode.value = spec.fileMode;
-        add('File', fileMode);
+        const fillPanel = el('div', { class: 'du-fill' }, [field('Fill from a Tabroom round', fill)]);
+
+        const tournament = text('tournament', 'e.g. Glenbrooks');
+        const round = text('round', 'e.g. 3 or Octas');
+        const opponent = text('opponent', 'Optional');
+        const judge = text('judge', 'Optional');
+        const report = el('textarea', { class: 'du-input', rows: 2, value: spec.fields.report || '', placeholder: 'Optional: what was read', data: { field: 'report' } });
+
+        let side = spec.fields.side || '';
+        const sideSeg = el('div', { class: 'du-seg', data: { field: 'side' }, attrs: { role: 'group', 'aria-label': 'Side' } });
+        const sideBtns = ['A', 'N'].map((v) => {
+          const b = el('button', { type: 'button', textContent: spec.sideLabels[v], data: { value: v } });
+          b.addEventListener('click', () => { side = v; paintSide(); });
+          sideSeg.append(b);
+          return b;
+        });
+        const paintSide = () => sideBtns.forEach((b) => b.setAttribute('aria-pressed', b.dataset.value === side ? 'true' : 'false'));
+        paintSide();
+
+        let fileMode = spec.fileMode;
+        const files = el('div', { class: 'du-choices', data: { field: 'file' }, attrs: { role: 'radiogroup', 'aria-label': 'File' } });
+        const newestDetail = String(spec.newestLabel || '').replace(/^Newest send doc:?\s*/, '');
+        const fileBtns = [
+          { mode: 'newest', main: 'Newest send doc', detail: newestDetail, aria: spec.newestLabel, disabled: !spec.newestLabel || /\((none found|set a send doc folder first)\)$/.test(spec.newestLabel) },
+          { mode: 'pick', main: 'Choose a file…', detail: '', aria: 'Pick a file…', disabled: false },
+        ].map((f) => {
+          const b = el('button', { type: 'button', class: 'du-choice', ariaLabel: f.aria, data: { value: f.mode }, attrs: { role: 'radio', 'aria-disabled': f.disabled ? 'true' : 'false' } },
+            [el('span', { class: 'du-radio', attrs: { 'aria-hidden': 'true' } }), el('span', { class: 'du-choice-text' }, [el('span', { class: 'du-choice-main', textContent: f.main }), el('span', { class: 'du-choice-detail', textContent: f.detail, title: f.detail })])]);
+          b.addEventListener('click', () => { if (!f.disabled) { fileMode = f.mode; paintFiles(); } });
+          files.append(b);
+          return b;
+        });
+        const paintFiles = () => fileBtns.forEach((b) => b.setAttribute('aria-checked', b.dataset.value === fileMode ? 'true' : 'false'));
+        paintFiles();
+
         fill.addEventListener('change', () => {
           const c = spec.choices[Number(fill.value)];
           if (!c) return;
           tournament.value = c.fields.tournament;
-          side.value = c.fields.side;
           round.value = c.fields.round;
           opponent.value = c.fields.opponent;
           judge.value = c.fields.judge;
+          side = c.fields.side;
+          paintSide();
         });
-        const err = document.createElement('div');
-        err.style.cssText = 'grid-column:1/3;color:#c00;min-height:1em';
-        const buttons = document.createElement('div');
-        buttons.style.cssText = 'grid-column:1/3;display:flex;justify-content:flex-end;gap:8px';
-        const cancel = document.createElement('button');
-        cancel.textContent = 'Cancel';
-        const upload = document.createElement('button');
-        upload.textContent = 'Upload';
-        buttons.append(cancel, upload);
-        box.append(err, buttons);
+
+        const err = el('p', { class: 'du-error', attrs: { role: 'alert' } });
+        d.body.append(
+          fillPanel,
+          el('div', { class: 'du-grid' }, [
+            field('Tournament', tournament, true),
+            el('div', { class: 'du-field' }, [el('span', { class: 'du-label', textContent: 'Side' }), sideSeg]),
+            field('Round', round),
+            field('Opponent', opponent),
+            field('Judge', judge),
+            field('Round report', report, true),
+            el('div', { class: 'du-field du-span' }, [el('span', { class: 'du-label', textContent: 'File' }), files]),
+          ]),
+          err,
+        );
         const submit = () => {
-          if (!tournament.value.trim() || !side.value || !round.value.trim()) {
+          if (!tournament.value.trim() || !side || !round.value.trim()) {
             err.textContent = 'Tournament, side and round are required.';
             return;
           }
           done({
-            tournament: tournament.value, side: side.value, round: round.value, opponent: opponent.value,
-            judge: judge.value, report: report.value, fileMode: fileMode.value,
+            tournament: tournament.value, side, round: round.value, opponent: opponent.value,
+            judge: judge.value, report: report.value, fileMode,
           });
         };
-        cancel.addEventListener('click', () => done(null));
-        upload.addEventListener('click', submit);
-        box.addEventListener('keydown', (e) => {
-          e.stopPropagation(); // keep CardMirror hotkeys out of the form
-          if (e.key === 'Escape') { e.preventDefault(); done(null); }
+        d.foot.append(
+          note('Posts publicly to openCaselist').node,
+          button('Cancel', false, () => done(null)),
+          button('Upload', true, submit),
+        );
+        d.dialog.addEventListener('keydown', (e) => {
           // Enter submits only from a text box: Enter on a dropdown must never post publicly.
           if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); submit(); }
         });
-        wrap.addEventListener('mousedown', (e) => { if (e.target === wrap) done(null); });
-        wrap.append(box);
-        document.body.append(wrap);
         fill.focus();
       });
     },
@@ -661,7 +748,8 @@
     const pf = /pf|public forum/i.test(`${target.event} ${target.caselistLabel}`);
     const sideLabels = pf ? { A: 'Pro', N: 'Con' } : { A: 'Aff', N: 'Neg' };
     const values = await u.form({
-      title: `Upload to ${target.caselistLabel} · ${target.schoolLabel} · ${target.teamLabel}`,
+      title: 'Upload to Caselist',
+      subtitle: `${target.teamLabel} · ${target.caselistLabel}`,
       choices: roundChoices(rounds, sideLabels),
       sideLabels,
       fields: { tournament: '', side: '', round: '', opponent: '', judge: '', report: '' },

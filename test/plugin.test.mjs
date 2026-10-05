@@ -446,7 +446,8 @@ test('caselist form: Tabroom rounds become fill choices (PF shows Pro/Con) plus 
   const h = caselistHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': TAB } });
   await cmd('caselistUpload').run(h.api);
   const spec = h.forms[0];
-  assert.equal(spec.title, `Upload to HS PF 2026 · St. Mark's · St. Mark's AB`);
+  assert.equal(spec.title, 'Upload to Caselist');
+  assert.equal(spec.subtitle, "St. Mark's AB · HS PF 2026");
   assert.deepEqual(spec.sideLabels, { A: 'Pro', N: 'Con' });
   assert.deepEqual(spec.fields, { tournament: '', side: '', round: '', opponent: '', judge: '', report: '' });
   assert.deepEqual(spec.choices.map((c) => c.label), ['Glenbrooks · Round 3 · Con vs Lexington AB', 'General disclosure (all tournaments)']);
@@ -555,7 +556,9 @@ test('caselist newest: a too-big or missing newest doc is refused before upload;
 function fakeDom() {
   const doc = { activeElement: null };
   class El {
-    constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.listeners = {}; this.style = {}; this.value = ''; this.textContent = ''; }
+    constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.listeners = {}; this.style = { setProperty() {} }; this.value = ''; this.textContent = ''; this.dataset = {}; this.attrs = {}; }
+    setAttribute(k, v) { this.attrs[k] = String(v); }
+    getAttribute(k) { return this.attrs[k] ?? null; }
     append(...kids) { for (const k of kids) { k.parent = this; this.children.push(k); } }
     remove() { if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this); this.removed = true; }
     addEventListener(t, f) { (this.listeners[t] ||= []).push(f); }
@@ -568,11 +571,13 @@ function fakeDom() {
   }
   doc.createElement = (t) => new El(t);
   doc.body = new El('body');
+  doc.head = new El('head');
+  doc.getElementById = (id) => [...all(doc.head), ...all(doc.body)].find((n) => n.id === id) || null;
   const Option = function (text, value) { const o = new El('option'); o.textContent = text; o.value = value; return o; };
-  const all = (n) => [n, ...n.children.flatMap(all)];
-  const byLabel = (text) => { const kids = doc.body.children[0].children[0].children; return kids[kids.findIndex((k) => k.tagName === 'LABEL' && k.textContent === text) + 1]; };
+  function all(n) { return [n, ...n.children.flatMap(all)]; }
+  const byField = (name) => all(doc.body).find((n) => n.dataset.field === name);
   const button = (text) => all(doc.body).find((n) => n.tagName === 'BUTTON' && n.textContent === text);
-  return { doc, Option, byLabel, button, all };
+  return { doc, Option, byField, button, all };
 }
 
 async function withDom(fn) {
@@ -606,21 +611,28 @@ async function withDom(fn) {
 }
 
 test('DOM form: the File choice names the actual newest send doc', async () => {
-  const { captured } = await withDom(async (dom) => dom.byLabel('File').children.map((o) => o.textContent));
-  assert.match(captured[0], /^Newest send doc: Send 1AC\.docx \(.+\)$/);
-  assert.equal(captured[1], 'Pick a file…');
+  const { captured } = await withDom(async (dom) => ({
+    files: dom.byField('file').children.map((b) => b.ariaLabel),
+    style: !!dom.doc.getElementById('du-style'),
+    sub: dom.all(dom.doc.body).find((n) => n.className === 'du-sub')?.textContent,
+  }));
+  assert.match(captured.files[0], /^Newest send doc: Send 1AC\.docx \(.+\)$/);
+  assert.equal(captured.files[1], 'Pick a file…');
+  assert.equal(captured.style, true, 'shared stylesheet injected once');
+  assert.equal(captured.sub, "St. Mark's AB · HS PF 2026", 'destination on its own line, team first');
 });
 
 test('DOM form: Enter on the Fill dropdown fills nothing and never submits; Enter in a text box submits', async () => {
   const { h } = await withDom(async (dom) => {
-    const fill = dom.byLabel('Fill from Tabroom');
+    const fill = dom.byField('fill');
     fill.value = '0';
     fill.dispatch('change');
-    assert.equal(dom.byLabel('Opponent').value, 'Lexington AB', 'choosing a round auto-fills');
-    dom.byLabel('Opponent').value = 'Edited Opp';
+    assert.equal(dom.byField('opponent').value, 'Lexington AB', 'choosing a round auto-fills');
+    assert.deepEqual(dom.byField('side').children.map((b) => [b.textContent, b.getAttribute('aria-pressed')]), [['Pro', 'false'], ['Con', 'true']], 'side toggle follows the round');
+    dom.byField('opponent').value = 'Edited Opp';
     fill.dispatch('keydown', { key: 'Enter' });
     assert.equal(dom.doc.body.children.length, 1, 'Enter on a select must not submit');
-    dom.byLabel('Judge').dispatch('keydown', { key: 'Enter' });
+    dom.byField('judge').dispatch('keydown', { key: 'Enter' });
     assert.equal(dom.doc.body.children.length, 0, 'Enter in a text input submits');
   });
   const up = h.calls.find((c) => c.route === '/caselist/upload');
@@ -630,8 +642,8 @@ test('DOM form: Enter on the Fill dropdown fills nothing and never submits; Ente
 
 test('DOM form: Upload with missing side shows an error and posts nothing', async () => {
   const { h } = await withDom(async (dom) => {
-    dom.byLabel('Tournament').value = 'Harvard';
-    dom.byLabel('Round').value = '2';
+    dom.byField('tournament').value = 'Harvard';
+    dom.byField('round').value = '2';
     dom.button('Upload').dispatch('click');
     assert.equal(dom.doc.body.children.length, 1);
     assert.equal(dom.all(dom.doc.body).find((n) => n.textContent === 'Tournament, side and round are required.') !== undefined, true);
