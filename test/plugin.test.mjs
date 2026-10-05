@@ -10,15 +10,14 @@ before(async () => {
 const ok = (body) => ({ ok: true, status: 200, body });
 const cmd = (suffix) => def.commands.find((c) => c.id === `debate-uploader.${suffix}`);
 
-function harness({ responses = [], settings = {}, storage = {}, room = 'abc12', folderAnswer = null, picks = [], file = { name: 'a.docx', size: 10, read: async () => 'QUJD' } } = {}) {
-  const calls = [], toasts = [], prompts = [], lists = [];
+function harness({ responses = [], settings = {}, storage = {}, room = 'abc12', folderAnswer = null, file = { name: 'a.docx', size: 10, read: async () => 'QUJD' } } = {}) {
+  const calls = [], toasts = [], prompts = [];
   const store = new Map(Object.entries(storage));
   const next = typeof responses === 'function' ? responses : () => responses.shift();
   window.__debateUploaderUI = {
     prompt: async (label, initial) => { prompts.push([label, initial]); return /room/i.test(label) ? room : folderAnswer; },
     pickFile: async () => file,
-    sleep: async () => {},
-    showList: async (title, items, onPick) => { lists.push({ title, items }); for (const i of picks) await onPick(i); },
+    sleep: () => new Promise((r) => setImmediate(r)),
   };
   const api = {
     appVersion: '1.14.0',
@@ -27,7 +26,7 @@ function harness({ responses = [], settings = {}, storage = {}, room = 'abc12', 
     storage: { get: (k) => store.get(k), set: (k, v) => store.set(k, v) },
     settings: { get: (k) => settings[k] ?? '' },
   };
-  return { api, calls, toasts, prompts, store, lists };
+  return { api, calls, toasts, prompts, store };
 }
 
 test('registers four commands and one setting under the plugin id', () => {
@@ -185,47 +184,115 @@ test('I4: a second trigger while one is in progress is refused', { timeout: 2000
   assert.equal(again.prompts.length, 1, 'guard is released after finishing');
 });
 
-const FILES = [{ index: 2, name: '1NC.docx', ctime: 1791166355023 }, { index: 0, name: 'cards.pdf', ctime: 1791166000000 }];
 
-test('browse: lists the room newest first and opens picks (list stays usable for several)', async () => {
-  const h = harness({ picks: [0, 1], responses: [
-    ok({ ok: true, job: 'L' }), ok({ state: 'done', result: FILES }),
-    ok({ ok: true, job: 'O1' }), ok({ state: 'done', result: { name: '1NC.docx', path: '/p/1NC.docx', app: 'CardMirror' } }),
-    ok({ ok: true, job: 'O2' }), ok({ state: 'done', result: { name: 'cards.pdf', path: '/p/cards.pdf', app: 'default' } }),
-  ] });
+// Browse harness: /speechdrop/list answers with the next entry of `lists`
+// (an array of files, or an Error for a failed refresh); /speechdrop/open
+// answers from `opens` by name. `script(view, n)` runs after the list is
+// shown (n = 0) and after each refresh (n = 1, 2, ...); it can pick and close.
+function browseHarness({ lists, opens = {}, script, room = 'abc12' }) {
+  const h = harness({ room });
+  const jobs = new Map();
+  let listN = 0;
+  h.api.flowPost = async (app, route, body) => {
+    h.calls.push({ app, route, body });
+    if (route === '/speechdrop/list') {
+      const id = `L${listN}`;
+      jobs.set(id, lists[Math.min(listN, lists.length - 1)]);
+      listN++;
+      return ok({ ok: true, job: id });
+    }
+    if (route === '/speechdrop/open') { jobs.set(`O:${body.name}`, opens[body.name]); return ok({ ok: true, job: `O:${body.name}` }); }
+    const r = jobs.get(body.id);
+    return ok(r instanceof Error ? { state: 'error', message: r.message } : { state: 'done', result: r });
+  };
+  h.views = [];
+  window.__debateUploaderUI.showList = (title, items, onPick) => {
+    let close;
+    const closed = new Promise((r) => { close = r; });
+    const view = { title, renders: [{ items, status: '' }], onPick, close,
+      pick: (label) => onPick(view.renders.at(-1).items.find((it) => it.label === label)) };
+    h.views.push(view);
+    setImmediate(() => script(view, 0));
+    return { closed, update: (next, status) => { view.renders.push({ items: next, status }); setImmediate(() => script(view, view.renders.length - 1)); } };
+  };
+  return h;
+}
+
+const A = { index: 0, name: 'cards.pdf', ctime: 1791166000000 };
+const B = { index: 2, name: '1NC.docx', ctime: 1791166355023 };
+const C = { index: 3, name: '2NR.docx', ctime: 1791166999000 };
+const labels = (render) => render.items.map((i) => i.label + (i.isNew ? '*' : ''));
+
+test('browse: shows the room newest first and opens picks', async () => {
+  const h = browseHarness({
+    lists: [[B, A]],
+    opens: { '1NC.docx': { name: '1NC.docx', path: '/p', app: 'CardMirror' }, 'cards.pdf': { name: 'cards.pdf', path: '/p2', app: 'default' } },
+    script: async (view, n) => { if (n === 0) { await view.pick('1NC.docx'); await view.pick('cards.pdf'); view.close(); } },
+  });
   await cmd('sdBrowse').run(h.api);
-  assert.deepEqual(h.calls.filter((c) => c.route !== '/job').map((c) => [c.route, c.body]), [
-    ['/speechdrop/list', { room: 'abc12' }],
-    ['/speechdrop/open', { room: 'abc12', index: 2, name: '1NC.docx' }],
-    ['/speechdrop/open', { room: 'abc12', index: 0, name: 'cards.pdf' }],
+  assert.equal(h.views[0].title, 'SpeechDrop room abc12');
+  assert.deepEqual(labels(h.views[0].renders[0]), ['1NC.docx', 'cards.pdf']);
+  assert.ok(h.views[0].renders[0].items.every((i) => typeof i.detail === 'string' && i.detail.length > 0));
+  assert.deepEqual(h.calls.filter((c) => c.route === '/speechdrop/open').map((c) => c.body), [
+    { room: 'abc12', index: 2, name: '1NC.docx' }, { room: 'abc12', index: 0, name: 'cards.pdf' },
   ]);
-  assert.equal(h.lists[0].title, 'SpeechDrop room abc12');
-  assert.deepEqual(h.lists[0].items.map((i) => i.label), ['1NC.docx', 'cards.pdf']);
-  assert.ok(h.lists[0].items.every((i) => typeof i.detail === 'string' && i.detail.length > 0));
   assert.deepEqual(h.toasts.filter((t) => t.startsWith('Opened')), ['Opened "1NC.docx" in CardMirror', 'Opened "cards.pdf" in your default app']);
   assert.equal(h.store.get('lastRoom'), 'abc12');
 });
 
-test('browse: empty room, wrong room, removed file, failed download each get one clear toast', async () => {
-  const empty = harness({ responses: [ok({ ok: true, job: 'L' }), ok({ state: 'done', result: [] })] });
-  await cmd('sdBrowse').run(empty.api);
-  assert.equal(empty.toasts.at(-1), 'Room abc12 has no files yet.');
-  assert.equal(empty.lists.length, 0);
+test('browse refresh: a new upload appears on top marked new; polling stops when closed', async () => {
+  const h = browseHarness({ lists: [[B, A], [C, B, A]], script: (view, n) => { if (n === 2) view.close(); } });
+  await cmd('sdBrowse').run(h.api);
+  const r = h.views[0].renders;
+  assert.deepEqual(labels(r[1]), ['2NR.docx*', '1NC.docx', 'cards.pdf']);
+  assert.equal(r[1].status, '');
+  const listCalls = h.calls.filter((c) => c.route === '/speechdrop/list').length;
+  assert.equal(listCalls, 3, 'initial + 2 refreshes, then stop');
+  await new Promise((res) => setTimeout(res, 20));
+  assert.equal(h.calls.filter((c) => c.route === '/speechdrop/list').length, listCalls, 'no refresh after close');
+});
 
-  const wrong = harness({ responses: [ok({ ok: true, job: 'L' }), ok({ state: 'error', message: 'no_room' })] });
+test('browse refresh: picking after rows shift opens the right file', async () => {
+  const h = browseHarness({ lists: [[B, A], [C, B, A]],
+    opens: { '1NC.docx': { name: '1NC.docx', path: '/p', app: 'CardMirror' } },
+    script: async (view, n) => { if (n === 1) { await view.pick('1NC.docx'); view.close(); } } });
+  await cmd('sdBrowse').run(h.api);
+  assert.deepEqual(h.calls.filter((c) => c.route === '/speechdrop/open').map((c) => c.body), [{ room: 'abc12', index: 2, name: '1NC.docx' }]);
+});
+
+test('browse: an empty room still opens the list and fills in on refresh', async () => {
+  const h = browseHarness({ lists: [[], [A]], script: (view, n) => { if (n === 1) view.close(); } });
+  await cmd('sdBrowse').run(h.api);
+  assert.deepEqual(h.views[0].renders[0].items, []);
+  assert.deepEqual(labels(h.views[0].renders[1]), ['cards.pdf*']);
+  assert.equal(h.toasts.length, 0);
+});
+
+test('browse refresh: a failed refresh keeps the rows and shows a status; the next success clears it', async () => {
+  const h = browseHarness({ lists: [[A], new Error('unreachable'), [B, A]], script: (view, n) => { if (n === 2) view.close(); } });
+  await cmd('sdBrowse').run(h.api);
+  const r = h.views[0].renders;
+  assert.deepEqual(labels(r[1]), ['cards.pdf']);
+  assert.match(r[1].status, /Couldn't refresh, retrying/);
+  assert.deepEqual(labels(r[2]), ['1NC.docx*', 'cards.pdf']);
+  assert.equal(r[2].status, '');
+  assert.equal(h.toasts.length, 0, 'no toast per failed refresh');
+});
+
+test('browse: wrong room toasts without a list; cancel does nothing; open errors toast', async () => {
+  const wrong = browseHarness({ lists: [new Error('no_room')], script: () => {} });
   await cmd('sdBrowse').run(wrong.api);
   assert.equal(wrong.toasts.at(-1), 'No SpeechDrop room "abc12". Check the code.');
+  assert.equal(wrong.views.length, 0);
 
-  for (const [code, text] of [['removed', '"1NC.docx" was removed from the room.'], ['download_failed', 'Couldn\'t download "1NC.docx".']]) {
-    const h = harness({ picks: [0], responses: [ok({ ok: true, job: 'L' }), ok({ state: 'done', result: FILES }),
-      ok({ ok: true, job: 'O' }), ok({ state: 'error', message: code })] });
+  const cancel = browseHarness({ room: null, lists: [[A]], script: () => {} });
+  await cmd('sdBrowse').run(cancel.api);
+  assert.deepEqual([cancel.calls.length, cancel.toasts.length, cancel.views.length], [0, 0, 0]);
+
+  for (const [err, text] of [['removed', '"1NC.docx" was removed from the room.'], ['download_failed', 'Couldn\'t download "1NC.docx".']]) {
+    const h = browseHarness({ lists: [[B]], opens: { '1NC.docx': new Error(err) },
+      script: async (view, n) => { if (n === 0) { await view.pick('1NC.docx'); view.close(); } } });
     await cmd('sdBrowse').run(h.api);
     assert.equal(h.toasts.at(-1), text);
   }
-});
-
-test('browse: cancelling the room box does nothing', async () => {
-  const h = harness({ room: null });
-  await cmd('sdBrowse').run(h.api);
-  assert.deepEqual([h.calls.length, h.toasts.length, h.lists.length], [0, 0, 0]);
 });

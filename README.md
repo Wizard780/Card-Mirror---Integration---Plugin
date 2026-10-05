@@ -25,7 +25,8 @@ In CardMirror:
 - **Set send doc folder for SpeechDrop…**: change the folder.
 - **Browse SpeechDrop room…**: lists a room's files, newest first. ↑↓ + Enter (or click) downloads one to
   `~/Downloads/SpeechDrop/<room>/` and opens it: `.docx`/`.cmir` in CardMirror, anything else in its default app.
-  The list stays open so you can open several; Esc closes it. A file you already have is reused; a different
+  The list stays open so you can open several, refreshes every 5 s (new uploads appear on top marked "new";
+  an empty room shows "Waiting for uploads…"), and Esc closes it. A file you already have is reused; a different
   file with the same name is saved as `name (2).docx`, so nothing you have open is overwritten.
 
 Both upload commands ask for the room code (pre-filled with the last one). Pasting the whole room URL works too.

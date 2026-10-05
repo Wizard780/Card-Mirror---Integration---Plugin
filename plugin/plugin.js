@@ -5,6 +5,7 @@
   const MAX_BYTES = 10 * 1024 * 1024;
   const POLL_MS = 1000;
   const MAX_WAIT_MS = 90_000;
+  const REFRESH_MS = 5000;
   const START_HELPER = 'launchctl kickstart gui/$(id -u)/debate-uploader';
   const SET_FOLDER_LABEL = 'Set send doc folder for SpeechDrop…';
 
@@ -104,54 +105,93 @@
       });
     },
 
-    showList(title, items, onPick) {
-      return new Promise((resolve) => {
-        const prev = document.activeElement;
-        const wrap = document.createElement('div');
-        wrap.tabIndex = -1;
-        wrap.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:flex-start;justify-content:center;padding-top:12vh;background:rgba(0,0,0,.25);outline:none';
-        const box = document.createElement('div');
-        box.style.cssText = 'background:#fff;color:#000;padding:12px 0;border-radius:8px;font:14px system-ui;box-shadow:0 8px 30px rgba(0,0,0,.3);width:420px';
-        const head = document.createElement('div');
-        head.style.cssText = 'padding:0 16px 8px;font-weight:600';
-        head.textContent = title;
-        const hint = document.createElement('div');
-        hint.style.cssText = 'padding:0 16px 8px;color:#666;font-size:12px';
-        hint.textContent = '↑↓ + Enter or click to open in CardMirror · Esc to close';
-        const list = document.createElement('div');
-        list.style.cssText = 'max-height:50vh;overflow:auto';
-        let sel = 0;
-        const rows = items.map((it, i) => {
+    // Returns { closed: Promise, update(items, status) }. Items carry a
+    // stable `key`, so the selection follows its file across refreshes.
+    showList(title, initialItems, onPick) {
+      let resolveClosed;
+      const closed = new Promise((r) => { resolveClosed = r; });
+      const prev = document.activeElement;
+      const HINT = '↑↓ + Enter or click to open · Esc to close · refreshes every 5 s';
+      const wrap = document.createElement('div');
+      wrap.tabIndex = -1;
+      wrap.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:flex-start;justify-content:center;padding-top:12vh;background:rgba(0,0,0,.25);outline:none';
+      const box = document.createElement('div');
+      box.style.cssText = 'background:#fff;color:#000;padding:12px 0;border-radius:8px;font:14px system-ui;box-shadow:0 8px 30px rgba(0,0,0,.3);width:420px';
+      const head = document.createElement('div');
+      head.style.cssText = 'padding:0 16px 8px;font-weight:600';
+      head.textContent = title;
+      const hint = document.createElement('div');
+      hint.style.cssText = 'padding:0 16px 8px;color:#666;font-size:12px';
+      hint.textContent = HINT;
+      const list = document.createElement('div');
+      list.style.cssText = 'max-height:50vh;overflow:auto';
+      let items = [];
+      let rows = [];
+      let selKey = null;
+      const selIndex = () => Math.max(0, items.findIndex((it) => it.key === selKey));
+      const paint = () => rows.forEach((r, i) => {
+        const on = items[i].key === selKey;
+        r.style.background = on ? '#dbe7ff' : '';
+        if (on) r.scrollIntoView({ block: 'nearest' });
+      });
+      const render = () => {
+        list.textContent = '';
+        rows = [];
+        if (!items.length) {
+          const empty = document.createElement('div');
+          empty.style.cssText = 'padding:6px 16px;color:#666';
+          empty.textContent = 'No files yet. Waiting for uploads…';
+          list.append(empty);
+          return;
+        }
+        if (!items.some((it) => it.key === selKey)) selKey = items[0].key;
+        rows = items.map((it) => {
           const row = document.createElement('div');
           row.style.cssText = 'padding:6px 16px;cursor:pointer;display:flex;justify-content:space-between;gap:12px';
           const label = document.createElement('span');
           label.textContent = it.label;
+          if (it.isNew) {
+            const badge = document.createElement('span');
+            badge.textContent = ' new';
+            badge.style.cssText = 'color:#0a7d32;font-weight:600;font-size:12px';
+            label.append(badge);
+          }
           const detail = document.createElement('span');
           detail.style.cssText = 'color:#666;white-space:nowrap';
           detail.textContent = it.detail;
           row.append(label, detail);
-          row.addEventListener('mousedown', (e) => { e.preventDefault(); sel = i; paint(); onPick(i); });
+          row.addEventListener('mousedown', (e) => { e.preventDefault(); selKey = it.key; paint(); onPick(it); });
           list.append(row);
           return row;
         });
-        const paint = () => rows.forEach((r, i) => { r.style.background = i === sel ? '#dbe7ff' : ''; if (i === sel) r.scrollIntoView({ block: 'nearest' }); });
-        const close = () => { wrap.remove(); if (prev && prev.focus) prev.focus(); resolve(); };
-        // Capture phase + focus kept on the overlay: keys never reach the document.
-        wrap.addEventListener('keydown', (e) => {
-          e.stopPropagation();
-          e.preventDefault();
-          if (e.key === 'ArrowDown') { sel = Math.min(sel + 1, rows.length - 1); paint(); }
-          else if (e.key === 'ArrowUp') { sel = Math.max(sel - 1, 0); paint(); }
-          else if (e.key === 'Enter') onPick(sel);
-          else if (e.key === 'Escape') close();
-        }, true);
-        wrap.addEventListener('mousedown', (e) => { if (e.target === wrap) close(); else e.preventDefault(); });
-        box.append(head, hint, list);
-        wrap.append(box);
-        document.body.append(wrap);
-        wrap.focus();
         paint();
-      });
+      };
+      const close = () => { wrap.remove(); if (prev && prev.focus) prev.focus(); resolveClosed(); };
+      // Capture phase + focus kept on the overlay: keys never reach the document.
+      wrap.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        if (e.key === 'Escape') return close();
+        if (!items.length) return;
+        if (e.key === 'ArrowDown') { selKey = items[Math.min(selIndex() + 1, items.length - 1)].key; paint(); }
+        else if (e.key === 'ArrowUp') { selKey = items[Math.max(selIndex() - 1, 0)].key; paint(); }
+        else if (e.key === 'Enter') onPick(items[selIndex()]);
+      }, true);
+      wrap.addEventListener('mousedown', (e) => { if (e.target === wrap) close(); else e.preventDefault(); });
+      box.append(head, hint, list);
+      wrap.append(box);
+      document.body.append(wrap);
+      wrap.focus();
+      items = initialItems;
+      render();
+      return {
+        closed,
+        update(next, status) {
+          items = next;
+          hint.textContent = status || HINT;
+          render();
+        },
+      };
     },
 
     pickFile() {
@@ -260,12 +300,13 @@
       const room = normalizeRoom(raw);
       ctx.room = room;
       if (!room) return api.showToast(`"${String(raw).trim()}" doesn't look like a SpeechDrop room code.`);
-      const files = await runJob(api, '/speechdrop/list', { room }, u.sleep);
-      if (!files.length) return api.showToast(`Room ${room} has no files yet.`);
+      let files = await runJob(api, '/speechdrop/list', { room }, u.sleep);
       api.storage.set('lastRoom', room);
-      const items = files.map((f) => ({ label: f.name, detail: formatTime(f.ctime) }));
-      await u.showList(`SpeechDrop room ${room}`, items, async (i) => {
-        const f = files[i];
+      const seen = new Set(files.map((f) => f.index));
+      const toItems = () => files.map((f) => ({ key: f.index, label: f.name, detail: formatTime(f.ctime), isNew: !seen.has(f.index) }));
+      const view = u.showList(`SpeechDrop room ${room}`, toItems(), async (item) => {
+        const f = files.find((x) => x.index === item.key);
+        if (!f) return api.showToast(message('removed', { name: item.label }));
         api.showToast(`Opening "${f.name}"…`);
         try {
           const r = await runJob(api, '/speechdrop/open', { room, index: f.index, name: f.name }, u.sleep);
@@ -274,6 +315,20 @@
           api.showToast(message(err.message, { ...ctx, name: f.name }));
         }
       });
+      let open = true;
+      view.closed.then(() => { open = false; });
+      while (open) {
+        await u.sleep(REFRESH_MS);
+        if (!open) break;
+        try {
+          const next = await runJob(api, '/speechdrop/list', { room }, u.sleep);
+          if (!open) break;
+          files = next;
+          view.update(toItems(), '');
+        } catch {
+          if (open) view.update(toItems(), "Couldn't refresh, retrying…");
+        }
+      }
     } catch (err) {
       api.showToast(message(err.message, ctx));
     }
