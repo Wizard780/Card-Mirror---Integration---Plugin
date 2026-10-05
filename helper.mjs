@@ -13,10 +13,11 @@ import { login, getRounds, listCaselists, listSchools, listTeams, createRound, s
 import { parseOpponent, schoolScore, pickTeam } from './lib/scout.mjs';
 import { uploadToSpeechDrop, newestDocx, MAX_BYTES, listRoom, downloadFile, saveUnique, expandHome, SD_BASE, SD_MEDIA } from './lib/speechdrop.mjs';
 import { createEvidenceIndex } from './lib/evidence.mjs';
-import { cardDocx } from './lib/docx.mjs';
+import { cardDocx, headingsOf } from './lib/docx.mjs';
+import { draftReport } from './lib/report-draft.mjs';
 import { readFile, stat } from 'node:fs/promises';
 
-const VERSION = '0.1.5';
+const VERSION = '0.1.6';
 const bridgeDir = process.env.DEBATE_UPLOADER_BRIDGE_DIR || defaultBridgeDir();
 const sdBase = process.env.DEBATE_UPLOADER_SD_BASE || SD_BASE;
 const sdMedia = process.env.DEBATE_UPLOADER_SD_MEDIA || SD_MEDIA;
@@ -225,6 +226,34 @@ const routes = {
   '/caselist/teams': ({ caselist, school }) => authedJob('caselist teams', (t) => cl.teams(t, caselist, school)),
 
   // Local only (no network): lets the form show which file "newest send doc" means.
+  // Round report draft: the round's docs in the SpeechDrop room (both teams), else the newest send doc.
+  '/caselist/report-draft': ({ room, since, folder }) => ({
+    ok: true,
+    job: jobs.start(async () => {
+      const docs = [];
+      let pdfs = 0;
+      if (room && /^[A-Za-z0-9]{1,32}$/.test(room)) {
+        const from = Number(since) || Date.now() - 4 * 3600_000;
+        try {
+          const files = (await listRoom(room, { base: sdBase })).filter((f) => !f.ctime || f.ctime >= from);
+          pdfs = files.filter((f) => !/\.docx$/i.test(f.name)).length;
+          for (const f of files.filter((x) => /\.docx$/i.test(x.name)).slice(0, 12)) {
+            try { docs.push({ name: f.name, headings: headingsOf(await downloadFile({ room, index: f.index, name: f.name }, { mediaBase: sdMedia })) }); } catch { /* unreadable: skip */ }
+          }
+        } catch { /* room gone or offline: fall back to the send doc */ }
+      }
+      if (folder) {
+        try {
+          const doc = await newestDocx(folder);
+          if (!docs.some((d) => d.name === doc.name)) docs.push({ name: doc.name, headings: headingsOf(doc.bytes) });
+        } catch { /* no send doc */ }
+      }
+      const { report, used } = draftReport(docs);
+      log('caselist report draft', `${used.length} of ${docs.length} docs`, pdfs ? `${pdfs} non-docx skipped` : '');
+      return { report, used, skipped: pdfs };
+    }),
+  }),
+
   '/caselist/newest': async ({ folder }) => {
     const doc = await newestDocx(folder);
     return { ok: true, name: doc.name, size: doc.bytes.length, mtime: doc.mtimeMs };

@@ -12,6 +12,17 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 let fakeSD, helper, bridgeDir, session, sendDir, downloadDir, openLog;
+const headingDoc = (...heads) => {
+  const xml = `<w:document><w:body>${heads.map(([lvl, text]) => `<w:p><w:pPr><w:pStyle w:val="Heading${lvl}"/></w:pPr><w:r><w:t>${text}</w:t></w:r></w:p>`).join('')}</w:body></w:document>`;
+  const raw = Buffer.from(xml);
+  return writeZip([{ name: 'word/document.xml', method: 8, crc: crc32(raw), usize: raw.length, data: deflateRawSync(raw) }]);
+};
+const ROOM2 = [
+  { name: 'Old round.docx', ctime: 1, bytes: headingDoc([2, '1AC---Stale']) },
+  { name: 'Univ 1AC.docx', ctime: Date.now(), bytes: headingDoc([1, 'Round 6'], [2, '1AC---False Profits'], [2, '1AC---Fool’s Gold']) },
+  { name: 'Acton 1NC.docx', ctime: Date.now(), bytes: headingDoc([2, '1NC---Econ'], [2, '1NC---O/V']) },
+  { name: 'cards.pdf', ctime: Date.now(), bytes: Buffer.from('%PDF') },
+];
 let fakeCL, keyStore, helperLog;
 let clRejectAll = false;
 let uploads = []; let clStaleToken = false;
@@ -21,6 +32,13 @@ const received = [];
 before(async () => {
   // Fake SpeechDrop: room "room1" exists; enforces cookie + form XSRF match.
   fakeSD = createServer(async (req, res) => {
+    // room2: one round's docs from both teams (plus an old doc and a PDF) for report drafting
+    if (req.method === 'GET' && req.url === '/room2/index') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(ROOM2.map((f) => ({ name: f.name, ctime: f.ctime }))));
+    }
+    const m2 = req.method === 'GET' && req.url.match(/^\/media\/room2\/(\d+)\/(.+)$/);
+    if (m2) return res.end(ROOM2[Number(m2[1])].bytes);
     if (req.method === 'GET' && req.url === '/room1') {
       res.setHeader('Set-Cookie', ['vertx-web.session=s1; Path=/', 'XSRF-TOKEN=tok123; Path=/']);
       return res.end('<html>');
@@ -464,6 +482,15 @@ test('evidence: set folders → background scan → search → open the file or 
   const lines = (await readFile(openLog, 'utf8')).trim().split('\n');
   assert.equal(lines.at(-1), `-b|com.cardmirror.app|${card.path}|`);
   assert.equal(lines.at(-2), `-b|com.cardmirror.app|${join(dir, 'Grid.docx')}|`);
+});
+
+test('report draft: the round\'s room docs from both teams, in speech order; old docs and PDFs left out', async () => {
+  const start = await call('/caselist/report-draft', { room: 'room2' });
+  const done = await waitJob(start.body.job);
+  assert.equal(done.state, 'done');
+  assert.deepEqual(done.result, { report: '1AC -- False Profits, Fool’s Gold\n1NC -- Econ', used: ['Acton 1NC.docx', 'Univ 1AC.docx'], skipped: 1 });
+  const none = await waitJob((await call('/caselist/report-draft', { room: 'nope' })).body.job);
+  assert.deepEqual(none.result, { report: '', used: [], skipped: 0 });
 });
 
 test('SIGTERM removes the session file but keeps identity', async () => {

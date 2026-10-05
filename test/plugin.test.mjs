@@ -1277,3 +1277,18 @@ test('DOM mark cards: the editor view is picked up from ProseMirror; filter, Ent
     globalThis.document = saved.document; globalThis.Option = saved.Option; window.__debateUploaderUI = saved.ui; window.getSelection = saved.getSelection;
   }
 });
+
+test('caselist form: the round report is drafted from the room and send doc, with a note naming the sources', async () => {
+  const h = caselistHarness({ storage: { caselistTarget: TARGET, lastRoom: 'abc12', sendDocFolder: '/send' },
+    results: { '/tabroom/rounds': { current: false, rounds: [] }, '/caselist/report-draft': { report: '1AC -- Grid\n1NC -- Econ', used: ['1AC.docx', '1NC.docx'], skipped: 1 } },
+    direct: { '/caselist/newest': { name: 'Send.docx', size: 5, mtime: 1 } } });
+  await cmd('caselistUpload').run(h.api);
+  assert.deepEqual(h.calls.find((c) => c.route === '/caselist/report-draft').body, { room: 'abc12', folder: '/send' });
+  assert.equal(h.forms[0].fields.report, '1AC -- Grid\n1NC -- Econ');
+  assert.equal(h.forms[0].reportNote, 'Drafted from 2 docs (1AC.docx, 1NC.docx); 1 non-.docx file skipped. Edit before uploading.');
+
+  const none = caselistHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': { current: false, rounds: [] }, '/caselist/report-draft': new Error('boom') } });
+  await cmd('caselistUpload').run(none.api);
+  assert.equal(none.forms[0].fields.report, '');
+  assert.equal(none.forms[0].reportNote, '', 'a failed draft never blocks the form');
+});

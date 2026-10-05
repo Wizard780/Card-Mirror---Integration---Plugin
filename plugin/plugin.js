@@ -270,6 +270,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
 .du-row[aria-checked="true"] .du-check{background:#d81e1e;border-color:#d81e1e}
 .du-row[aria-checked="true"] .du-row-main{color:#d81e1e}
 .du-marks .du-row{align-items:flex-start}
+.du-hint{font-size:.78rem;color:var(--pmd-c-text-muted);overflow-wrap:anywhere}
 .du-btn:disabled{opacity:.5;cursor:default}
 .du-btn:disabled:hover{background:var(--pmd-c-bg)}
 `;
@@ -665,7 +666,11 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         const round = text('round', 'e.g. 3 or Octas');
         const opponent = text('opponent', 'Optional');
         const judge = text('judge', 'Optional');
-        const report = el('textarea', { class: 'du-input', rows: 2, value: spec.fields.report || '', placeholder: 'Optional: what was read', data: { field: 'report' } });
+        const report = el('textarea', { class: 'du-input', rows: Math.min(8, Math.max(2, String(spec.fields.report || '').split('\n').length)), value: spec.fields.report || '', placeholder: 'Optional: what was read', data: { field: 'report' } });
+        const reportField = el('div', { class: 'du-field du-span' }, [
+          el('span', { class: 'du-label', textContent: 'Round report' }), report,
+          spec.reportNote ? el('span', { class: 'du-hint', textContent: spec.reportNote, data: { field: 'report-note' } }) : null,
+        ]);
 
         let side = spec.fields.side || '';
         const sideSeg = el('div', { class: 'du-seg', data: { field: 'side' }, attrs: { role: 'group', 'aria-label': 'Side' } });
@@ -714,7 +719,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
             field('Round', round),
             field('Opponent', opponent),
             field('Judge', judge),
-            field('Round report', report, true),
+            reportField,
             el('div', { class: 'du-field du-span' }, [el('span', { class: 'du-label', textContent: 'File' }), files]),
           ]),
           err,
@@ -1277,6 +1282,10 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     const u = ui();
     const target = api.storage.get('caselistTarget') || (await chooseTarget(api, u));
     if (!target) return;
+    const folder = sendDocFolder(api);
+    // Draft the report from the round's docs while Tabroom answers; never blocks the form.
+    const room = api.storage.get('lastRoom') || '';
+    const drafting = runJob(api, '/caselist/report-draft', { room, folder }, u.sleep).catch(() => null);
     let rounds = [];
     try {
       rounds = (await runJob(api, '/tabroom/rounds', {}, u.sleep)).rounds;
@@ -1284,8 +1293,8 @@ textarea.du-input{resize:vertical;min-height:3.4em}
       // Login problems stop here (the upload would fail too); anything else falls back to manual entry.
       if (['not_logged_in', 'login_expired', 'keychain_failed'].includes(err.message)) throw err;
     }
+    const draft = await drafting;
     // Name the actual newest send doc in the form, so a public upload is never a surprise.
-    const folder = sendDocFolder(api);
     let newest = null;
     let newestErr = 'no_folder';
     if (folder) {
@@ -1301,7 +1310,10 @@ textarea.du-input{resize:vertical;min-height:3.4em}
       subtitle: `${target.teamLabel} · ${target.caselistLabel}`,
       choices: roundChoices(rounds, sideLabels),
       sideLabels,
-      fields: { tournament: '', side: '', round: '', opponent: '', judge: '', report: '' },
+      fields: { tournament: '', side: '', round: '', opponent: '', judge: '', report: draft && draft.report ? draft.report : '' },
+      reportNote: draft && draft.report
+        ? `Drafted from ${draft.used.length === 1 ? `"${draft.used[0]}"` : `${draft.used.length} docs (${draft.used.join(', ')})`}${draft.skipped ? `; ${plural(draft.skipped, 'non-.docx file')} skipped` : ''}. Edit before uploading.`
+        : '',
       newestLabel,
       fileMode: newest ? 'newest' : 'pick',
     });

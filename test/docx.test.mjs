@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { deflateRawSync, crc32 } from 'node:zlib';
-import { readZip, unzipEntry, writeZip, headingLevels, parseCards, cardDocx } from '../lib/docx.mjs';
+import { readZip, unzipEntry, writeZip, headingLevels, parseCards, cardDocx, headingsOf } from '../lib/docx.mjs';
 
 // A minimal docx: [name, text] entries, deflated.
 function docx(files) {
@@ -83,4 +83,9 @@ test('cardDocx keeps only that card (tag to the next heading) plus page setup; e
   assert.throws(() => cardDocx(buf, 9), /no_card/);
   assert.throws(() => cardDocx(buf, 1, 'Data centers stay onshore & grow'), /card_changed/);
   assert.ok(cardDocx(buf, 1, 'Second tag'));
+});
+
+test('headingsOf lists pocket/hat/block headings in order with their levels', () => {
+  const buf = docx({ 'word/document.xml': DOC, 'word/styles.xml': STYLES });
+  assert.deepEqual(headingsOf(buf), [{ level: 1, text: 'AFF' }, { level: 2, text: 'Grid' }, { level: 3, text: 'AT: Offshoring' }, { level: 3, text: 'Next block' }]);
 });

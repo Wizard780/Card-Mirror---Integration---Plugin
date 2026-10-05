@@ -72,6 +72,12 @@ If a toast says Keychain is locked, unlock your login keychain (Keychain Access)
   disclosure (all tournaments)**; every field stays editable. Nothing is sent until you press **Upload**.
 - **Change caselist team…**: pick a different caselist, school or team.
 
+**Round report** is drafted for you: the plugin reads the round's docs in your last SpeechDrop room (both teams',
+uploaded in the last 4 hours) plus your newest send doc, finds the speech each heading belongs to ("1AC---Grid",
+"AT: Offshoring---2NC", or a speech named on a parent heading or in the file name) and writes
+"1AC -- Grid, Econ" lines in speech order. A note under the box names the docs it used. Edit it before uploading;
+the result line ([W]/[L]) is yours to add.
+
 Uploads are public and never retried automatically. If a toast says to check the caselist page, look there
 before uploading again. Requires **Log in to Tabroom…** first.
 
