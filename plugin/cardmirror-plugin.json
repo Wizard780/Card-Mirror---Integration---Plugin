@@ -1,0 +1,9 @@
+{
+  "id": "debate-uploader",
+  "name": "Debate Uploader",
+  "version": "0.1.0",
+  "description": "Upload docs to SpeechDrop (and later openCaselist) through a local helper.",
+  "author": "debateskills",
+  "apiVersion": 1,
+  "minAppVersion": "1.4.0"
+}
