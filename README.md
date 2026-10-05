@@ -32,6 +32,16 @@ In CardMirror:
 Both upload commands ask for the room code (pre-filled with the last one). Pasting the whole room URL works too.
 Uploads are never retried automatically. If a toast says to check the room, look before uploading again.
 
+## Tabroom
+
+- **Log in to Tabroom…**: email, then password (hidden). The helper trades them for a session token and keeps
+  only the token in macOS Keychain (service `debate-uploader`). The password is never saved or logged.
+- **Show my Tabroom rounds**: current rounds (or your last 10 if no tournament is live): tournament, round,
+  side, opponent, judge, start time.
+- **Log out of Tabroom**: deletes the stored token.
+
+If the list is always empty, link your Tabroom account to your student record on tabroom.com.
+
 ## Troubleshooting
 
 - "Uploader helper isn't running" → `launchctl kickstart gui/$(id -u)/debate-uploader`
