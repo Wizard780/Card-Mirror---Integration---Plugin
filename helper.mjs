@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
 import { createKeychain } from './lib/keychain.mjs';
-import { login, getRounds, CASELIST_BASE } from './lib/caselist.mjs';
+import { login, getRounds, listCaselists, listSchools, listTeams, createRound, CASELIST_BASE } from './lib/caselist.mjs';
 import { uploadToSpeechDrop, newestDocx, listRoom, downloadFile, saveUnique, SD_BASE, SD_MEDIA } from './lib/speechdrop.mjs';
 
 const VERSION = '0.1.0';
@@ -19,10 +19,42 @@ const opener = process.env.DEBATE_UPLOADER_OPENER || '/usr/bin/open';
 const run = promisify(execFile);
 const clBase = process.env.DEBATE_UPLOADER_CASELIST_BASE || CASELIST_BASE;
 const keychain = createKeychain({ bin: process.env.DEBATE_UPLOADER_SECURITY_BIN || '/usr/bin/security' });
+const clOpts = { base: clBase };
 const token = newToken();
 const jobs = createJobStore();
 // Logs names, rooms and sizes only. Never tokens, cookies or contents.
 const log = (...parts) => console.log(new Date().toISOString(), ...parts);
+
+// Runs fn(token) with the stored session. On a 401 the Keychain item is
+// removed only if it still holds the token that failed (a newer login stays).
+async function withSession(fn) {
+  const session = await keychain.get();
+  if (!session || (session.expires && Date.parse(session.expires) < Date.now())) {
+    if (session) await keychain.remove();
+    throw new Error('not_logged_in');
+  }
+  try {
+    return await fn(session.token);
+  } catch (err) {
+    if (err.message === 'login_expired') {
+      const current = await keychain.get().catch(() => null);
+      if (current && current.token === session.token) await keychain.remove();
+    }
+    throw err;
+  }
+}
+
+const authedJob = (label, fn) => ({
+  ok: true,
+  job: jobs.start(async () => {
+    try {
+      return await withSession(fn);
+    } catch (err) {
+      log(`${label} failed`, err.message);
+      throw err;
+    }
+  }),
+});
 
 const routes = {
   '/job': ({ id }) => jobs.get(id),
@@ -90,24 +122,24 @@ const routes = {
     return { ok: true };
   },
 
-  '/tabroom/rounds': () => ({
-    ok: true,
-    job: jobs.start(async () => {
-      const session = await keychain.get();
-      if (!session || (session.expires && Date.parse(session.expires) < Date.now())) {
-        if (session) await keychain.remove();
-        throw new Error('not_logged_in');
-      }
-      try {
-        const out = await getRounds(session.token, { base: clBase });
-        log('tabroom rounds', out.current ? 'current' : 'recent', out.rounds.length);
-        return out;
-      } catch (err) {
-        if (err.message === 'login_expired') await keychain.remove();
-        log('tabroom rounds failed', err.message);
-        throw err;
-      }
-    }),
+  '/tabroom/rounds': () => authedJob('tabroom rounds', async (t) => {
+    const out = await getRounds(t, clOpts);
+    log('tabroom rounds', out.current ? 'current' : 'recent', out.rounds.length);
+    return out;
+  }),
+
+  '/caselist/caselists': () => authedJob('caselist list', (t) => listCaselists(t, clOpts)),
+  '/caselist/schools': ({ caselist }) => authedJob('caselist schools', (t) => listSchools(t, caselist, clOpts)),
+  '/caselist/teams': ({ caselist, school }) => authedJob('caselist teams', (t) => listTeams(t, caselist, school, clOpts)),
+
+  '/caselist/upload': ({ caselist, school, team, round, file, folder }) => authedJob('caselist upload', async (t) => {
+    const doc = file
+      ? { name: String(file.name), bytes: Buffer.from(String(file.base64 ?? ''), 'base64') }
+      : await newestDocx(folder);
+    log('caselist upload', caselist, school, team, doc.name, `${doc.bytes.length} bytes`);
+    await createRound(t, { caselist, school, team }, { ...(round || {}), filename: doc.name, base64: doc.bytes.toString('base64') }, clOpts);
+    log('caselist upload ok', caselist, school, team, doc.name);
+    return { name: doc.name };
   }),
 };
 

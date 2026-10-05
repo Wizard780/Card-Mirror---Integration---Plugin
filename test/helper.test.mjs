@@ -12,6 +12,7 @@ const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 let fakeSD, helper, bridgeDir, session, sendDir, downloadDir, openLog;
 let fakeCL, keyStore, helperLog;
 let clRejectAll = false;
+let uploads = []; let clStaleToken = false;
 const received = [];
 
 before(async () => {
@@ -67,6 +68,22 @@ before(async () => {
         : send(401, { message: 'Invalid username or password' });
     }
     if (clRejectAll || req.headers.cookie !== 'caselist_token=CLTOKEN0123456789abcdef01234567') return send(401, { message: 'Not Authorized' });
+    if (req.url === '/v1/caselists') return send(200, [
+      { name: 'hspf26', display_name: 'HS PF 2026', event: 'pf', archived: false },
+      { name: 'hspf25', display_name: 'HS PF 2025', event: 'pf', archived: true },
+    ]);
+    if (req.url === '/v1/caselists/hspf26/schools') return send(200, [{ name: 'StMarks', display_name: "St. Mark's" }]);
+    if (req.url === '/v1/caselists/hspf26/schools/StMarks/teams') return send(200, [{ name: 'StMarksAB', display_name: "St. Mark's AB" }]);
+    if (req.method === 'POST' && req.url === '/v1/caselists/hspf26/schools/StMarks/teams/StMarksAB/rounds') {
+      const chunks = []; for await (const c of req) chunks.push(c);
+      uploads.push(JSON.parse(Buffer.concat(chunks).toString()));
+      if (clStaleToken) {
+        // Simulate: a newer login is saved while this request is in flight, then this request 401s.
+        await writeFile(keyStore, JSON.stringify({ token: 'NEWER-TOKEN', expires: '2099-01-01T00:00:00Z' }));
+        return send(401, { message: 'Not Authorized' });
+      }
+      return send(201, { round_id: uploads.length });
+    }
     if (req.url === '/v1/tabroom/rounds?current=true') return send(200, []);
     if (req.url === '/v1/tabroom/rounds') return send(200, [{ id: 9, tournament: 'Glenbrooks', round: 'R3', side: 'Neg', opponent: 'Lexington AB', judge: 'Smith', start_time: '2026-10-10T14:00:00Z', share: 'x' }]);
     return send(404, {});
@@ -206,6 +223,56 @@ test('tabroom: a 401 later deletes the stored token (login_expired); logout also
   await access(keyStore);
   assert.deepEqual((await call('/tabroom/logout', {})).body, { ok: true });
   await assert.rejects(access(keyStore));
+});
+
+const loginOk = () => call('/tabroom/login', { username: 'me@x.com', password: 'right-pw-123' }).then((r) => waitJob(r.body.job));
+const ROUND_IN = { tournament: 'Glenbrooks', side: 'Con', round: '3', opponent: 'Lexington AB', judge: 'Smith', report: 'Read the AI DA' };
+
+test('caselist: not logged in → not_logged_in for lists and upload', async () => {
+  await call('/tabroom/logout', {});
+  assert.deepEqual(await waitJob((await call('/caselist/caselists', {})).body.job), { state: 'error', message: 'not_logged_in' });
+  const up = await waitJob((await call('/caselist/upload', { caselist: 'hspf26', school: 'StMarks', team: 'StMarksAB', round: ROUND_IN, folder: sendDir })).body.job);
+  assert.deepEqual(up, { state: 'error', message: 'not_logged_in' });
+  assert.equal(uploads.length, 0);
+});
+
+test('caselist: caselist → school → team lists (archived hidden)', async () => {
+  await loginOk();
+  assert.deepEqual((await waitJob((await call('/caselist/caselists', {})).body.job)).result, [{ name: 'hspf26', label: 'HS PF 2026', event: 'pf' }]);
+  assert.deepEqual((await waitJob((await call('/caselist/schools', { caselist: 'hspf26' })).body.job)).result, [{ name: 'StMarks', label: "St. Mark's" }]);
+  assert.deepEqual((await waitJob((await call('/caselist/teams', { caselist: 'hspf26', school: 'StMarks' })).body.job)).result, [{ name: 'StMarksAB', label: "St. Mark's AB" }]);
+});
+
+test("caselist: upload a picked file sends Verbatim's body with side normalized", async () => {
+  const r = await waitJob((await call('/caselist/upload', {
+    caselist: 'hspf26', school: 'StMarks', team: 'StMarksAB', round: ROUND_IN, file: { name: '1NC.docx', base64: Buffer.from('DOC').toString('base64') },
+  })).body.job);
+  assert.deepEqual(r, { state: 'done', result: { name: '1NC.docx' } });
+  assert.deepEqual(uploads.at(-1), {
+    tournament: 'Glenbrooks', side: 'N', round: '3', opponent: 'Lexington AB', judge: 'Smith', report: 'Read the AI DA',
+    opensource: Buffer.from('DOC').toString('base64'), filename: '1NC.docx',
+  });
+});
+
+test('caselist: upload the newest send doc from a folder', async () => {
+  const r = await waitJob((await call('/caselist/upload', { caselist: 'hspf26', school: 'StMarks', team: 'StMarksAB', round: ROUND_IN, folder: sendDir })).body.job);
+  assert.equal(r.result.name, 'Send 1AC.docx');
+  assert.equal(Buffer.from(uploads.at(-1).opensource, 'base64').toString(), 'docx-bytes');
+});
+
+test('caselist: a stale 401 does not delete a newer saved login', async () => {
+  clStaleToken = true;
+  const r = await waitJob((await call('/caselist/upload', { caselist: 'hspf26', school: 'StMarks', team: 'StMarksAB', round: ROUND_IN, folder: sendDir })).body.job);
+  clStaleToken = false;
+  assert.deepEqual(r, { state: 'error', message: 'login_expired' });
+  assert.equal(JSON.parse(await readFile(keyStore, 'utf8')).token, 'NEWER-TOKEN');
+});
+
+test('caselist: password and token never logged during caselist work', async () => {
+  const logText = await readFile(helperLog, 'utf8');
+  assert.ok(!logText.includes('right-pw-123'));
+  assert.ok(!logText.includes('CLTOKEN0123456789abcdef01234567'));
+  assert.ok(logText.includes('caselist upload ok hspf26 StMarks StMarksAB 1NC.docx'));
 });
 
 test('SIGTERM removes the session file but keeps identity', async () => {
