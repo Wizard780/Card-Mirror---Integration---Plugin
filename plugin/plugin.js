@@ -962,7 +962,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
   }
 
   // ---------------------------------------------------------------- Scouting
-  const displayTournament = (t) => String(t ?? '').replace(/^\d+---/, '');
+  const displayTournament = (t) => String(t ?? '').replace(/^\s*\d+\s*-+\s*/, '');
   const shortDate = (s) => {
     const d = new Date(Date.parse(String(s ?? '').replace(' ', 'T')));
     return Number.isFinite(d.getTime()) ? d.toLocaleDateString([], { month: 'short', day: 'numeric' }) : '';

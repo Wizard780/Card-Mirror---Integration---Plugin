@@ -863,3 +863,15 @@ test('scout with no saved caselist: the helper finds the event; no picker; it is
   await cmd('caselistScout').run(none.api);
   assert.equal(none.toasts.at(-1), 'No caselist page for lexington-alhu yet. Try Search the caselist…');
 });
+
+test('team page hides the caselist sort prefix in every spelling ("03 -- Name", "03---Name")', async () => {
+  const team = { rounds: [
+    { ...TEAM.rounds[0], id: 21, tournament: '03 -- Mid America Cup' },
+    { ...TEAM.rounds[1], id: 22, tournament: '01---Harvard Union Season Opener' },
+  ], cites: [{ ...TEAM.cites[0], roundId: 21, tournament: '03 -- Mid America Cup' }] };
+  const h = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/scout': SCOUT_HIT, '/caselist/team': team } });
+  await cmd('caselistScout').run(h.api);
+  assert.deepEqual(h.pages[0].rounds.map((r) => r.label.split(' · ')[0]), ['Mid America Cup', 'Harvard Union Season Opener']);
+  assert.equal(h.pages[0].rounds[0].info[0][1], 'Mid America Cup');
+  assert.equal(h.pages[0].cites[0].detail, 'Mid America Cup · Round 3');
+});

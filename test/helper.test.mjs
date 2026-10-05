@@ -352,7 +352,7 @@ test('scouting: search returns teams; team returns rounds newest first with cite
   const s = await waitJob((await call('/caselist/search', { caselist: 'hspf26', q: 'Lexington AlHu' })).body.job);
   assert.deepEqual(s.result, [{ school: 'Lexington', team: 'AlHu', label: 'Lexington AlHu', schoolLabel: 'Lexington' }]);
   const t = await waitJob((await call('/caselist/team', { caselist: 'hspf26', school: 'Lexington', team: 'AlHu' })).body.job);
-  assert.deepEqual(t.result.rounds.map((r) => r.id), [11, 12, 13, 14]);
+  assert.deepEqual(t.result.rounds.map((r) => r.id), [11, 14, 12, 13], "openCaselist order: newest tournament, then latest round");
   assert.equal(t.result.cites[0].roundId, 11);
 });
 

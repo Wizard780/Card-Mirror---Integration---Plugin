@@ -176,3 +176,22 @@ test('listTeamsDetailed returns each team with its debaters (last names and full
     { school: 'Lexington', team: 'All', label: 'Lexington All', debaters: ['Teams'], names: ['All Teams'] },
   ]);
 });
+
+test('getTeam orders like openCaselist: newest tournament first, latest round first (elims before prelims), general disclosure last', async () => {
+  const R = (round_id, tournament, round, updated_at) => ({ round_id, side: 'A', tournament, round, opponent: '', judge: '', report: '', opensource: null, video: null, updated_at });
+  const f = fake({
+    '/caselists/hspf26/schools/S/teams/T/rounds': { body: [
+      R(1, '01 -- Harvard Union Season Opener', '1', '2026-09-26 20:00:00'),
+      R(2, '01 -- Harvard Union Season Opener', 'Doubles', '2026-09-26 09:00:00'),
+      R(3, '03 -- Mid America Cup', '4', '2026-09-27 18:00:00'),
+      R(4, '03 -- Mid America Cup', '6', '2026-09-27 10:00:00'),
+      R(5, '0---All Tournaments', 'All', '2026-10-01 10:00:00'),
+      R(6, '03 -- Mid America Cup', '5', '2026-09-26 23:00:00'),
+      R(7, '01 -- Harvard Union Season Opener', '6', '2026-09-26 12:00:00'),
+      R(8, '01 -- Harvard Union Season Opener', 'Octas', '2026-09-26 08:00:00'),
+    ] },
+    '/caselists/hspf26/schools/S/teams/T/cites': { body: [] },
+  });
+  const t = await getTeam('TOK', 'hspf26', 'S', 'T', f.opts);
+  assert.deepEqual(t.rounds.map((r) => r.id), [4, 6, 3, 8, 2, 7, 1, 5]);
+});
