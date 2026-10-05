@@ -187,6 +187,31 @@ textarea.du-input{resize:vertical;min-height:3.4em}
 .du-stacked .du-row-detail{white-space:normal}
 .du-new{margin-left:8px;font-size:.72rem;font-weight:600;letter-spacing:.02em;color:var(--pmd-c-success)}
 .du-empty{padding:22px 12px;text-align:center;font-size:.88rem;color:var(--pmd-c-text-muted)}
+.du-tabs{margin-top:12px;width:max-content}
+.du-tabs button{flex:none;padding:5px 14px;font-size:.85rem}
+.du-tabs button[aria-selected="true"]{background:var(--pmd-c-accent);color:var(--pmd-c-text-on-accent);font-weight:600}
+.du-team{height:min(86vh,680px)}
+.du-split{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,6fr);flex:1 1 auto;min-height:0;border-top:1px solid var(--pmd-c-divider)}
+.du-split .du-list{max-height:none;min-height:0;padding:8px;border-right:1px solid var(--pmd-c-divider)}
+.du-foot.du-foot-end{justify-content:flex-end;flex-wrap:wrap}
+.du-row.du-dim .du-row-main{color:var(--pmd-c-text-muted)}
+.du-row-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.du-row-sub{font-size:.8rem;color:var(--pmd-c-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.du-row-sub:empty{display:none}
+.du-pane{overflow:auto;padding:14px 18px;font-size:.88rem;line-height:1.45}
+.du-info{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 14px;margin:0}
+.du-info dt{color:var(--pmd-c-text-muted)}
+.du-info dd{margin:0;overflow-wrap:anywhere}
+.du-pane h3{margin:16px 0 6px;font-size:.8rem;font-weight:600;color:var(--pmd-c-text-secondary)}
+.du-pane h3:first-child{margin-top:0}
+.du-pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;color:var(--pmd-c-text)}
+.du-cite + .du-cite{margin-top:12px}
+.du-pane-title{margin:0 0 2px;font-size:1rem;font-weight:600;line-height:1.3}
+.du-pane-meta{margin:0 0 12px;font-size:.82rem;color:var(--pmd-c-text-muted)}
+.du-cite-title{font-weight:600;margin-bottom:2px}
+@media (max-width:640px){.du-split{grid-template-columns:1fr;grid-template-rows:minmax(0,2fr) minmax(0,3fr)}.du-split .du-list{border-right:0;border-bottom:1px solid var(--pmd-c-divider)}}
+.du-btn:disabled{opacity:.5;cursor:default}
+.du-btn:disabled:hover{background:var(--pmd-c-bg)}
 `;
 
   function el(tag, props = {}, kids = []) {
@@ -460,6 +485,102 @@ textarea.du-input{resize:vertical;min-height:3.4em}
           if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); submit(); }
         });
         fill.focus();
+      });
+    },
+
+    // Caselist team page: list on the left, details of the selected item on the right.
+    teamPage(spec) {
+      return new Promise((resolve) => {
+        const d = openDialog({ title: spec.title, subtitle: spec.subtitle, width: '780px' });
+        d.dialog.className += ' du-team';
+        d.foot.className += ' du-foot-end';
+        const tabs = el('div', { class: 'du-seg du-tabs', data: { field: 'tabs' }, attrs: { role: 'tablist' } });
+        const list = el('div', { class: 'du-list', data: { field: 'list' }, attrs: { role: 'listbox' } });
+        const pane = el('div', { class: 'du-pane', data: { field: 'pane' } });
+        const split = el('div', { class: 'du-split' }, [list, pane]);
+        d.body.remove();
+        if (d.dialog.insertBefore) d.dialog.insertBefore(split, d.foot); else d.dialog.append(split);
+        d.head.append(tabs);
+        let tab = 'rounds';
+        const sel = { rounds: 0, cites: 0 };
+        const items = () => spec[tab];
+        const current = () => items()[sel[tab]];
+        const tabBtns = [['rounds', 'Rounds'], ['cites', 'Cites']].map(([key, text]) => {
+          const b = el('button', { type: 'button', textContent: `${text} (${spec[key].length})`, data: { value: key }, attrs: { role: 'tab' } });
+          b.addEventListener('click', () => { tab = key; render(); });
+          tabs.append(b);
+          return b;
+        });
+        const section = (title, kids) => [el('h3', { textContent: title }), ...kids];
+        const renderPane = () => {
+          pane.textContent = '';
+          const it = current();
+          if (!it) {
+            pane.append(el('div', { class: 'du-empty', textContent: tab === 'rounds' ? 'No rounds disclosed yet.' : 'No cite entries yet.' }));
+            return;
+          }
+          if (tab === 'rounds') {
+            const dl = el('dl', { class: 'du-info' });
+            for (const [k, v] of it.info) dl.append(el('dt', { textContent: k }), el('dd', { textContent: v }));
+            pane.append(...section('Round', [dl]));
+            pane.append(...section('Round report', [el('p', { class: `du-pre${it.report ? '' : ' du-muted'}`, textContent: it.report || 'No report.' })]));
+            if (it.cites.length) {
+              pane.append(...section('Cites for this round', it.cites.map((c) => el('div', { class: 'du-cite' }, [
+                el('div', { class: 'du-cite-title', textContent: c.title }), el('p', { class: 'du-pre', textContent: c.text }),
+              ]))));
+            }
+          } else {
+            pane.append(el('h2', { class: 'du-pane-title', textContent: it.label }), el('p', { class: 'du-pane-meta', textContent: it.detail }), el('p', { class: 'du-pre', textContent: it.text || 'No cites text.' }));
+          }
+        };
+        const renderFoot = () => {
+          d.foot.textContent = '';
+          const it = current();
+          if (spec.onViewOnline) d.foot.append(button('View on openCaselist', false, () => spec.onViewOnline(spec.pageUrl)));
+          if (tab === 'rounds' && it) {
+            if (it.cites.length) d.foot.append(button('Copy cites', false, () => spec.onCopy(it.cites.map((c) => `${c.title}\n${c.text}`).join('\n\n'), 'cites')));
+            if (it.report) d.foot.append(button('Copy report', false, () => spec.onCopy(it.report, 'report')));
+            const open = button('Open doc', true, () => spec.onOpen(it.key));
+            open.title = it.hasFile ? 'Enter' : 'This round has cites only, no file';
+            if (!it.hasFile) open.disabled = true;
+            d.foot.append(open);
+          } else if (tab === 'cites' && it) {
+            d.foot.append(button('Copy cites', true, () => spec.onCopy(it.text, 'cites')));
+          }
+        };
+        const render = () => {
+          tabBtns.forEach((b) => b.setAttribute('aria-selected', b.dataset.value === tab ? 'true' : 'false'));
+          list.textContent = '';
+          items().forEach((it, i) => {
+            // Two lines: what (tournament / cite title) on top, the specifics underneath.
+            const [top, ...rest] = tab === 'rounds' ? it.label.split(' · ') : [it.label, it.detail];
+            const row = el('div', { class: `du-row${tab === 'rounds' && !it.hasFile ? ' du-dim' : ''}`, attrs: { role: 'option', 'aria-selected': i === sel[tab] ? 'true' : 'false' } }, [
+              el('span', { class: 'du-row-text' }, [
+                el('span', { class: 'du-row-main', textContent: top, title: it.label }),
+                el('span', { class: 'du-row-sub', textContent: rest.join(' · ') }),
+              ]),
+              tab === 'rounds' ? el('span', { class: 'du-row-detail', textContent: it.detail }) : null,
+            ]);
+            row.addEventListener('mousedown', (e) => { e.preventDefault(); sel[tab] = i; render(); });
+            row.addEventListener('dblclick', () => { if (tab === 'rounds' && it.hasFile) spec.onOpen(it.key); });
+            list.append(row);
+            if (i === sel[tab] && row.scrollIntoView) row.scrollIntoView({ block: 'nearest' });
+          });
+          if (!items().length) list.append(el('div', { class: 'du-empty', textContent: 'Nothing here yet.' }));
+          renderPane();
+          renderFoot();
+        };
+        const close = () => { d.close(); resolve(); };
+        d.onDismiss(close);
+        d.dialog.addEventListener('keydown', (e) => {
+          const n = items().length;
+          if (e.key === 'ArrowDown' && n) { e.preventDefault(); sel[tab] = Math.min(sel[tab] + 1, n - 1); render(); }
+          else if (e.key === 'ArrowUp' && n) { e.preventDefault(); sel[tab] = Math.max(sel[tab] - 1, 0); render(); }
+          else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); tab = e.key === 'ArrowRight' ? 'cites' : 'rounds'; render(); }
+          else if (e.key === 'Enter' && tab === 'rounds') { e.preventDefault(); const it = current(); if (it && it.hasFile) spec.onOpen(it.key); }
+        });
+        render();
+        d.dialog.focus();
       });
     },
 

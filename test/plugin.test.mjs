@@ -556,7 +556,9 @@ test('caselist newest: a too-big or missing newest doc is refused before upload;
 function fakeDom() {
   const doc = { activeElement: null };
   class El {
-    constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.listeners = {}; this.style = { setProperty() {} }; this.value = ''; this.textContent = ''; this.dataset = {}; this.attrs = {}; }
+    constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.listeners = {}; this.style = { setProperty() {} }; this.value = ''; this._text = ''; this.dataset = {}; this.attrs = {}; }
+    get textContent() { return this._text; }
+    set textContent(v) { this._text = String(v); this.children = []; }
     setAttribute(k, v) { this.attrs[k] = String(v); }
     getAttribute(k) { return this.attrs[k] ?? null; }
     append(...kids) { for (const k of kids) { k.parent = this; this.children.push(k); } }
@@ -729,4 +731,33 @@ test('team page actions: copy without a clipboard explains; a vanished file says
   assert.equal(h.toasts.at(-1), "Couldn't copy to the clipboard.");
   await h.pages[0].onOpen(11);
   assert.equal(h.toasts.at(-1), "That round's file is no longer on the caselist.");
+});
+
+test('DOM team page: selecting a round shows its report and cites; Enter opens only rounds with files; tabs switch', async () => {
+  const dom = fakeDom();
+  const saved = { document: globalThis.document, Option: globalThis.Option, ui: window.__debateUploaderUI };
+  globalThis.document = dom.doc; globalThis.Option = dom.Option;
+  const h = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/search': LEX, '/caselist/team': TEAM, '/caselist/open': { name: 'a.docx', path: '/p', app: 'CardMirror' } } });
+  delete window.__debateUploaderUI; // drive the real DOM UI (one current round: no pickers needed)
+  try {
+    const running = cmd('caselistScout').run(h.api);
+    for (let i = 0; i < 300 && !dom.all(dom.doc.body).some((n) => n.dataset.field === 'pane'); i++) await new Promise((r) => setTimeout(r, 20));
+    const dialog = dom.all(dom.doc.body).find((n) => typeof n.className === 'string' && n.className.startsWith('du-dialog'));
+    const paneText = () => dom.all(dom.byField('pane')).map((n) => n.textContent).join('|');
+    assert.match(paneText(), /AI DA, Econ/);
+    assert.match(paneText(), /Smith 24/);
+    dialog.dispatch('keydown', { key: 'ArrowDown' });
+    assert.match(paneText(), /None \(cites only\)/);
+    const before = h.calls.filter((c) => c.route === '/caselist/open').length;
+    dialog.dispatch('keydown', { key: 'Enter' });
+    assert.equal(h.calls.filter((c) => c.route === '/caselist/open').length, before, 'Enter on a cites-only round opens nothing');
+    dialog.dispatch('keydown', { key: 'ArrowRight' });
+    assert.match(paneText(), /Smith 24/);
+    assert.equal(dom.byField('tabs').children.map((b) => b.getAttribute('aria-selected')).join(), 'false,true');
+    dialog.dispatch('keydown', { key: 'Escape' });
+    await running;
+    assert.equal(dom.doc.body.children.length, 0);
+  } finally {
+    globalThis.document = saved.document; globalThis.Option = saved.Option; window.__debateUploaderUI = saved.ui;
+  }
 });
