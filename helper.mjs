@@ -8,7 +8,7 @@ import { homedir } from 'node:os';
 import { promisify } from 'node:util';
 import { createKeychain } from './lib/keychain.mjs';
 import { createRoomWatcher } from './lib/roomwatch.mjs';
-import { login, getRounds, listCaselists, listSchools, listTeams, createRound, CASELIST_BASE } from './lib/caselist.mjs';
+import { login, getRounds, listCaselists, listSchools, listTeams, createRound, searchTeams, getTeam, downloadOpenSource, CASELIST_BASE } from './lib/caselist.mjs';
 import { uploadToSpeechDrop, newestDocx, MAX_BYTES, listRoom, downloadFile, saveUnique, SD_BASE, SD_MEDIA } from './lib/speechdrop.mjs';
 
 const VERSION = '0.1.0';
@@ -16,6 +16,8 @@ const bridgeDir = process.env.DEBATE_UPLOADER_BRIDGE_DIR || defaultBridgeDir();
 const sdBase = process.env.DEBATE_UPLOADER_SD_BASE || SD_BASE;
 const sdMedia = process.env.DEBATE_UPLOADER_SD_MEDIA || SD_MEDIA;
 const downloadDir = process.env.DEBATE_UPLOADER_DOWNLOAD_DIR || join(homedir(), 'Downloads', 'SpeechDrop');
+const caselistDir = process.env.DEBATE_UPLOADER_CASELIST_DIR || join(homedir(), 'Downloads', 'Caselist');
+const dirSeg = (s) => String(s ?? '').replace(/[^A-Za-z0-9 _.-]/g, '_').replace(/^\.+/, '_') || '_';
 const opener = process.env.DEBATE_UPLOADER_OPENER || '/usr/bin/open';
 const run = promisify(execFile);
 const clBase = process.env.DEBATE_UPLOADER_CASELIST_BASE || CASELIST_BASE;
@@ -162,6 +164,21 @@ const routes = {
     await createRound(t, { caselist, school, team }, { ...(round || {}), filename: doc.name, base64: doc.bytes.toString('base64') }, clOpts);
     log('caselist upload ok', caselist, school, team, doc.name);
     return { name: doc.name };
+  }),
+
+  '/caselist/search': ({ caselist, q }) => authedJob('caselist search', (t) => searchTeams(t, caselist, q, clOpts)),
+  '/caselist/team': ({ caselist, school, team }) => authedJob('caselist team', (t) => getTeam(t, caselist, school, team, clOpts)),
+
+  // Read-only: downloads only a file listed on that team's own page.
+  '/caselist/open': ({ caselist, school, team, path }) => authedJob('caselist open', async (t) => {
+    const { rounds } = await getTeam(t, caselist, school, team, clOpts);
+    if (!path || !rounds.some((r) => r.opensource === path)) throw new Error('removed');
+    const { filename, bytes } = await downloadOpenSource(t, path, clOpts);
+    const where = await saveUnique(join(caselistDir, dirSeg(caselist), `${dirSeg(school)}-${dirSeg(team)}`), filename, bytes);
+    const inCardMirror = /\.(docx|cmir)$/i.test(filename);
+    await run(opener, inCardMirror ? ['-b', 'com.cardmirror.app', where] : [where]);
+    log('caselist open', caselist, school, team, filename);
+    return { name: filename, path: where, app: inCardMirror ? 'CardMirror' : 'default' };
   }),
 };
 

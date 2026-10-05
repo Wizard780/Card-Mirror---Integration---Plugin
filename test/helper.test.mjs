@@ -74,6 +74,21 @@ before(async () => {
     ]);
     if (req.url === '/v1/caselists/hspf26/schools') return send(200, [{ name: 'StMarks', display_name: "St. Mark's" }]);
     if (req.url === '/v1/caselists/hspf26/schools/StMarks/teams') return send(200, [{ name: 'StMarksAB', display_name: "St. Mark's AB" }]);
+    if (req.url.startsWith('/v1/search?')) return send(200, [
+      { type: 'team', school: 'Lexington', team: 'AlHu', team_display_name: 'Lexington AlHu', school_display_name: 'Lexington' },
+      { type: 'cite', school: 'Lexington', team: 'KaRo' },
+    ]);
+    if (req.url === '/v1/caselists/hspf26/schools/Lexington/teams/AlHu/rounds') return send(200, [
+      { round_id: 11, side: 'N', tournament: '03---Glenbrooks', round: '3', opponent: 'Strake KM', judge: 'Smith', report: 'AI DA, Econ', opensource: 'hspf26/Lexington/AlHu/Lexington-AlHu-Con-Glenbrooks-Round3.docx', video: null, updated_at: '2026-10-04 10:00:00' },
+      { round_id: 12, side: 'A', tournament: '01---Yale', round: '2', opponent: 'X', judge: 'Y', report: '', opensource: null, video: null, updated_at: '2026-09-20 10:00:00' },
+    ]);
+    if (req.url === '/v1/caselists/hspf26/schools/Lexington/teams/AlHu/cites') return send(200, [{ cite_id: 5, round_id: 11, title: '1NC', cites: 'Smith 24 — data centers' }]);
+    if (req.url.startsWith('/v1/download?')) {
+      const p = new URL(req.url, 'http://x').searchParams.get('path');
+      if (p !== 'hspf26/Lexington/AlHu/Lexington-AlHu-Con-Glenbrooks-Round3.docx') { res.writeHead(404); return res.end(); }
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': 'attachment; filename="Lexington-AlHu-Con-Glenbrooks-Round3.docx"' });
+      return res.end('LEXDOC');
+    }
     if (req.method === 'POST' && req.url === '/v1/caselists/hspf26/schools/StMarks/teams/StMarksAB/rounds') {
       const chunks = []; for await (const c of req) chunks.push(c);
       uploads.push(JSON.parse(Buffer.concat(chunks).toString()));
@@ -107,6 +122,7 @@ esac
     env: { ...process.env, DEBATE_UPLOADER_BRIDGE_DIR: bridgeDir, DEBATE_UPLOADER_SD_BASE: `http://127.0.0.1:${fakeSD.address().port}`,
       DEBATE_UPLOADER_SD_MEDIA: `http://127.0.0.1:${fakeSD.address().port}/media/`, DEBATE_UPLOADER_DOWNLOAD_DIR: downloadDir,
       DEBATE_UPLOADER_OPENER: opener,
+      DEBATE_UPLOADER_CASELIST_DIR: join(downloadDir, 'caselist'),
       DEBATE_UPLOADER_SD_WS: `ws://127.0.0.1:${fakeSD.address().port}/sock/websocket`,
       DEBATE_UPLOADER_CASELIST_BASE: `http://127.0.0.1:${fakeCL.address().port}/v1`, DEBATE_UPLOADER_SECURITY_BIN: security },
     stdio: ['ignore', openSync(helperLog, 'w'), openSync(helperLog, 'a')],
@@ -319,6 +335,29 @@ test('caselist: password and token never logged during caselist work', async () 
   assert.ok(!logText.includes('right-pw-123'));
   assert.ok(!logText.includes('CLTOKEN0123456789abcdef01234567'));
   assert.ok(logText.includes('caselist upload ok hspf26 StMarks StMarksAB 1NC.docx'));
+});
+
+test('scouting: search returns teams; team returns rounds newest first with cites', async () => {
+  await loginOk();
+  const s = await waitJob((await call('/caselist/search', { caselist: 'hspf26', q: 'Lexington AlHu' })).body.job);
+  assert.deepEqual(s.result, [{ school: 'Lexington', team: 'AlHu', label: 'Lexington AlHu', schoolLabel: 'Lexington' }]);
+  const t = await waitJob((await call('/caselist/team', { caselist: 'hspf26', school: 'Lexington', team: 'AlHu' })).body.job);
+  assert.deepEqual(t.result.rounds.map((r) => r.id), [11, 12]);
+  assert.equal(t.result.cites[0].roundId, 11);
+});
+
+test('scouting: open downloads a listed doc into the team folder and opens it in CardMirror', async () => {
+  const path = 'hspf26/Lexington/AlHu/Lexington-AlHu-Con-Glenbrooks-Round3.docx';
+  const r = await waitJob((await call('/caselist/open', { caselist: 'hspf26', school: 'Lexington', team: 'AlHu', path })).body.job);
+  const saved = join(downloadDir, 'caselist', 'hspf26', 'Lexington-AlHu', 'Lexington-AlHu-Con-Glenbrooks-Round3.docx');
+  assert.deepEqual(r, { state: 'done', result: { name: 'Lexington-AlHu-Con-Glenbrooks-Round3.docx', path: saved, app: 'CardMirror' } });
+  assert.equal(await readFile(saved, 'utf8'), 'LEXDOC');
+  assert.equal((await readFile(openLog, 'utf8')).trim().split('\n').at(-1), `-b|com.cardmirror.app|${saved}|`);
+});
+
+test('scouting: a path not in the team round list is refused without downloading', async () => {
+  const r = await waitJob((await call('/caselist/open', { caselist: 'hspf26', school: 'Lexington', team: 'AlHu', path: 'hspf26/Other/Team/secret.docx' })).body.job);
+  assert.deepEqual(r, { state: 'error', message: 'removed' });
 });
 
 test('SIGTERM removes the session file but keeps identity', async () => {
