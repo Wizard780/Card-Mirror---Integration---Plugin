@@ -86,6 +86,28 @@
     }
   }
 
+  // CardMirror wipes a file-loaded plugin's storage at every launch, so settings are
+  // mirrored to the helper and restored before each command.
+  const PREF_KEYS = ['caselistTarget', 'scoutCaselist', 'sendDocFolder', 'lastRoom', 'tabroomEmail'];
+  const restored = new WeakSet();
+  async function restorePrefs(api) {
+    if (restored.has(api)) return;
+    try {
+      const r = await api.flowPost(ID, '/prefs/get', {});
+      const prefs = r && r.ok && r.body && r.body.prefs;
+      if (!prefs) return;
+      for (const k of PREF_KEYS) if (prefs[k] != null && api.storage.get(k) == null) api.storage.set(k, prefs[k]);
+      restored.add(api);
+    } catch {
+      // helper down: the command itself will say so
+    }
+  }
+  function remember(api, key, value) {
+    api.storage.set(key, value);
+    Promise.resolve().then(() => api.flowPost(ID, '/prefs/set', { key, value })).catch(() => {});
+  }
+  const withPrefs = async (api, fn) => { await restorePrefs(api); return fn(); };
+
   async function call(api, route, body) {
     const r = await api.flowPost(ID, route, body);
     if (!r.ok) throw new Error(r.error);
@@ -657,7 +679,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     if (raw == null) return;
     const folder = String(raw).trim();
     if (!folder) return;
-    api.storage.set('sendDocFolder', folder);
+    remember(api, 'sendDocFolder', folder);
     api.showToast(`Send doc folder set to ${folder}`);
   }
 
@@ -701,7 +723,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
 
     api.showToast(`Uploading to SpeechDrop room ${room}…`);
     const result = await runJob(api, '/speechdrop/upload', body, u.sleep);
-    api.storage.set('lastRoom', room);
+    remember(api, 'lastRoom', room);
     api.showToast(`Uploaded "${result.name}" to SpeechDrop room ${result.room}`);
   }
 
@@ -724,7 +746,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
       // Long-poll the helper, which holds a live SpeechDrop socket for the room.
       let res = await call(api, '/speechdrop/watch', { room, version: 0 });
       let { files, version, live } = res;
-      api.storage.set('lastRoom', room);
+      remember(api, 'lastRoom', room);
       const seen = new Set(files.map((f) => f.index));
       const toItems = () => files.map((f) => ({ key: f.index, label: f.name, detail: formatTime(f.ctime), isNew: !seen.has(f.index) }));
       const KEYS = '↑↓ + Enter or click to open · Esc to close';
@@ -774,7 +796,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
       if (!password) return;
       api.showToast('Logging in to Tabroom…');
       await runJob(api, '/tabroom/login', { username: email, password }, u.sleep);
-      api.storage.set('tabroomEmail', email);
+      remember(api, 'tabroomEmail', email);
       api.showToast('Logged in to Tabroom.');
     } catch (err) {
       api.showToast(message(err.message, { tabroom: true }));
@@ -851,7 +873,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     if (ti == null) return null;
     const t = teams[ti];
     const target = { caselist: c.name, caselistLabel: c.label, event: c.event || '', school: s.name, schoolLabel: s.label, team: t.name, teamLabel: t.label };
-    api.storage.set('caselistTarget', target);
+    remember(api, 'caselistTarget', target);
     api.showToast(`Caselist team set to ${c.label} · ${s.label} · ${t.label}`);
     return target;
   }
@@ -961,7 +983,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     const i = await u.choose('Pick a caselist', ordered.map((c) => c.label));
     if (i == null) return null;
     const cl = { name: ordered[i].name, label: ordered[i].label, event: ordered[i].event || '' };
-    api.storage.set('scoutCaselist', cl);
+    remember(api, 'scoutCaselist', cl);
     return cl;
   }
 
@@ -1037,13 +1059,17 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         if (i == null) return;
         round = withOpp[i];
       }
-      const cl = ownCaselist(api) || api.storage.get('scoutCaselist') || (await pickCaselist(api, u));
-      if (!cl) return;
+      // Your caselist if known; otherwise the helper tries every open caselist (no event picker).
+      let cl = ownCaselist(api) || api.storage.get('scoutCaselist') || null;
       // The helper matches Tabroom's "School CODE" to a caselist team by the debater pair.
-      const found = await runJob(api, '/caselist/scout', { caselist: cl.name, opponent: round.opponent }, u.sleep);
+      const found = await runJob(api, '/caselist/scout', cl ? { caselist: cl.name, opponent: round.opponent } : { opponent: round.opponent }, u.sleep);
+      if (!cl && found.caselist) {
+        cl = found.caselist;
+        remember(api, 'scoutCaselist', cl);
+      }
       let team = found.match;
       if (!team) {
-        if (!found.candidates.length) return api.showToast(`No caselist page for ${round.opponent} on ${cl.label} yet. Try Search the caselist…`);
+        if (!found.candidates.length) return api.showToast(`No caselist page for ${round.opponent}${cl ? ` on ${cl.label}` : ''} yet. Try Search the caselist…`);
         const i = await u.choose(`Which team is ${round.opponent}?`, found.candidates.map((t) => (t.names && t.names.length ? `${t.label} (${t.names.join(' & ')})` : t.label)));
         if (i == null) return;
         team = found.candidates[i];
@@ -1096,77 +1122,77 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         label: 'Upload newest send doc to SpeechDrop',
         keywords: ['speechdrop', 'upload', 'send doc', 'drop'],
         defaultKey: null,
-        run: (api) => uploadToSpeechDrop(api, 'newest'),
+        run: (api) => withPrefs(api, () => uploadToSpeechDrop(api, 'newest')),
       },
       {
         id: `${ID}.sdPick`,
         label: 'Upload file to SpeechDrop…',
         keywords: ['speechdrop', 'upload', 'file', 'drop'],
         defaultKey: null,
-        run: (api) => uploadToSpeechDrop(api, 'pick'),
+        run: (api) => withPrefs(api, () => uploadToSpeechDrop(api, 'pick')),
       },
       {
         id: `${ID}.sdBrowse`,
         label: 'Browse SpeechDrop room…',
         keywords: ['speechdrop', 'browse', 'open', 'download', 'room'],
         defaultKey: null,
-        run: (api) => browse(api),
+        run: (api) => withPrefs(api, () => browse(api)),
       },
       {
         id: `${ID}.setFolder`,
         label: SET_FOLDER_LABEL,
         keywords: ['speechdrop', 'send doc', 'folder'],
         defaultKey: null,
-        run: (api) => setFolder(api),
+        run: (api) => withPrefs(api, () => setFolder(api)),
       },
       {
         id: `${ID}.tabroomLogin`,
         label: 'Log in to Tabroom…',
         keywords: ['tabroom', 'caselist', 'login', 'sign in'],
         defaultKey: null,
-        run: (api) => tabroomLogin(api),
+        run: (api) => withPrefs(api, () => tabroomLogin(api)),
       },
       {
         id: `${ID}.tabroomLogout`,
         label: 'Log out of Tabroom',
         keywords: ['tabroom', 'caselist', 'logout', 'sign out'],
         defaultKey: null,
-        run: (api) => tabroomLogout(api),
+        run: (api) => withPrefs(api, () => tabroomLogout(api)),
       },
       {
         id: `${ID}.tabroomRounds`,
         label: 'Show my Tabroom rounds',
         keywords: ['tabroom', 'rounds', 'pairings', 'opponent', 'judge'],
         defaultKey: null,
-        run: (api) => tabroomRounds(api),
+        run: (api) => withPrefs(api, () => tabroomRounds(api)),
       },
       {
         id: `${ID}.caselistUpload`,
         label: 'Upload to Caselist…',
         keywords: ['caselist', 'opencaselist', 'disclose', 'disclosure', 'upload', 'open source'],
         defaultKey: null,
-        run: (api) => caselistUpload(api),
+        run: (api) => withPrefs(api, () => caselistUpload(api)),
       },
       {
         id: `${ID}.caselistTeam`,
         label: 'Change caselist team…',
         keywords: ['caselist', 'opencaselist', 'team', 'school'],
         defaultKey: null,
-        run: (api) => caselistTeam(api),
+        run: (api) => withPrefs(api, () => caselistTeam(api)),
       },
       {
         id: `${ID}.caselistScout`,
         label: 'Scout next opponent…',
         keywords: ['scout', 'opponent', 'caselist', 'prep', 'disclosure'],
         defaultKey: null,
-        run: (api) => caselistScout(api),
+        run: (api) => withPrefs(api, () => caselistScout(api)),
       },
       {
         id: `${ID}.caselistSearch`,
         label: 'Search the caselist…',
         keywords: ['caselist', 'search', 'team', 'school', 'opencaselist'],
         defaultKey: null,
-        run: (api) => caselistSearch(api),
+        run: (api) => withPrefs(api, () => caselistSearch(api)),
       },
     ],
   });

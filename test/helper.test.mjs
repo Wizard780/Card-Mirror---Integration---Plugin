@@ -132,6 +132,7 @@ esac
       DEBATE_UPLOADER_SD_MEDIA: `http://127.0.0.1:${fakeSD.address().port}/media/`, DEBATE_UPLOADER_DOWNLOAD_DIR: downloadDir,
       DEBATE_UPLOADER_OPENER: opener,
       DEBATE_UPLOADER_CASELIST_DIR: join(downloadDir, 'caselist'),
+      DEBATE_UPLOADER_PREFS_FILE: join(downloadDir, 'prefs', 'prefs.json'),
       DEBATE_UPLOADER_SD_WS: `ws://127.0.0.1:${fakeSD.address().port}/sock/websocket`,
       DEBATE_UPLOADER_CASELIST_BASE: `http://127.0.0.1:${fakeCL.address().port}/v1`, DEBATE_UPLOADER_SECURITY_BIN: security },
     stdio: ['ignore', openSync(helperLog, 'w'), openSync(helperLog, 'a')],
@@ -383,7 +384,23 @@ test('scout match: Tabroom "Lexington AH" → the team whose debaters are A… &
   assert.equal(r.state, 'done');
   assert.deepEqual(r.result.match, { school: 'Lexington', team: 'AlHu', label: 'Lexington AlHu', debaters: ['Ali', 'Hu'], names: ['Simal Ali', 'Christina Hu'], schoolLabel: 'Lexington' });
   const none = await waitJob((await call('/caselist/scout', { caselist: 'hspf26', opponent: 'Nowhere ZZ' })).body.job);
-  assert.deepEqual(none.result, { match: null, candidates: [] });
+  assert.deepEqual(none.result, { caselist: null, match: null, candidates: [] });
+});
+
+test('scout with no caselist given tries every open caselist and reports which one matched', async () => {
+  const r = await waitJob((await call('/caselist/scout', { opponent: 'Lexington AH' })).body.job);
+  assert.equal(r.state, 'done');
+  assert.deepEqual(r.result.caselist, { name: 'hspf26', label: 'HS PF 2026', event: 'pf' });
+  assert.equal(r.result.match.team, 'AlHu');
+  const none = await waitJob((await call('/caselist/scout', { opponent: 'Nowhere ZZ' })).body.job);
+  assert.deepEqual(none.result, { caselist: null, match: null, candidates: [] });
+});
+
+test('prefs: set then get round-trips through the helper; unknown keys are refused', async () => {
+  assert.deepEqual((await call('/prefs/get', {})).body, { ok: true, prefs: {} });
+  assert.deepEqual((await call('/prefs/set', { key: 'lastRoom', value: 'FwaXtA' })).body, { ok: true });
+  assert.deepEqual((await call('/prefs/get', {})).body, { ok: true, prefs: { lastRoom: 'FwaXtA' } });
+  assert.deepEqual((await call('/prefs/set', { key: 'password', value: 'x' })).body, { ok: false, error: 'bad_key' });
 });
 
 test('scouting: a path not in the team round list is refused without downloading', async () => {

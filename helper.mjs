@@ -8,6 +8,7 @@ import { homedir } from 'node:os';
 import { promisify } from 'node:util';
 import { createKeychain } from './lib/keychain.mjs';
 import { createRoomWatcher } from './lib/roomwatch.mjs';
+import { createPrefs } from './lib/prefs.mjs';
 import { login, getRounds, listCaselists, listSchools, listTeams, createRound, searchTeams, getTeam, downloadOpenSource, listTeamsDetailed, CASELIST_BASE } from './lib/caselist.mjs';
 import { parseOpponent, schoolScore, pickTeam } from './lib/scout.mjs';
 import { uploadToSpeechDrop, newestDocx, MAX_BYTES, listRoom, downloadFile, saveUnique, SD_BASE, SD_MEDIA } from './lib/speechdrop.mjs';
@@ -38,6 +39,7 @@ async function openSafely(path) {
 const clBase = process.env.DEBATE_UPLOADER_CASELIST_BASE || CASELIST_BASE;
 const keychain = createKeychain({ bin: process.env.DEBATE_UPLOADER_SECURITY_BIN || '/usr/bin/security' });
 const clOpts = { base: clBase };
+const prefs = createPrefs(process.env.DEBATE_UPLOADER_PREFS_FILE || join(homedir(), 'Library', 'Application Support', 'debate-uploader', 'prefs.json'));
 // Live room lists. Budget per /speechdrop/watch call must stay under CardMirror's
 // 3 s flowPost limit: ≤1 s socket wait + ≤1.5 s HTTP fallback, or a ≤1 s long-poll.
 const watcher = createRoomWatcher({
@@ -80,6 +82,22 @@ const authedJob = (label, fn) => ({
     }
   }),
 });
+
+async function scoutIn(t, caselist, opponent) {
+  const { school } = parseOpponent(opponent);
+  const schools = await listSchools(t, caselist, clOpts);
+  const likely = schools
+    .map((s, i) => ({ s, i, score: schoolScore(school, s.label) }))
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score || a.i - b.i)
+    .slice(0, 6)
+    .map((x) => x.s);
+  const teams = (await Promise.all(likely.map((s) =>
+    listTeamsDetailed(t, caselist, s.name, clOpts).then((ts) => ts.map((x) => ({ ...x, schoolLabel: s.label })))))).flat();
+  const { match, candidates } = pickTeam(opponent, teams);
+  log('caselist scout', caselist, opponent, match ? `${match.school}/${match.team}` : `${candidates.length} candidates`);
+  return { match, candidates: candidates.slice(0, 15) };
+}
 
 const routes = {
   '/job': ({ id }) => jobs.get(id),
@@ -181,21 +199,27 @@ const routes = {
   }),
 
   // Tabroom "School CODE" → caselist team: rank schools by name, then match the debater pair.
+  // With no caselist given, every open caselist is tried and the matching one is reported.
   '/caselist/scout': ({ caselist, opponent }) => authedJob('caselist scout', async (t) => {
+    if (caselist) return { caselist: null, ...(await scoutIn(t, caselist, opponent)) };
+    const open = await listCaselists(t, clOpts);
+    const tries = await Promise.all(open.map((c) => scoutIn(t, c.name, opponent).then((r) => ({ c, r }), () => ({ c, r: { match: null, candidates: [] } }))));
     const { school } = parseOpponent(opponent);
-    const schools = await listSchools(t, caselist, clOpts);
-    const likely = schools
-      .map((s, i) => ({ s, i, score: schoolScore(school, s.label) }))
-      .filter((x) => x.score > 0)
-      .sort((a, b) => b.score - a.score || a.i - b.i)
-      .slice(0, 6)
-      .map((x) => x.s);
-    const teams = (await Promise.all(likely.map((s) =>
-      listTeamsDetailed(t, caselist, s.name, clOpts).then((ts) => ts.map((x) => ({ ...x, schoolLabel: s.label })))))).flat();
-    const { match, candidates } = pickTeam(opponent, teams);
-    log('caselist scout', caselist, opponent, match ? `${match.school}/${match.team}` : `${candidates.length} candidates`);
-    return { match, candidates: candidates.slice(0, 15) };
+    const hits = tries.filter((x) => x.r.match).sort((a, b) => schoolScore(school, b.r.match.schoolLabel) - schoolScore(school, a.r.match.schoolLabel));
+    if (!hits.length) return { caselist: null, match: null, candidates: [] };
+    const { c, r } = hits[0];
+    return { caselist: { name: c.name, label: c.label, event: c.event || '' }, ...r };
   }),
+
+  '/prefs/get': async () => ({ ok: true, prefs: await prefs.getAll() }),
+  '/prefs/set': async ({ key, value }) => {
+    try {
+      await prefs.set(key, value);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+  },
 
   '/caselist/search': ({ caselist, q }) => authedJob('caselist search', (t) => searchTeams(t, caselist, q, clOpts)),
   '/caselist/team': ({ caselist, school, team }) => authedJob('caselist team', (t) => getTeam(t, caselist, school, team, clOpts)),

@@ -10,9 +10,16 @@ before(async () => {
 const ok = (body) => ({ ok: true, status: 200, body });
 const cmd = (suffix) => def.commands.find((c) => c.id === `debate-uploader.${suffix}`);
 
-function harness({ responses = [], settings = {}, storage = {}, room = 'abc12', folderAnswer = null, email = 'me@x.com', password = 'pw-secret', file = { name: 'a.docx', size: 10, read: async () => 'QUJD' } } = {}) {
+function harness({ prefs = {}, responses = [], settings = {}, storage = {}, room = 'abc12', folderAnswer = null, email = 'me@x.com', password = 'pw-secret', file = { name: 'a.docx', size: 10, read: async () => 'QUJD' } } = {}) {
   const calls = [], toasts = [], prompts = [];
   const store = new Map(Object.entries(storage));
+  // The helper's settings copy (CardMirror wipes file-loaded plugin storage at launch).
+  const prefsSets = [];
+  const prefsReply = (route, body) => {
+    if (route === '/prefs/get') return ok({ ok: true, prefs });
+    if (route === '/prefs/set') { prefsSets.push([body.key, body.value]); return ok({ ok: true }); }
+    return null;
+  };
   const next = typeof responses === 'function' ? responses : () => responses.shift();
   window.__debateUploaderUI = {
     prompt: async (label, initial, opts = {}) => {
@@ -27,12 +34,12 @@ function harness({ responses = [], settings = {}, storage = {}, room = 'abc12', 
   };
   const api = {
     appVersion: '1.14.0',
-    flowPost: async (app, route, body) => { calls.push({ app, route, body }); return next(); },
+    flowPost: async (app, route, body) => { const pr = prefsReply(route, body); if (pr) return pr; calls.push({ app, route, body }); return next(); },
     showToast: (m) => toasts.push(m),
     storage: { get: (k) => store.get(k), set: (k, v) => store.set(k, v) },
     settings: { get: (k) => settings[k] ?? '' },
   };
-  return { api, calls, toasts, prompts, store };
+  return { api, calls, toasts, prompts, store, prefsReply, prefsSets };
 }
 
 test('registers eleven commands and one setting under the plugin id', () => {
@@ -202,6 +209,7 @@ function browseHarness({ watches, opens = {}, script, room = 'abc12' }) {
   const jobs = new Map();
   let w = 0;
   h.api.flowPost = async (app, route, body) => {
+    const pr = h.prefsReply(route, body); if (pr) return pr;
     h.calls.push({ app, route, body });
     if (route === '/speechdrop/watch') {
       await new Promise((r) => setImmediate(r));
@@ -385,11 +393,12 @@ test('tabroom logout calls the helper and confirms', async () => {
 
 // Caselist harness: each route's job answers from `results[route]`
 // (a value, an Error, or a function of the request body).
-function caselistHarness({ results = {}, direct = {}, choose = [], form = () => null, storage = {}, settings = {}, file } = {}) {
-  const h = harness({ storage, settings, file });
+function caselistHarness({ results = {}, direct = {}, choose = [], form = () => null, storage = {}, settings = {}, file, prefs = {} } = {}) {
+  const h = harness({ storage, settings, file, prefs });
   const jobs = new Map();
   let n = 0;
   h.api.flowPost = async (app, route, body) => {
+    const pr = h.prefsReply(route, body); if (pr) return pr;
     h.calls.push({ app, route, body });
     if (route === '/job') {
       const r = jobs.get(body.id);
@@ -655,8 +664,8 @@ test('DOM form: Upload with missing side shows an error and posts nothing', asyn
   assert.equal(h.calls.find((c) => c.route === '/caselist/upload'), undefined);
 });
 
-function scoutHarness({ results = {}, choose = [], storage = {}, prompt = null } = {}) {
-  const h = caselistHarness({ results, choose, storage });
+function scoutHarness({ results = {}, choose = [], storage = {}, prompt = null, prefs = {} } = {}) {
+  const h = caselistHarness({ results, choose, storage, prefs });
   h.pages = [];
   window.__debateUploaderUI.teamPage = async (spec) => { h.pages.push(spec); if (h.onPage) await h.onPage(spec); };
   if (prompt !== null) window.__debateUploaderUI.prompt = async (label, initial) => { h.prompts.push([label, initial]); return prompt; };
@@ -825,4 +834,32 @@ test('DOM team page: Enter on a button never opens the doc; row clicks keep focu
   } finally {
     globalThis.document = saved.document; globalThis.Option = saved.Option; window.__debateUploaderUI = saved.ui;
   }
+});
+
+test('settings survive CardMirror wiping plugin storage: restored from the helper before a command runs', async () => {
+  const h = scoutHarness({ storage: {}, prefs: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/scout': SCOUT_HIT, '/caselist/team': TEAM } });
+  await cmd('caselistScout').run(h.api);
+  assert.equal(h.chooseTitles.length, 0, 'no event picker');
+  assert.equal(h.calls.find((c) => c.route === '/caselist/scout').body.caselist, 'hspf26');
+  assert.deepEqual(h.store.get('caselistTarget'), TARGET);
+});
+
+test('saving a setting also saves it to the helper', async () => {
+  const h = harness({ folderAnswer: ' ~/Send Docs ' });
+  await cmd('setFolder').run(h.api);
+  assert.deepEqual(h.prefsSets, [['sendDocFolder', '~/Send Docs']]);
+});
+
+test('scout with no saved caselist: the helper finds the event; no picker; it is remembered', async () => {
+  const h = scoutHarness({ storage: {}, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/scout': { caselist: { name: 'hspf26', label: 'HS PF 2026', event: 'pf' }, ...SCOUT_HIT }, '/caselist/team': TEAM } });
+  await cmd('caselistScout').run(h.api);
+  assert.equal(h.chooseTitles.length, 0, 'never asks which event');
+  assert.deepEqual(h.calls.find((c) => c.route === '/caselist/scout').body, { opponent: 'lexington-alhu' });
+  assert.equal(h.pages[0].subtitle, 'HS PF 2026 · 2 rounds · 1 cite entry');
+  assert.deepEqual(h.store.get('scoutCaselist'), { name: 'hspf26', label: 'HS PF 2026', event: 'pf' });
+  assert.deepEqual(h.prefsSets, [['scoutCaselist', { name: 'hspf26', label: 'HS PF 2026', event: 'pf' }]]);
+
+  const none = scoutHarness({ storage: {}, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/scout': { caselist: null, match: null, candidates: [] } } });
+  await cmd('caselistScout').run(none.api);
+  assert.equal(none.toasts.at(-1), 'No caselist page for lexington-alhu yet. Try Search the caselist…');
 });

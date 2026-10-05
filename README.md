@@ -57,8 +57,8 @@ before uploading again. Requires **Log in to Tabroom…** first.
 
 ## Scouting
 
-- **Scout next opponent…**: takes your current Tabroom round's opponent (or pick a round) and finds their page on
-  your caselist by the **debater pair**: Tabroom's "Cranbrook FZ" matches the Cranbrook team whose debaters' last names
+- **Scout next opponent…**: takes your current Tabroom round's opponent (or pick a round) and finds their page by
+  the **debater pair**, with no event picker (your caselist if known, otherwise every open caselist is tried): Tabroom's "Cranbrook FZ" matches the Cranbrook team whose debaters' last names
   start with F and Z, in either order, even when school names differ a little. If two schools have a matching pair,
   the one closer to Tabroom's school name wins; if it's still unclear you pick (debater names shown).
 - **Search the caselist…**: pick a caselist (yours first), then a school and a team from type-to-filter lists.
@@ -67,6 +67,12 @@ The team page lists their **Rounds** (newest first; rounds with only cites are g
 round shows its tournament, round, side, opponent, judge, upload date, file, the full round report and that round's
 cites. **Enter** or **Open doc** downloads the doc to `~/Downloads/Caselist/<caselist>/<school>-<team>/` and opens it
 in CardMirror; **Copy report** / **Copy cites** copy text; ←→ switches tabs; Esc closes. Requires **Log in to Tabroom…**.
+
+## Settings
+
+CardMirror clears a plugin's saved settings at every launch when it was loaded from a file, so the helper keeps a
+copy in `~/Library/Application Support/debate-uploader/prefs.json` (send doc folder, last room, caselist team,
+Tabroom email; never passwords) and the plugin restores it before each command.
 
 ## Troubleshooting
 
