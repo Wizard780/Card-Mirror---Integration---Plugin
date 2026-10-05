@@ -113,6 +113,16 @@ in CardMirror; **Copy report** / **Copy cites** copy text; ←→ switches tabs;
 The plugin API can't edit documents, so this reaches CardMirror's editor through ProseMirror internals. If a
 CardMirror update changes those, the command says it couldn't reach the editor instead of doing anything.
 
+## Emphasis in other programs
+
+CardMirror saves its **Emphasis** style with bold switched off (underline + box only), so in Word, Google Docs and
+Pages emphasized words look like plain underlining. The plugin fixes this on the way out: every .docx it sends
+(SpeechDrop, caselist, email chain) goes with Emphasis set to bold, keeping its underline and box. Nothing else in
+the file changes, and CardMirror still reads it as emphasis.
+
+- **Make emphasis bold in newest send doc**: fixes the newest send doc in place, for sharing it any other way
+  (flash drive, share.tabroom.com in a browser, AirDrop).
+
 ## Email chain (Gmail)
 
 - **Set up Gmail for email chains…** (once): your Gmail address, then a Google **app password**. Make one at

@@ -13,15 +13,15 @@ import { login, getRounds, listCaselists, listSchools, listTeams, createRound, s
 import { parseOpponent, schoolScore, pickTeam } from './lib/scout.mjs';
 import { uploadToSpeechDrop, newestDocx, MAX_BYTES, listRoom, downloadFile, saveUnique, expandHome, SD_BASE, SD_MEDIA } from './lib/speechdrop.mjs';
 import { createEvidenceIndex } from './lib/evidence.mjs';
-import { cardDocx, headingsOf } from './lib/docx.mjs';
+import { cardDocx, headingsOf, boldEmphasis } from './lib/docx.mjs';
 import { draftReport } from './lib/report-draft.mjs';
 import { compare, skippedQualifiers, verdict, urlsIn } from './lib/cardcheck.mjs';
 import { getSource, safeFetch } from './lib/fetchsafe.mjs';
 import { buildMessage, newMessageId, sendMail, verifyLogin, isEmail } from './lib/smtp.mjs';
 import { recentMessages } from './lib/imap.mjs';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, stat, writeFile, rename } from 'node:fs/promises';
 
-const VERSION = '0.1.9';
+const VERSION = '0.1.10';
 const bridgeDir = process.env.DEBATE_UPLOADER_BRIDGE_DIR || defaultBridgeDir();
 const sdBase = process.env.DEBATE_UPLOADER_SD_BASE || SD_BASE;
 const sdMedia = process.env.DEBATE_UPLOADER_SD_MEDIA || SD_MEDIA;
@@ -57,6 +57,14 @@ function rescan(folders) {
 }
 // Tests point Card Check at a local server; real runs only ever fetch public addresses.
 const sourceOpts = process.env.DEBATE_UPLOADER_TEST_ALLOW_PRIVATE === '1' ? { fetchImpl: (u) => safeFetch(u, { allowPrivate: true }) } : {};
+// Every doc the plugin sends goes out with bold emphasis, so it reads right in Word,
+// Google Docs and Pages (CardMirror saves its Emphasis style with bold off).
+async function outgoing(file, folder) {
+  const doc = file
+    ? { name: String(file.name), bytes: Buffer.from(String(file.base64 ?? ''), 'base64') }
+    : await newestDocx(folder);
+  return /\.docx$/i.test(doc.name) ? { ...doc, bytes: boldEmphasis(doc.bytes) } : doc;
+}
 const cardFileName = (tag) => `${String(tag).replace(/[^A-Za-z0-9 ,'’-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60).trim() || 'Card'}.docx`;
 const clBase = process.env.DEBATE_UPLOADER_CASELIST_BASE || CASELIST_BASE;
 const keychain = createKeychain({ bin: process.env.DEBATE_UPLOADER_SECURITY_BIN || '/usr/bin/security' });
@@ -170,9 +178,7 @@ const routes = {
   '/speechdrop/upload': ({ room, file, folder }) => {
     const id = jobs.start(async () => {
       try {
-        const doc = file
-          ? { name: String(file.name), bytes: Buffer.from(String(file.base64 ?? ''), 'base64') }
-          : await newestDocx(folder);
+        const doc = await outgoing(file, folder);
         log('speechdrop upload', room, doc.name, `${doc.bytes.length} bytes`);
         const result = await uploadToSpeechDrop({ room, ...doc }, { base: sdBase });
         log('speechdrop ok', room, result.name);
@@ -314,15 +320,26 @@ const routes = {
     }),
   }),
 
+  // Fix the newest send doc in place for sharing any other way (flash drive, Tabroom web).
+  '/docx/bold-emphasis': async ({ folder }) => {
+    const doc = await newestDocx(folder);
+    const fixed = boldEmphasis(doc.bytes);
+    if (fixed === doc.bytes) return { ok: true, name: doc.name, changed: false };
+    const path = join(expandHome(folder), doc.name);
+    const tmp = `${path}.${process.pid}.tmp`;
+    await writeFile(tmp, fixed);
+    await rename(tmp, path);
+    log('bold emphasis', doc.name);
+    return { ok: true, name: doc.name, changed: true };
+  },
+
   '/caselist/newest': async ({ folder }) => {
     const doc = await newestDocx(folder);
     return { ok: true, name: doc.name, size: doc.bytes.length, mtime: doc.mtimeMs };
   },
 
   '/caselist/upload': ({ caselist, school, team, round, file, folder, expectName }) => authedJob('caselist upload', async (t) => {
-    const doc = file
-      ? { name: String(file.name), bytes: Buffer.from(String(file.base64 ?? ''), 'base64') }
-      : await newestDocx(folder);
+    const doc = await outgoing(file, folder);
     // Public and permanent: post only the file the user saw in the form, and nothing oversized.
     if (!file && expectName && doc.name !== expectName) throw new Error('newest_changed');
     if (doc.bytes.length > MAX_BYTES) throw new Error('too_large');
@@ -427,9 +444,7 @@ const routes = {
       if (!g) throw new Error('gmail_not_set_up');
       const list = [...new Set((Array.isArray(to) ? to : []).map((x) => String(x).trim()).filter(Boolean))];
       if (!list.length || list.length > 30 || !list.every(isEmail)) throw new Error('bad_recipients');
-      const doc = file
-        ? { name: String(file.name), bytes: Buffer.from(String(file.base64 ?? ''), 'base64') }
-        : await newestDocx(folder);
+      const doc = await outgoing(file, folder);
       if (doc.bytes.length > MAX_MAIL_BYTES) throw new Error('too_large');
       const subj = String(subject ?? '').trim() || doc.name.replace(/\.docx$/i, '');
       const threads = (await prefs.getAll()).emailThreads || {};

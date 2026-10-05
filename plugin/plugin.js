@@ -1738,6 +1738,18 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     }
   }
 
+  // ---------------------------------------------------------------- Bold emphasis
+  async function boldEmphasisCommand(api) {
+    try {
+      const folder = sendDocFolder(api);
+      if (!folder) throw new Error('no_folder');
+      const r = await call(api, '/docx/bold-emphasis', { folder });
+      api.showToast(r.changed ? `Emphasis in "${r.name}" now shows bold in Word and Google Docs.` : `"${r.name}" already shows emphasis as bold.`);
+    } catch (err) {
+      api.showToast(message(err.message, {}));
+    }
+  }
+
   // ---------------------------------------------------------------- Email chain (Gmail)
   async function gmailSetup(api) {
     const u = ui();
@@ -2146,6 +2158,13 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         keywords: ['mark', 'marked', 'red', 'cards', 'select'],
         defaultKey: null,
         run: (api) => withPrefs(api, () => markCards(api)),
+      },
+      {
+        id: `${ID}.boldEmphasis`,
+        label: 'Make emphasis bold in newest send doc',
+        keywords: ['emphasis', 'bold', 'word', 'google docs', 'export', 'format'],
+        defaultKey: null,
+        run: (api) => withPrefs(api, () => boldEmphasisCommand(api)),
       },
       {
         id: `${ID}.emailChain`,
