@@ -43,6 +43,17 @@ Uploads are never retried automatically. If a toast says to check the room, look
 If the list is always empty, link your Tabroom account to your student record on tabroom.com.
 If a toast says Keychain is locked, unlock your login keychain (Keychain Access) and run the command again.
 
+## Caselist
+
+- **Upload to Caselist…**: the first time, pick your caselist, school and team (type to filter); it's remembered.
+  Then a form opens: tournament, side, round, opponent, judge, optional report, and the file (newest send doc
+  or pick one). **Fill from Tabroom** auto-fills the fields from a current or recent round, or **General
+  disclosure (all tournaments)**; every field stays editable. Nothing is sent until you press **Upload**.
+- **Change caselist team…**: pick a different caselist, school or team.
+
+Uploads are public and never retried automatically. If a toast says to check the caselist page, look there
+before uploading again. Requires **Log in to Tabroom…** first.
+
 ## Troubleshooting
 
 - "Uploader helper isn't running" → `launchctl kickstart gui/$(id -u)/debate-uploader`
