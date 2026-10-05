@@ -20,6 +20,20 @@ const caselistDir = process.env.DEBATE_UPLOADER_CASELIST_DIR || join(homedir(), 
 const dirSeg = (s) => String(s ?? '').replace(/[^A-Za-z0-9 _.-]/g, '_').replace(/^\.+/, '_') || '_';
 const opener = process.env.DEBATE_UPLOADER_OPENER || '/usr/bin/open';
 const run = promisify(execFile);
+// Files come from strangers (SpeechDrop rooms, caselists): open only document types;
+// anything else (.webloc, .terminal, .html, ...) is just revealed in Finder.
+const OPENABLE = /\.(docx?|pdf|rtf|txt|odt|cmir)$/i;
+async function openSafely(path) {
+  const inCardMirror = /\.(docx|cmir)$/i.test(path);
+  const app = inCardMirror ? 'CardMirror' : OPENABLE.test(path) ? 'default' : 'finder';
+  const args = inCardMirror ? ['-b', 'com.cardmirror.app', path] : app === 'default' ? [path] : ['-R', path];
+  try {
+    await run(opener, args);
+    return { app };
+  } catch {
+    return { app, opened: false }; // saved, but the open step failed
+  }
+}
 const clBase = process.env.DEBATE_UPLOADER_CASELIST_BASE || CASELIST_BASE;
 const keychain = createKeychain({ bin: process.env.DEBATE_UPLOADER_SECURITY_BIN || '/usr/bin/security' });
 const clOpts = { base: clBase };
@@ -103,10 +117,9 @@ const routes = {
         if (!entry) throw new Error('removed');
         const bytes = await downloadFile({ room, index: entry.index, name: entry.name }, { mediaBase: sdMedia });
         const path = await saveUnique(join(downloadDir, room), entry.name, bytes);
-        const inCardMirror = /\.(docx|cmir)$/i.test(entry.name);
-        await run(opener, inCardMirror ? ['-b', 'com.cardmirror.app', path] : [path]);
-        log('speechdrop open', room, entry.name, inCardMirror ? 'CardMirror' : 'default app');
-        return { name: entry.name, path, app: inCardMirror ? 'CardMirror' : 'default' };
+        const how = await openSafely(path);
+        log('speechdrop open', room, entry.name, how.app, how.opened === false ? '(open failed)' : '');
+        return { name: entry.name, path, ...how };
       } catch (err) {
         log('speechdrop open failed', room, err.message);
         throw err;
@@ -175,10 +188,9 @@ const routes = {
     if (!path || !rounds.some((r) => r.opensource === path)) throw new Error('removed');
     const { filename, bytes } = await downloadOpenSource(t, path, clOpts);
     const where = await saveUnique(join(caselistDir, dirSeg(caselist), `${dirSeg(school)}-${dirSeg(team)}`), filename, bytes);
-    const inCardMirror = /\.(docx|cmir)$/i.test(filename);
-    await run(opener, inCardMirror ? ['-b', 'com.cardmirror.app', where] : [where]);
-    log('caselist open', caselist, school, team, filename);
-    return { name: filename, path: where, app: inCardMirror ? 'CardMirror' : 'default' };
+    const how = await openSafely(where);
+    log('caselist open', caselist, school, team, filename, how.app, how.opened === false ? '(open failed)' : '');
+    return { name: filename, path: where, ...how };
   }),
 };
 

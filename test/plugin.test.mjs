@@ -558,11 +558,12 @@ function fakeDom() {
   class El {
     constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.listeners = {}; this.style = { setProperty() {} }; this.value = ''; this._text = ''; this.dataset = {}; this.attrs = {}; }
     get textContent() { return this._text; }
-    set textContent(v) { this._text = String(v); this.children = []; }
+    set textContent(v) { this._text = String(v); for (const c of this.children) c.parent = null; this.children = []; }
     setAttribute(k, v) { this.attrs[k] = String(v); }
+    contains(n) { for (let x = n; x; x = x.parent) if (x === this) return true; return false; }
     getAttribute(k) { return this.attrs[k] ?? null; }
     append(...kids) { for (const k of kids) { k.parent = this; this.children.push(k); } }
-    remove() { if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this); this.removed = true; }
+    remove() { if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this); this.parent = null; this.removed = true; }
     addEventListener(t, f) { (this.listeners[t] ||= []).push(f); }
     dispatch(t, ev = {}) {
       const e = { target: this, key: undefined, preventDefault() {}, stopPropagation() { this.stopped = true; }, ...ev };
@@ -757,6 +758,52 @@ test('DOM team page: selecting a round shows its report and cites; Enter opens o
     dialog.dispatch('keydown', { key: 'Escape' });
     await running;
     assert.equal(dom.doc.body.children.length, 0);
+  } finally {
+    globalThis.document = saved.document; globalThis.Option = saved.Option; window.__debateUploaderUI = saved.ui;
+  }
+});
+
+test('scouting toasts: read errors never say "Upload failed"; saved-not-opened and Finder reveals explain', async () => {
+  const load = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/search': LEX, '/caselist/team': new Error('http_500') } });
+  await cmd('caselistScout').run(load.api);
+  assert.equal(load.toasts.at(-1), "Couldn't load from openCaselist (http_500).");
+  for (const [result, text] of [
+    [new Error('bad_name'), 'Couldn\'t download "a.docx".'],
+    [{ name: 'a.docx', path: '/p', app: 'CardMirror', opened: false }, 'Saved "a.docx" but couldn\'t open it.'],
+    [{ name: 'notes.webloc', path: '/p', app: 'finder' }, 'Saved "notes.webloc" and showed it in Finder (not opened: unusual file type).'],
+  ]) {
+    const h = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/search': LEX, '/caselist/team': TEAM, '/caselist/open': result } });
+    await cmd('caselistScout').run(h.api);
+    await h.pages[0].onOpen(11);
+    assert.equal(h.toasts.at(-1), text);
+  }
+});
+
+test('DOM team page: Enter on a button never opens the doc; row clicks keep focus in the dialog; double-click opens once', async () => {
+  const dom = fakeDom();
+  const saved = { document: globalThis.document, Option: globalThis.Option, ui: window.__debateUploaderUI };
+  globalThis.document = dom.doc; globalThis.Option = dom.Option;
+  const h = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/search': LEX, '/caselist/team': TEAM, '/caselist/open': { name: 'a.docx', path: '/p', app: 'CardMirror' } } });
+  delete window.__debateUploaderUI;
+  try {
+    const running = cmd('caselistScout').run(h.api);
+    for (let i = 0; i < 300 && !dom.all(dom.doc.body).some((n) => n.dataset.field === 'pane'); i++) await new Promise((r) => setTimeout(r, 20));
+    const dialog = dom.all(dom.doc.body).find((n) => typeof n.className === 'string' && n.className.startsWith('du-dialog'));
+    const opens = () => h.calls.filter((c) => c.route === '/caselist/open').length;
+    dom.byField('tabs').children[1].dispatch('keydown', { key: 'Enter' });
+    assert.equal(opens(), 0, 'Enter on the Cites tab button must not open the doc');
+    const list = dom.byField('list');
+    const rowsBefore = [...list.children];
+    dom.button('Copy report').focus();
+    rowsBefore[1].dispatch('mousedown');
+    assert.equal(dom.doc.activeElement, dialog, 'focus returns to the dialog after the footer is rebuilt');
+    assert.deepEqual(list.children, rowsBefore, 'selecting a row repaints in place (rows are not rebuilt)');
+    rowsBefore[0].dispatch('mousedown');
+    list.dispatch('dblclick');
+    await new Promise((r) => setTimeout(r, 1300));
+    assert.equal(opens(), 1, 'double-click on the list opens the selected round once');
+    dialog.dispatch('keydown', { key: 'Escape' });
+    await running;
   } finally {
     globalThis.document = saved.document; globalThis.Option = saved.Option; window.__debateUploaderUI = saved.ui;
   }

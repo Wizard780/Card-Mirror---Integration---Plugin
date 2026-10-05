@@ -55,7 +55,7 @@ before(async () => {
   downloadDir = await mkdtemp(join(tmpdir(), 'dl-'));
   openLog = join(downloadDir, 'open.log');
   const opener = join(downloadDir, 'fake-open.sh');
-  await writeFile(opener, `#!/bin/sh\nprintf '%s|' "$@" >> '${openLog}'\necho >> '${openLog}'\n`);
+  await writeFile(opener, `#!/bin/sh\ncase "$*" in *FAILOPEN*) exit 1;; esac\nprintf '%s|' "$@" >> '${openLog}'\necho >> '${openLog}'\n`);
   await chmod(opener, 0o755);
   // Fake openCaselist: password "right" logs in; the cookie must carry the token.
   fakeCL = createServer(async (req, res) => {
@@ -81,12 +81,14 @@ before(async () => {
     if (req.url === '/v1/caselists/hspf26/schools/Lexington/teams/AlHu/rounds') return send(200, [
       { round_id: 11, side: 'N', tournament: '03---Glenbrooks', round: '3', opponent: 'Strake KM', judge: 'Smith', report: 'AI DA, Econ', opensource: 'hspf26/Lexington/AlHu/Lexington-AlHu-Con-Glenbrooks-Round3.docx', video: null, updated_at: '2026-10-04 10:00:00' },
       { round_id: 12, side: 'A', tournament: '01---Yale', round: '2', opponent: 'X', judge: 'Y', report: '', opensource: null, video: null, updated_at: '2026-09-20 10:00:00' },
+      { round_id: 13, side: 'A', tournament: '01---Yale', round: '1', opponent: 'Z', judge: '', report: '', opensource: 'hspf26/Lexington/AlHu/notes.webloc', video: null, updated_at: '2026-08-02 10:00:00' },
+      { round_id: 14, side: 'N', tournament: '01---Yale', round: '3', opponent: 'W', judge: '', report: '', opensource: 'hspf26/Lexington/AlHu/FAILOPEN.docx', video: null, updated_at: '2026-08-01 10:00:00' },
     ]);
     if (req.url === '/v1/caselists/hspf26/schools/Lexington/teams/AlHu/cites') return send(200, [{ cite_id: 5, round_id: 11, title: '1NC', cites: 'Smith 24 — data centers' }]);
     if (req.url.startsWith('/v1/download?')) {
       const p = new URL(req.url, 'http://x').searchParams.get('path');
-      if (p !== 'hspf26/Lexington/AlHu/Lexington-AlHu-Con-Glenbrooks-Round3.docx') { res.writeHead(404); return res.end(); }
-      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': 'attachment; filename="Lexington-AlHu-Con-Glenbrooks-Round3.docx"' });
+      if (!p.startsWith('hspf26/Lexington/AlHu/')) { res.writeHead(404); return res.end(); }
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename="${p.split('/').pop()}"` });
       return res.end('LEXDOC');
     }
     if (req.method === 'POST' && req.url === '/v1/caselists/hspf26/schools/StMarks/teams/StMarksAB/rounds') {
@@ -342,7 +344,7 @@ test('scouting: search returns teams; team returns rounds newest first with cite
   const s = await waitJob((await call('/caselist/search', { caselist: 'hspf26', q: 'Lexington AlHu' })).body.job);
   assert.deepEqual(s.result, [{ school: 'Lexington', team: 'AlHu', label: 'Lexington AlHu', schoolLabel: 'Lexington' }]);
   const t = await waitJob((await call('/caselist/team', { caselist: 'hspf26', school: 'Lexington', team: 'AlHu' })).body.job);
-  assert.deepEqual(t.result.rounds.map((r) => r.id), [11, 12]);
+  assert.deepEqual(t.result.rounds.map((r) => r.id), [11, 12, 13, 14]);
   assert.equal(t.result.cites[0].roundId, 11);
 });
 
@@ -353,6 +355,20 @@ test('scouting: open downloads a listed doc into the team folder and opens it in
   assert.deepEqual(r, { state: 'done', result: { name: 'Lexington-AlHu-Con-Glenbrooks-Round3.docx', path: saved, app: 'CardMirror' } });
   assert.equal(await readFile(saved, 'utf8'), 'LEXDOC');
   assert.equal((await readFile(openLog, 'utf8')).trim().split('\n').at(-1), `-b|com.cardmirror.app|${saved}|`);
+});
+
+test('scouting: an unusual file type is saved and revealed in Finder, never opened', async () => {
+  const r = await waitJob((await call('/caselist/open', { caselist: 'hspf26', school: 'Lexington', team: 'AlHu', path: 'hspf26/Lexington/AlHu/notes.webloc' })).body.job);
+  const saved = join(downloadDir, 'caselist', 'hspf26', 'Lexington-AlHu', 'notes.webloc');
+  assert.deepEqual(r, { state: 'done', result: { name: 'notes.webloc', path: saved, app: 'finder' } });
+  assert.equal((await readFile(openLog, 'utf8')).trim().split('\n').at(-1), `-R|${saved}|`);
+});
+
+test('scouting: if opening fails the file is still saved and the result says so', async () => {
+  const r = await waitJob((await call('/caselist/open', { caselist: 'hspf26', school: 'Lexington', team: 'AlHu', path: 'hspf26/Lexington/AlHu/FAILOPEN.docx' })).body.job);
+  assert.equal(r.state, 'done');
+  assert.equal(r.result.opened, false);
+  assert.equal(await readFile(r.result.path, 'utf8'), 'LEXDOC');
 });
 
 test('scouting: a path not in the team round list is refused without downloading', async () => {

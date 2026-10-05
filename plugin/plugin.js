@@ -44,6 +44,7 @@
         case 'bad_round': return 'Tournament, side and round are required.';
         case 'too_large': return 'File is over the 10 MB upload limit.';
         case 'removed': return "That round's file is no longer on the caselist.";
+        case 'bad_name': return `Couldn't download "${ctx.name}".`;
         case 'newest_changed': return 'The newest send doc changed after the form opened. Run Upload to Caselist again to check it.';
         case 'start_unknown':
         case 'upload_unknown':
@@ -52,7 +53,12 @@
           return ctx.uploading
             ? "The caselist didn't confirm the upload. Check your team's caselist page before uploading again."
             : "openCaselist didn't answer in time. Try again.";
-        default: break; // shared messages below (helper down, no_folder, read_failed, …)
+        default:
+          // Scouting only reads: never let an unknown code read as "Upload failed".
+          if (ctx.scouting && !['app-not-running', 'no-such-app', 'timeout', 'unsupported', 'bad-response', 'bad_token', 'download_failed'].includes(code)) {
+            return `Couldn't load from openCaselist (${code}).`;
+          }
+          break; // shared messages below (helper down, no_folder, read_failed, …)
       }
     }
     if (code.startsWith('no_docx:')) return `No .docx in ${code.slice('no_docx:'.length)}. Set your send doc folder again.`;
@@ -548,36 +554,55 @@ textarea.du-input{resize:vertical;min-height:3.4em}
             d.foot.append(button('Copy cites', true, () => spec.onCopy(it.text, 'cites')));
           }
         };
+        let rows = [];
+        const keepFocus = () => {
+          // Rebuilding the footer can remove the focused button; keep keys inside the dialog.
+          if (d.dialog.contains && !d.dialog.contains(document.activeElement)) d.dialog.focus();
+        };
+        // Selection repaints in place: rows are never rebuilt under the pointer.
+        const select = (i) => {
+          sel[tab] = i;
+          rows.forEach((r, j) => {
+            r.setAttribute('aria-selected', j === i ? 'true' : 'false');
+            if (j === i && r.scrollIntoView) r.scrollIntoView({ block: 'nearest' });
+          });
+          renderPane();
+          renderFoot();
+          keepFocus();
+        };
         const render = () => {
           tabBtns.forEach((b) => b.setAttribute('aria-selected', b.dataset.value === tab ? 'true' : 'false'));
           list.textContent = '';
-          items().forEach((it, i) => {
+          rows = items().map((it, i) => {
             // Two lines: what (tournament / cite title) on top, the specifics underneath.
             const [top, ...rest] = tab === 'rounds' ? it.label.split(' · ') : [it.label, it.detail];
-            const row = el('div', { class: `du-row${tab === 'rounds' && !it.hasFile ? ' du-dim' : ''}`, attrs: { role: 'option', 'aria-selected': i === sel[tab] ? 'true' : 'false' } }, [
+            const row = el('div', { class: `du-row${tab === 'rounds' && !it.hasFile ? ' du-dim' : ''}`, attrs: { role: 'option' } }, [
               el('span', { class: 'du-row-text' }, [
                 el('span', { class: 'du-row-main', textContent: top, title: it.label }),
                 el('span', { class: 'du-row-sub', textContent: rest.join(' · ') }),
               ]),
               tab === 'rounds' ? el('span', { class: 'du-row-detail', textContent: it.detail }) : null,
             ]);
-            row.addEventListener('mousedown', (e) => { e.preventDefault(); sel[tab] = i; render(); });
-            row.addEventListener('dblclick', () => { if (tab === 'rounds' && it.hasFile) spec.onOpen(it.key); });
+            row.addEventListener('mousedown', (e) => { e.preventDefault(); select(i); });
             list.append(row);
-            if (i === sel[tab] && row.scrollIntoView) row.scrollIntoView({ block: 'nearest' });
+            return row;
           });
           if (!items().length) list.append(el('div', { class: 'du-empty', textContent: 'Nothing here yet.' }));
-          renderPane();
-          renderFoot();
+          select(Math.min(sel[tab], Math.max(items().length - 1, 0)));
         };
+        list.addEventListener('dblclick', () => {
+          const it = current();
+          if (tab === 'rounds' && it && it.hasFile) spec.onOpen(it.key);
+        });
         const close = () => { d.close(); resolve(); };
         d.onDismiss(close);
         d.dialog.addEventListener('keydown', (e) => {
           const n = items().length;
-          if (e.key === 'ArrowDown' && n) { e.preventDefault(); sel[tab] = Math.min(sel[tab] + 1, n - 1); render(); }
-          else if (e.key === 'ArrowUp' && n) { e.preventDefault(); sel[tab] = Math.max(sel[tab] - 1, 0); render(); }
+          if (e.key === 'ArrowDown' && n) { e.preventDefault(); select(Math.min(sel[tab] + 1, n - 1)); }
+          else if (e.key === 'ArrowUp' && n) { e.preventDefault(); select(Math.max(sel[tab] - 1, 0)); }
           else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); tab = e.key === 'ArrowRight' ? 'cites' : 'rounds'; render(); }
-          else if (e.key === 'Enter' && tab === 'rounds') { e.preventDefault(); const it = current(); if (it && it.hasFile) spec.onOpen(it.key); }
+          // Enter opens only when the dialog itself has focus; on a focused button it presses that button.
+          else if (e.key === 'Enter' && tab === 'rounds' && e.target === d.dialog) { e.preventDefault(); const it = current(); if (it && it.hasFile) spec.onOpen(it.key); }
         });
         render();
         d.dialog.focus();
@@ -610,6 +635,12 @@ textarea.du-input{resize:vertical;min-height:3.4em}
   };
 
   const ui = () => window.__debateUploaderUI || domUI;
+
+  const openedToast = (r) => (r.app === 'finder'
+    ? `Saved "${r.name}" and showed it in Finder (not opened: unusual file type).`
+    : r.opened === false
+      ? `Saved "${r.name}" but couldn't open it.`
+      : `Opened "${r.name}" in ${r.app === 'CardMirror' ? 'CardMirror' : 'your default app'}`);
 
   // Declared setting wins (installed plugins have a gear); storage covers
   // "Load plugin from file…", which gets no settings gear.
@@ -704,7 +735,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         api.showToast(`Opening "${f.name}"…`);
         try {
           const r = await runJob(api, '/speechdrop/open', { room, index: f.index, name: f.name }, u.sleep);
-          api.showToast(`Opened "${r.name}" in ${r.app === 'CardMirror' ? 'CardMirror' : 'your default app'}`);
+          api.showToast(openedToast(r));
         } catch (err) {
           api.showToast(message(err.message, { ...ctx, name: f.name }));
         }
@@ -978,7 +1009,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         api.showToast(`Opening "${name}"…`);
         try {
           const res = await runJob(api, '/caselist/open', { caselist: cl.name, school: team.school, team: team.team, path: r.opensource }, u.sleep);
-          api.showToast(`Opened "${res.name}" in ${res.app === 'CardMirror' ? 'CardMirror' : 'your default app'}`);
+          api.showToast(openedToast(res));
         } catch (err) {
           api.showToast(message(err.message, { ...ctx, name }));
         }
@@ -996,7 +1027,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
 
   async function caselistScout(api) {
     const u = ui();
-    const ctx = { caselist: true };
+    const ctx = { caselist: true, scouting: true };
     try {
       const { current, rounds } = await runJob(api, '/tabroom/rounds', {}, u.sleep);
       const withOpp = rounds.filter((r) => r.opponent);
@@ -1025,7 +1056,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
 
   async function caselistSearch(api) {
     const u = ui();
-    const ctx = { caselist: true };
+    const ctx = { caselist: true, scouting: true };
     try {
       const cl = await pickCaselist(api, u);
       if (!cl) return;
