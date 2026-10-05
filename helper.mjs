@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
 import { createKeychain } from './lib/keychain.mjs';
+import { createRoomWatcher } from './lib/roomwatch.mjs';
 import { login, getRounds, listCaselists, listSchools, listTeams, createRound, CASELIST_BASE } from './lib/caselist.mjs';
 import { uploadToSpeechDrop, newestDocx, MAX_BYTES, listRoom, downloadFile, saveUnique, SD_BASE, SD_MEDIA } from './lib/speechdrop.mjs';
 
@@ -20,6 +21,13 @@ const run = promisify(execFile);
 const clBase = process.env.DEBATE_UPLOADER_CASELIST_BASE || CASELIST_BASE;
 const keychain = createKeychain({ bin: process.env.DEBATE_UPLOADER_SECURITY_BIN || '/usr/bin/security' });
 const clOpts = { base: clBase };
+// Live room lists. Budget per /speechdrop/watch call must stay under CardMirror's
+// 3 s flowPost limit: ≤1 s socket wait + ≤1.5 s HTTP fallback, or a ≤1 s long-poll.
+const watcher = createRoomWatcher({
+  wsUrl: process.env.DEBATE_UPLOADER_SD_WS || 'wss://speechdrop.net/sock/websocket',
+  list: (room) => listRoom(room, { base: sdBase, timeoutMs: 1500 }),
+});
+const WATCH_WAIT_MS = 1000;
 const token = newToken();
 const jobs = createJobStore();
 // Logs names, rooms and sizes only. Never tokens, cookies or contents.
@@ -76,6 +84,11 @@ const routes = {
     });
     return { ok: true, job: id };
   },
+
+  '/speechdrop/watch': async ({ room, version }) => ({
+    ok: true,
+    ...(await watcher.watch(room, Number(version) || 0, WATCH_WAIT_MS)),
+  }),
 
   '/speechdrop/list': ({ room }) => ({ ok: true, job: jobs.start(() => listRoom(room, { base: sdBase })) }),
 
@@ -160,6 +173,7 @@ server.listen(0, '127.0.0.1', async () => {
 });
 
 async function shutdown() {
+  watcher.close();
   await removeSession(bridgeDir);
   process.exit(0);
 }

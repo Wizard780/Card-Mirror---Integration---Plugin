@@ -107,6 +107,7 @@ esac
     env: { ...process.env, DEBATE_UPLOADER_BRIDGE_DIR: bridgeDir, DEBATE_UPLOADER_SD_BASE: `http://127.0.0.1:${fakeSD.address().port}`,
       DEBATE_UPLOADER_SD_MEDIA: `http://127.0.0.1:${fakeSD.address().port}/media/`, DEBATE_UPLOADER_DOWNLOAD_DIR: downloadDir,
       DEBATE_UPLOADER_OPENER: opener,
+      DEBATE_UPLOADER_SD_WS: `ws://127.0.0.1:${fakeSD.address().port}/sock/websocket`,
       DEBATE_UPLOADER_CASELIST_BASE: `http://127.0.0.1:${fakeCL.address().port}/v1`, DEBATE_UPLOADER_SECURITY_BIN: security },
     stdio: ['ignore', openSync(helperLog, 'w'), openSync(helperLog, 'a')],
   });
@@ -166,6 +167,27 @@ test('list a room: newest first with SpeechDrop positions', async () => {
   assert.deepEqual(done.result.map((f) => [f.index, f.name]), [[1, 'Send 1AC.docx'], [0, 'pick.txt']]);
   const missing = await waitJob((await call('/speechdrop/list', { room: 'nope1' })).body.job);
   assert.deepEqual(missing, { state: 'error', message: 'no_room' });
+});
+
+test('watch: with no live socket it falls back to HTTP and answers within the flowPost budget', async () => {
+  const t0 = Date.now();
+  const r = await call('/speechdrop/watch', { room: 'room1', version: 0 });
+  assert.ok(Date.now() - t0 < 2800, `answered in ${Date.now() - t0} ms`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.live, false);
+  assert.equal(r.body.version, 1);
+  assert.deepEqual(r.body.files.map((f) => [f.index, f.name]), [[1, 'Send 1AC.docx'], [0, 'pick.txt']]);
+  const t1 = Date.now();
+  const again = await call('/speechdrop/watch', { room: 'room1', version: 1 });
+  assert.equal(again.body.version, 1);
+  assert.ok(Date.now() - t1 < 2800);
+});
+
+test('watch: wrong room is no_room; bad code is bad_room', async () => {
+  const r = await call('/speechdrop/watch', { room: 'nope1', version: 0 });
+  assert.deepEqual([r.status, r.body], [500, { ok: false, error: 'no_room' }]);
+  const b = await call('/speechdrop/watch', { room: 'a b', version: 0 });
+  assert.deepEqual(b.body, { ok: false, error: 'bad_room' });
 });
 
 test('open: .docx downloads to <dir>/<room>/ and opens in CardMirror; .txt opens in default app', async () => {

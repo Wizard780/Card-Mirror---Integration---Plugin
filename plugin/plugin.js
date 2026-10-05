@@ -5,7 +5,6 @@
   const MAX_BYTES = 10 * 1024 * 1024;
   const POLL_MS = 1000;
   const MAX_WAIT_MS = 90_000;
-  const REFRESH_MS = 5000;
   const START_HELPER = 'launchctl kickstart gui/$(id -u)/debate-uploader';
   const SET_FOLDER_LABEL = 'Set send doc folder for SpeechDrop…';
 
@@ -14,6 +13,7 @@
     if (ctx.browse && ['start_unknown', 'upload_unknown', 'unknown_job', 'still_running'].includes(code)) {
       return "The helper didn't answer in time. Try again.";
     }
+    if (ctx.browse && code === 'unreachable') return "Couldn't reach speechdrop.net. Try again.";
     if (ctx.tabroom) {
       switch (code) {
         case 'bad_login': return 'Tabroom rejected that email or password.';
@@ -481,10 +481,14 @@
       const room = normalizeRoom(raw);
       ctx.room = room;
       if (!room) return api.showToast(`"${String(raw).trim()}" doesn't look like a SpeechDrop room code.`);
-      let files = await runJob(api, '/speechdrop/list', { room }, u.sleep);
+      // Long-poll the helper, which holds a live SpeechDrop socket for the room.
+      let res = await call(api, '/speechdrop/watch', { room, version: 0 });
+      let { files, version, live } = res;
       api.storage.set('lastRoom', room);
       const seen = new Set(files.map((f) => f.index));
       const toItems = () => files.map((f) => ({ key: f.index, label: f.name, detail: formatTime(f.ctime), isNew: !seen.has(f.index) }));
+      const KEYS = '↑↓ + Enter or click to open · Esc to close';
+      const hint = () => (live ? `Live · ${KEYS}` : `Refreshing every 5 s · ${KEYS}`);
       const view = u.showList(`SpeechDrop room ${room}`, toItems(), async (item) => {
         const f = files.find((x) => x.index === item.key);
         if (!f) return api.showToast(message('removed', { name: item.label }));
@@ -495,19 +499,24 @@
         } catch (err) {
           api.showToast(message(err.message, { ...ctx, name: f.name }));
         }
-      });
+      }, { hint: hint() });
       let open = true;
+      let failing = false;
       view.closed.then(() => { open = false; });
       while (open) {
-        await u.sleep(REFRESH_MS);
-        if (!open) break;
         try {
-          const next = await runJob(api, '/speechdrop/list', { room }, u.sleep);
+          res = await call(api, '/speechdrop/watch', { room, version });
           if (!open) break;
-          files = next;
-          view.update(toItems(), '');
+          if (res.version !== version || res.live !== live || failing) {
+            ({ files, version, live } = res);
+            failing = false;
+            view.update(toItems(), hint());
+          }
         } catch {
-          if (open) view.update(toItems(), "Couldn't refresh, retrying…");
+          if (!open) break;
+          failing = true;
+          view.update(toItems(), "Couldn't refresh, retrying…");
+          await u.sleep(2000);
         }
       }
     } catch (err) {
