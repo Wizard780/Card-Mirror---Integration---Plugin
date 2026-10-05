@@ -262,6 +262,14 @@ textarea.du-input{resize:vertical;min-height:3.4em}
 .du-find .du-row{align-items:flex-start}
 .du-where{flex:0 1 34%;min-width:0;display:flex;flex-direction:column;align-items:flex-end;gap:1px;font-size:.8rem;color:var(--pmd-c-text-muted)}
 .du-where span{max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.du-marks .du-list{max-height:min(60vh,520px);min-height:120px}
+.du-group{padding:10px 12px 4px;font-size:.75rem;font-weight:600;letter-spacing:.02em;color:var(--pmd-c-text-secondary);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.du-check{flex:none;width:15px;height:15px;margin-top:2px;border-radius:4px;border:1.5px solid var(--pmd-c-border);display:grid;place-items:center;
+  font-size:11px;line-height:1;color:var(--pmd-c-text-on-accent)}
+.du-row[aria-checked="true"] .du-check{background:#d81e1e;border-color:#d81e1e}
+.du-row[aria-checked="true"] .du-row-main{color:#d81e1e}
+.du-marks .du-row{align-items:flex-start}
 .du-btn:disabled{opacity:.5;cursor:default}
 .du-btn:disabled:hover{background:var(--pmd-c-bg)}
 `;
@@ -511,6 +519,91 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         });
         render(spec.empty);
         run();
+        input.focus();
+      });
+    },
+
+    // Checklist of the doc's cards. Resolves with the new checked state per card, or null.
+    pickCards(spec) {
+      return new Promise((resolve) => {
+        const d = openDialog({ title: spec.title, subtitle: spec.subtitle, width: '640px' });
+        d.dialog.className += ' du-marks';
+        const input = el('input', { class: 'du-input du-search', placeholder: 'Type to filter by tag, cite or block', data: { field: 'query' }, attrs: { 'aria-label': 'Filter cards' } });
+        const list = el('div', { class: 'du-list', data: { field: 'list' }, attrs: { role: 'listbox', 'aria-multiselectable': 'true', 'aria-label': spec.title } });
+        d.body.remove();
+        if (d.dialog.insertBefore) { d.dialog.insertBefore(input, d.foot); d.dialog.insertBefore(list, d.foot); } else d.dialog.append(input, list);
+        const checked = spec.cards.map((c) => !!c.checked);
+        let shown = [];
+        let rows = [];
+        let boxes = [];
+        let cur = 0;
+        const done = (v) => { d.close(); resolve(v); };
+        d.onDismiss(() => done(null));
+        const changes = () => {
+          let mark = 0;
+          let unmark = 0;
+          checked.forEach((on, i) => { if (on !== !!spec.cards[i].checked) on ? mark++ : unmark++; });
+          return { mark, unmark };
+        };
+        const apply = button('Apply', true, () => { if (changes().mark || changes().unmark) done(checked.slice()); });
+        const allBtn = button('Check shown', false, () => { const on = !shown.every((i) => checked[i]); for (const i of shown) checked[i] = on; render(); });
+        d.foot.append(note('Enter check · ⌘Enter apply').node, allBtn, apply);
+        const paintFoot = () => {
+          const { mark, unmark } = changes();
+          apply.textContent = mark || unmark ? [mark && `Mark ${mark}`, unmark && `Unmark ${unmark}`].filter(Boolean).join(' · ') : 'No changes';
+          apply.disabled = !(mark || unmark);
+          allBtn.textContent = shown.length && shown.every((i) => checked[i]) ? 'Uncheck shown' : 'Check shown';
+          allBtn.disabled = !shown.length;
+        };
+        const paint = () => {
+          rows.forEach((r, k) => {
+            const i = shown[k];
+            r.setAttribute('aria-checked', checked[i] ? 'true' : 'false');
+            r.setAttribute('aria-selected', k === cur ? 'true' : 'false');
+            boxes[k].textContent = checked[i] ? '✓' : '';
+            if (k === cur && r.scrollIntoView) r.scrollIntoView({ block: 'nearest' });
+          });
+          paintFoot();
+        };
+        const toggle = (k) => { const i = shown[k]; if (i === undefined) return; checked[i] = !checked[i]; paint(); };
+        const render = () => {
+          const words = input.value.toLowerCase().split(/\s+/).filter(Boolean);
+          shown = spec.cards.map((c, i) => i).filter((i) => {
+            const hay = `${spec.cards[i].label}\n${spec.cards[i].sub}\n${spec.cards[i].group}`.toLowerCase();
+            return words.every((w) => hay.includes(w));
+          });
+          cur = Math.min(cur, Math.max(shown.length - 1, 0));
+          list.textContent = '';
+          rows = [];
+          boxes = [];
+          let group = null;
+          shown.forEach((i, k) => {
+            const c = spec.cards[i];
+            if (c.group !== group) { group = c.group; if (group) list.append(el('div', { class: 'du-group', textContent: group, title: group })); }
+            const box = el('span', { class: 'du-check', attrs: { 'aria-hidden': 'true' } });
+            boxes.push(box);
+            const row = el('div', { class: 'du-row', attrs: { role: 'option' } }, [
+              box,
+              el('span', { class: 'du-row-text' }, [
+                el('span', { class: 'du-row-main', textContent: c.label, title: c.label }),
+                el('span', { class: 'du-row-sub', textContent: [c.sub, c.partial ? 'partly red' : ''].filter(Boolean).join(' · ') }),
+              ]),
+            ]);
+            row.addEventListener('mousedown', (e) => { e.preventDefault(); cur = k; toggle(k); });
+            list.append(row);
+            rows.push(row);
+          });
+          if (!shown.length) list.append(el('div', { class: 'du-empty', textContent: spec.cards.length ? 'No cards match.' : 'No cards in this document.' }));
+          paint();
+        };
+        input.addEventListener('input', () => { cur = 0; render(); });
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'ArrowDown' && shown.length) { e.preventDefault(); cur = Math.min(cur + 1, shown.length - 1); paint(); }
+          else if (e.key === 'ArrowUp' && shown.length) { e.preventDefault(); cur = Math.max(cur - 1, 0); paint(); }
+          else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); apply.click ? apply.click() : apply.dispatch('click'); }
+          else if (e.key === 'Enter') { e.preventDefault(); toggle(cur); }
+        });
+        render();
         input.focus();
       });
     },
@@ -859,6 +952,75 @@ textarea.du-input{resize:vertical;min-height:3.4em}
   };
 
   const ui = () => window.__debateUploaderUI || domUI;
+
+  // ---------------------------------------------------------------- Editor access
+  // Plugin API v1 can't edit the document, so marking reaches CardMirror's ProseMirror
+  // view the way ProseMirror hands it around internally: its view descriptions receive
+  // the view in update()/setSelection(). Wrapping those once records each editor's view.
+  // Unsupported by CardMirror, so every step fails soft ("couldn't reach the editor").
+  const editor = (() => {
+    const views = new WeakMap();
+    let patched = false;
+    let lastFocused = null;
+    const doms = () => [...document.querySelectorAll('.ProseMirror')].filter((n) => n.pmViewDesc);
+    function patch(dom) {
+      if (patched || !dom || !dom.pmViewDesc) return;
+      const desc = dom.pmViewDesc;
+      for (const [name, at] of [['update', 3], ['setSelection', 2]]) {
+        let proto = Object.getPrototypeOf(desc);
+        while (proto && !Object.prototype.hasOwnProperty.call(proto, name)) proto = Object.getPrototypeOf(proto);
+        if (!proto || typeof proto[name] !== 'function') continue;
+        const orig = proto[name];
+        proto[name] = function (...args) {
+          try {
+            const v = args[at];
+            if (v && v.dom && v.state && typeof v.dispatch === 'function') views.set(v.dom, v);
+          } catch { /* never break the editor */ }
+          return orig.apply(this, args);
+        };
+      }
+      patched = true;
+    }
+    function install() {
+      if (typeof document === 'undefined' || !document.addEventListener) return;
+      document.addEventListener('focusin', (e) => {
+        const d = e.target && e.target.closest && e.target.closest('.ProseMirror');
+        if (d) { lastFocused = d; patch(d); }
+      }, true);
+      try { patch(doms()[0]); } catch { /* no editor yet */ }
+    }
+    // The view for the editor the user was last in. If it hasn't updated since the
+    // patch, nudge the caret (and put it back) so ProseMirror passes its view along.
+    async function view(sleep) {
+      const all = doms();
+      if (!all.length) return null;
+      patch(all[0]);
+      const dom = (lastFocused && lastFocused.isConnected && lastFocused.pmViewDesc && lastFocused) || all.find((n) => n.offsetParent !== null) || all[0];
+      const ok = (v) => (v && v.docView && v.dom === dom ? v : null);
+      if (ok(views.get(dom))) return views.get(dom);
+      const sel = window.getSelection();
+      const saved = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+      const scrolls = [];
+      for (let n = dom; n; n = n.parentElement) if (n.scrollTop) scrolls.push([n, n.scrollTop]);
+      try {
+        for (const atEnd of [true, false]) {
+          if (ok(views.get(dom))) break;
+          if (dom.focus) dom.focus({ preventScroll: true });
+          const r = document.createRange();
+          r.selectNodeContents(dom);
+          r.collapse(!atEnd);
+          sel.removeAllRanges();
+          sel.addRange(r);
+          for (let i = 0; i < 10 && !ok(views.get(dom)); i++) await sleep(30);
+        }
+      } finally {
+        if (saved && sel) { sel.removeAllRanges(); sel.addRange(saved); }
+        for (const [n, top] of scrolls) n.scrollTop = top;
+      }
+      return ok(views.get(dom));
+    }
+    return { install, view };
+  })();
 
   // Tabroom gives judges as last names ("Habib,Patel,Sortland"). Paradigms need a
   // Tabroom login, so they open in the browser, where the user is signed in.
@@ -1325,6 +1487,92 @@ textarea.du-input{resize:vertical;min-height:3.4em}
   }
 
 
+  // ---------------------------------------------------------------- Mark cards
+  // "Marked" in CardMirror = red text (FF0000): its reading marker and "marked cards"
+  // tools look for exactly that color.
+  const MARK_RED = 'FF0000';
+  const isRed = (m) => m.type.name === 'font_color' && String(m.attrs.color || '').toUpperCase() === MARK_RED;
+  const HEADINGS = { pocket: 0, hat: 1, block: 2 };
+
+  function cardsIn(doc) {
+    const out = [];
+    const heads = ['', '', ''];
+    doc.descendants((node, pos) => {
+      const name = node.type.name;
+      if (name in HEADINGS) {
+        heads[HEADINGS[name]] = node.textContent.trim();
+        heads.fill('', HEADINGS[name] + 1);
+        return false;
+      }
+      if (name !== 'card') return true;
+      let red = 0;
+      let total = 0;
+      node.descendants((t) => {
+        if (!t.isText) return true;
+        total += t.text.length;
+        if (t.marks.some(isRed)) red += t.text.length;
+        return false;
+      });
+      let cite = '';
+      node.forEach((c) => { if (!cite && c.type.name === 'cite_paragraph') cite = c.textContent.trim(); });
+      out.push({
+        from: pos, to: pos + node.nodeSize,
+        tag: (node.firstChild ? node.firstChild.textContent : '').trim() || '(untitled card)',
+        cite, group: heads.filter(Boolean).pop() || '',
+        marked: total > 0 && red === total, partial: red > 0 && red < total,
+      });
+      return false;
+    });
+    return out;
+  }
+
+  // One transaction, so a single ⌘Z undoes the whole batch.
+  function applyMarks(view, cards, wanted) {
+    const { state } = view;
+    const type = state.schema.marks.font_color;
+    const tr = state.tr;
+    let marked = 0;
+    let unmarked = 0;
+    cards.forEach((c, i) => {
+      if (wanted[i] === c.marked) return;
+      if (wanted[i]) { tr.addMark(c.from, c.to, type.create({ color: MARK_RED })); marked++; return; }
+      state.doc.nodesBetween(c.from, c.to, (t, pos) => {
+        if (!t.isText) return true;
+        for (const m of t.marks) if (isRed(m)) tr.removeMark(Math.max(pos, c.from), Math.min(pos + t.nodeSize, c.to), m);
+        return false;
+      });
+      unmarked++;
+    });
+    if (tr.docChanged) view.dispatch(tr);
+    return { marked, unmarked };
+  }
+
+  async function markCards(api) {
+    const u = ui();
+    const view = u.editorView ? await u.editorView() : await editor.view(u.sleep);
+    if (!view || !view.state.schema.marks.font_color) return api.showToast("Couldn't reach the editor. Click into your document, then run Mark cards again.");
+    const cards = cardsIn(view.state.doc);
+    if (!cards.length) return api.showToast('No cards in this document.');
+    const info = typeof api.docInfo === 'function' ? api.docInfo() : null;
+    const wanted = await u.pickCards({
+      title: 'Mark cards',
+      subtitle: `${info && info.docTitle ? `${info.docTitle} · ` : ''}checked cards turn red`,
+      cards: cards.map((c) => ({ label: c.tag, sub: c.cite, group: c.group, checked: c.marked, partial: c.partial })),
+    });
+    if (!wanted) return;
+    // Positions may have moved if the doc changed meanwhile; the cards must still line up.
+    const now = cardsIn(view.state.doc);
+    if (now.length !== cards.length || now.some((c, i) => c.tag !== cards[i].tag)) {
+      return api.showToast('The cards changed while the list was open. Run Mark cards again.');
+    }
+    const r = applyMarks(view, now.map((c, i) => ({ ...c, marked: cards[i].marked })), wanted);
+    const parts = [r.marked && `marked ${plural(r.marked, 'card')}`, r.unmarked && `unmarked ${plural(r.unmarked, 'card')}`].filter(Boolean);
+    if (parts.length) {
+      const text = parts.join(', ');
+      api.showToast(`${text[0].toUpperCase()}${text.slice(1)} (⌘Z to undo)`);
+    }
+  }
+
   // ---------------------------------------------------------------- Search my files
   const fmt = (n) => Number(n || 0).toLocaleString('en-US');
   const short = (s) => (s.length > 70 ? `${s.slice(0, 70)}…` : s);
@@ -1431,6 +1679,8 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     }
   }
 
+  try { editor.install(); } catch { /* marking just reports it can't reach the editor */ }
+
   window.__registerCardMirrorPlugin && window.__registerCardMirrorPlugin({
     id: ID,
     name: 'Debate Uploader',
@@ -1514,6 +1764,13 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         keywords: ['scout', 'opponent', 'caselist', 'prep', 'disclosure'],
         defaultKey: null,
         run: (api) => withPrefs(api, () => caselistScout(api)),
+      },
+      {
+        id: `${ID}.markCards`,
+        label: 'Mark cards…',
+        keywords: ['mark', 'marked', 'red', 'cards', 'select'],
+        defaultKey: null,
+        run: (api) => withPrefs(api, () => markCards(api)),
       },
       {
         id: `${ID}.evidenceSearch`,

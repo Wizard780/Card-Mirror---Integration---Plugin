@@ -96,6 +96,17 @@ cites. Filter by **tournament** (dropdown) and **side** (All / Pro / Con) above 
 and show "x of y" counts. **Enter** or **Open doc** downloads the doc to `~/Downloads/Caselist/<caselist>/<school>-<team>/` and opens it
 in CardMirror; **Copy report** / **Copy cites** copy text; ←→ switches tabs; Esc closes. Requires **Log in to Tabroom…**.
 
+## Mark cards
+
+- **Mark cards…**: lists every card in the open document under its block heading. Check the ones to mark
+  (click, or ↑↓ and **Enter**; type to filter; **Check shown** does a whole filtered list) and press **Apply**
+  (**⌘Enter**). Checked cards turn red, the same red (`FF0000`) CardMirror's own reading marker and marked-card
+  tools use. Cards that are already all red start checked; uncheck them to remove that red (other colors stay).
+  "Partly red" cards are left alone unless you check them. It's one edit, so **⌘Z** undoes the whole batch.
+
+The plugin API can't edit documents, so this reaches CardMirror's editor through ProseMirror internals. If a
+CardMirror update changes those, the command says it couldn't reach the editor instead of doing anything.
+
 ## Search my files
 
 - **Set evidence folders…**: the folders to search, separated by `;` (e.g. `~/Downloads/Ryan Files; ~/Downloads/Caselist`).

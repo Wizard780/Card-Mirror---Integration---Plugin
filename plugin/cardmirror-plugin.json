@@ -1,7 +1,7 @@
 {
   "id": "debate-uploader",
   "name": "Debate Uploader",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "SpeechDrop upload + live room browsing, Tabroom rounds, openCaselist disclosure and opponent scouting, through a local helper.",
   "author": "Wizard780",
   "apiVersion": 1,

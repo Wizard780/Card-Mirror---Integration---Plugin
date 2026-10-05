@@ -42,10 +42,10 @@ function harness({ prefs = {}, responses = [], settings = {}, storage = {}, room
   return { api, calls, toasts, prompts, store, prefsReply, prefsSets };
 }
 
-test('registers thirteen commands and one setting under the plugin id', () => {
+test('registers fourteen commands and one setting under the plugin id', () => {
   assert.equal(def.id, 'debate-uploader');
   assert.equal(def.apiVersion, 1);
-  assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.caselistScout', 'debate-uploader.caselistSearch', 'debate-uploader.caselistTeam', 'debate-uploader.caselistUpload', 'debate-uploader.evidenceFolders', 'debate-uploader.evidenceSearch', 'debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdPick', 'debate-uploader.setFolder',
+  assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.caselistScout', 'debate-uploader.caselistSearch', 'debate-uploader.caselistTeam', 'debate-uploader.caselistUpload', 'debate-uploader.evidenceFolders', 'debate-uploader.evidenceSearch', 'debate-uploader.markCards', 'debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdPick', 'debate-uploader.setFolder',
  'debate-uploader.tabroomLogin', 'debate-uploader.tabroomLogout', 'debate-uploader.tabroomRounds']);
   assert.deepEqual(def.settings.map((s) => [s.key, s.type, s.default]), [['sendDocFolder', 'text', '']]);
 });
@@ -1118,5 +1118,162 @@ test('DOM search: typing queries the helper, arrows move, Enter opens, ⌘Enter 
     assert.equal(dom.doc.body.children.length, 0, 'dialog closed');
   } finally {
     globalThis.document = saved.document; globalThis.Option = saved.Option; window.__debateUploaderUI = saved.ui;
+  }
+});
+
+// ---------------------------------------------------------------- Mark cards
+// A ProseMirror-shaped fake: positions, descendants, nodesBetween, marks, transactions.
+function pm(name, kids = [], text = null, marks = []) {
+  const n = { type: { name }, isText: text !== null, text, marks, kids };
+  n.nodeSize = n.isText ? text.length : 2 + kids.reduce((a, k) => a + k.nodeSize, 0);
+  n.textContent = n.isText ? text : kids.map((k) => k.textContent).join('');
+  n.firstChild = kids[0] || null;
+  n.forEach = (f) => { let p = 0; for (const k of kids) { f(k, p); p += k.nodeSize; } };
+  const walk = (node, base, f, from = -Infinity, to = Infinity) => {
+    let p = base;
+    for (const k of node.kids) {
+      const end = p + k.nodeSize;
+      if (end > from && p < to && f(k, p) !== false && !k.isText) walk(k, p + 1, f, from, to);
+      p = end;
+    }
+  };
+  n.descendants = (f) => walk(n, 0, f);
+  n.nodesBetween = (from, to, f) => walk(n, 0, f, from, to);
+  return n;
+}
+const RED = { type: { name: 'font_color' }, attrs: { color: 'ff0000' } };
+const BLUE = { type: { name: 'font_color' }, attrs: { color: '0000FF' } };
+const txt = (s, ...marks) => pm('text', [], s, marks);
+const card = (tag, cite, ...body) => pm('card', [pm('tag', [tag]), pm('cite_paragraph', [txt(cite)]), pm('card_body', body)]);
+function fakeView(doc) {
+  const v = { dispatched: [], calls: [] };
+  v.state = {
+    doc,
+    schema: { marks: { font_color: { create: (attrs) => ({ type: { name: 'font_color' }, attrs }) } } },
+    get tr() {
+      const tr = { docChanged: false };
+      tr.addMark = (f, t, m) => { v.calls.push(['add', f, t, m.attrs.color]); tr.docChanged = true; return tr; };
+      tr.removeMark = (f, t, m) => { v.calls.push(['remove', f, t, m.attrs.color]); tr.docChanged = true; return tr; };
+      return tr;
+    },
+  };
+  v.dispatch = (tr) => v.dispatched.push(tr);
+  return v;
+}
+const MARK_DOC = () => pm('doc', [
+  pm('block', [txt('AT: Grid')]),
+  card(txt('Grid is resilient', RED), 'Avila 12', txt('Body', RED)),
+  card(txt('Grid collapses'), 'Chen 25', txt('half ', RED), txt('read')),
+  card(txt('Blackouts are rare'), 'Niiler 19', txt('Body')),
+  pm('block', [txt('Econ')]),
+  card(txt('Recession causes war'), 'Royal 10', txt('Body ', BLUE), txt('more')),
+]);
+
+function markHarness(view, pick) {
+  const h = harness();
+  h.picks = [];
+  window.__debateUploaderUI.editorView = async () => view;
+  window.__debateUploaderUI.pickCards = async (spec) => { h.picks.push(spec); return pick(spec); };
+  h.api.docInfo = () => ({ docId: 'd', docTitle: 'Grid Aff' });
+  return h;
+}
+
+test('mark cards: lists every card under its block, checked when already all red, partly red noted', async () => {
+  const view = fakeView(MARK_DOC());
+  const h = markHarness(view, () => null);
+  await cmd('markCards').run(h.api);
+  const spec = h.picks[0];
+  assert.equal(spec.title, 'Mark cards');
+  assert.equal(spec.subtitle, 'Grid Aff · checked cards turn red');
+  assert.deepEqual(spec.cards.map((c) => [c.label, c.sub, c.group, c.checked, c.partial]), [
+    ['Grid is resilient', 'Avila 12', 'AT: Grid', false, true],
+    ['Grid collapses', 'Chen 25', 'AT: Grid', false, true],
+    ['Blackouts are rare', 'Niiler 19', 'AT: Grid', false, false],
+    ['Recession causes war', 'Royal 10', 'Econ', false, false],
+  ]);
+  assert.equal(view.dispatched.length, 0, 'cancel changes nothing');
+});
+
+test('mark cards: checked cards turn wholly red, unchecked ones lose only marker red, in one undoable transaction', async () => {
+  const doc = pm('doc', [
+    card(txt('A', RED), 'cite a', txt('all red', RED)),
+    card(txt('B'), 'cite b', txt('plain')),
+    card(txt('C'), 'cite c', txt('blue', BLUE), txt('red', RED)),
+  ]);
+  // cite paragraphs aren't red in card A, so make it fully red for the "already marked" case
+  doc.kids[0].kids[1] = pm('cite_paragraph', [txt('cite a', RED)]);
+  const fixed = pm('doc', doc.kids);
+  const view = fakeView(fixed);
+  const h = markHarness(view, (spec) => {
+    assert.deepEqual(spec.cards.map((c) => c.checked), [true, false, false]);
+    return [false, true, false];
+  });
+  await cmd('markCards').run(h.api);
+  assert.equal(view.dispatched.length, 1);
+  const a = [];
+  fixed.forEach((n, p) => a.push([p, p + n.nodeSize]));
+  assert.deepEqual(view.calls.filter((c) => c[0] === 'add'), [['add', a[1][0], a[1][1], 'FF0000']]);
+  const removed = view.calls.filter((c) => c[0] === 'remove');
+  assert.ok(removed.length >= 3 && removed.every((c) => c[1] >= a[0][0] && c[2] <= a[0][1] && c[3] === 'ff0000'), 'only card A, only the red marks');
+  assert.equal(h.toasts.at(-1), 'Marked 1 card, unmarked 1 card (⌘Z to undo)');
+});
+
+test('mark cards: no editor, no cards, and a doc whose cards changed meanwhile each explain', async () => {
+  const none = markHarness(null, () => null);
+  await cmd('markCards').run(none.api);
+  assert.equal(none.toasts.at(-1), "Couldn't reach the editor. Click into your document, then run Mark cards again.");
+
+  const empty = markHarness(fakeView(pm('doc', [pm('block', [txt('x')])])), () => null);
+  await cmd('markCards').run(empty.api);
+  assert.equal(empty.toasts.at(-1), 'No cards in this document.');
+
+  const view = fakeView(MARK_DOC());
+  const moved = markHarness(view, () => { view.state.doc = pm('doc', [card(txt('New'), 'x', txt('y'))]); return [true]; });
+  await cmd('markCards').run(moved.api);
+  assert.equal(moved.toasts.at(-1), 'The cards changed while the list was open. Run Mark cards again.');
+  assert.equal(view.dispatched.length, 0);
+});
+
+test('DOM mark cards: the editor view is picked up from ProseMirror; filter, Enter checks, Apply counts, ⌘Enter applies', async () => {
+  const dom = fakeDom();
+  const saved = { document: globalThis.document, Option: globalThis.Option, ui: window.__debateUploaderUI, getSelection: window.getSelection };
+  globalThis.document = dom.doc; globalThis.Option = dom.Option;
+  const view = fakeView(MARK_DOC());
+  // ProseMirror's shape: the editor element's view description gets the view in setSelection().
+  class ViewDesc { setSelection(anchor, head, v) { this.seen = v; } update(node, outer, inner, v) { this.seen = v; } }
+  const editorEl = { pmViewDesc: new ViewDesc(), isConnected: true, offsetParent: {}, parentElement: null, scrollTop: 0, focus() {} };
+  view.dom = editorEl;
+  view.docView = {};
+  const ranges = [];
+  dom.doc.querySelectorAll = (sel) => (sel === '.ProseMirror' ? [editorEl] : []);
+  dom.doc.createRange = () => ({ selectNodeContents() {}, collapse() {}, cloneRange() { return this; } });
+  window.getSelection = () => ({
+    get rangeCount() { return ranges.length; },
+    getRangeAt: (i) => ranges[i],
+    removeAllRanges: () => { ranges.length = 0; },
+    addRange: (r) => { ranges.push(r); editorEl.pmViewDesc.setSelection(0, 0, view); }, // ProseMirror syncing the caret
+  });
+  const h = harness();
+  delete window.__debateUploaderUI; // real DOM UI, real editor lookup
+  try {
+    const running = cmd('markCards').run(h.api);
+    for (let i = 0; i < 300 && !dom.byField('query'); i++) await new Promise((r) => setTimeout(r, 20));
+    const input = dom.byField('query');
+    assert.ok(input, 'picker opened, so the view was found');
+    const rows = () => dom.byField('list').children.filter((n) => n.className.startsWith('du-row'));
+    const groups = () => dom.byField('list').children.filter((n) => n.className === 'du-group').map((n) => n.textContent);
+    assert.deepEqual(groups(), ['AT: Grid', 'Econ']);
+    assert.equal(rows().length, 4);
+    input.value = 'econ'; input.dispatch('input');
+    assert.equal(rows().length, 1);
+    input.dispatch('keydown', { key: 'Enter' });
+    assert.equal(rows()[0].getAttribute('aria-checked'), 'true');
+    assert.ok(dom.all(dom.doc.body).some((n) => n.tagName === 'BUTTON' && n.textContent === 'Mark 1'), 'Apply reads "Mark 1"');
+    input.dispatch('keydown', { key: 'Enter', metaKey: true });
+    await running;
+    assert.equal(view.dispatched.length, 1);
+    assert.equal(h.toasts.at(-1), 'Marked 1 card (⌘Z to undo)');
+  } finally {
+    globalThis.document = saved.document; globalThis.Option = saved.Option; window.__debateUploaderUI = saved.ui; window.getSelection = saved.getSelection;
   }
 });

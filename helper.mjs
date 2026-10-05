@@ -16,7 +16,7 @@ import { createEvidenceIndex } from './lib/evidence.mjs';
 import { cardDocx } from './lib/docx.mjs';
 import { readFile, stat } from 'node:fs/promises';
 
-const VERSION = '0.1.4';
+const VERSION = '0.1.5';
 const bridgeDir = process.env.DEBATE_UPLOADER_BRIDGE_DIR || defaultBridgeDir();
 const sdBase = process.env.DEBATE_UPLOADER_SD_BASE || SD_BASE;
 const sdMedia = process.env.DEBATE_UPLOADER_SD_MEDIA || SD_MEDIA;
