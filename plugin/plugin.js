@@ -43,6 +43,7 @@
         case 'unreachable': return "Couldn't reach openCaselist. Try again.";
         case 'bad_round': return 'Tournament, side and round are required.';
         case 'too_large': return 'File is over the 10 MB upload limit.';
+        case 'removed': return "That round's file is no longer on the caselist.";
         case 'newest_changed': return 'The newest send doc changed after the form opened. Run Upload to Caselist again to check it.';
         case 'start_unknown':
         case 'upload_unknown':
@@ -786,6 +787,141 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     api.showToast(`Uploaded "${r.name}" to ${target.caselistLabel} · ${target.schoolLabel} · ${target.teamLabel}`);
   }
 
+  // ---------------------------------------------------------------- Scouting
+  const displayTournament = (t) => String(t ?? '').replace(/^\d+---/, '');
+  const shortDate = (s) => {
+    const d = new Date(Date.parse(String(s ?? '').replace(' ', 'T')));
+    return Number.isFinite(d.getTime()) ? d.toLocaleDateString([], { month: 'short', day: 'numeric' }) : '';
+  };
+  const normName = (s) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const sideLabelsFor = (cl) => (/pf|public forum/i.test(`${cl.event || ''} ${cl.label || ''}`) ? { A: 'Pro', N: 'Con' } : { A: 'Aff', N: 'Neg' });
+  const ownCaselist = (api) => {
+    const t = api.storage.get('caselistTarget');
+    return t ? { name: t.caselist, label: t.caselistLabel, event: t.event || '' } : null;
+  };
+
+  async function pickCaselist(api, u) {
+    const all = await runJob(api, '/caselist/caselists', {}, u.sleep);
+    if (!all.length) { api.showToast('No caselists are open right now.'); return null; }
+    const prefer = [ownCaselist(api)?.name, api.storage.get('scoutCaselist')?.name].filter(Boolean);
+    const rank = (c) => { const i = prefer.indexOf(c.name); return i === -1 ? prefer.length : i; };
+    const ordered = all.map((c, i) => [c, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(([c]) => c);
+    const i = await u.choose('Pick a caselist', ordered.map((c) => c.label));
+    if (i == null) return null;
+    const cl = { name: ordered[i].name, label: ordered[i].label, event: ordered[i].event || '' };
+    api.storage.set('scoutCaselist', cl);
+    return cl;
+  }
+
+  async function openTeamPage(api, u, cl, team, ctx) {
+    const data = await runJob(api, '/caselist/team', { caselist: cl.name, school: team.school, team: team.team }, u.sleep);
+    const sl = sideLabelsFor(cl);
+    const citesByRound = new Map();
+    for (const c of data.cites) {
+      if (c.roundId == null) continue;
+      if (!citesByRound.has(c.roundId)) citesByRound.set(c.roundId, []);
+      citesByRound.get(c.roundId).push({ title: c.title, text: c.cites });
+    }
+    const rounds = data.rounds.map((r) => {
+      const side = sl[r.side] || r.side;
+      return {
+        key: r.id,
+        label: [displayTournament(r.tournament), roundName(r.round), [side, r.opponent && `vs ${r.opponent}`].filter(Boolean).join(' ')].filter(Boolean).join(' · '),
+        detail: r.opensource ? shortDate(r.updated) : 'cites only',
+        hasFile: !!r.opensource,
+        info: [
+          ['Tournament', displayTournament(r.tournament)], ['Round', roundName(r.round)], ['Side', side], ['Opponent', r.opponent],
+          ['Judge', r.judge], ['Uploaded', shortDate(r.updated)], ['File', r.opensource ? r.opensource.split('/').pop() : 'None (cites only)'],
+        ].filter(([, v]) => v),
+        report: r.report || '',
+        cites: citesByRound.get(r.id) || [],
+      };
+    });
+    const cites = data.cites.map((c) => ({
+      key: c.id, label: c.title || 'Untitled', text: c.cites,
+      detail: [displayTournament(c.tournament), roundName(c.round)].filter(Boolean).join(' · '),
+    }));
+    const openExternal = window.electronAPI && window.electronAPI.openExternal;
+    await u.teamPage({
+      title: team.label,
+      subtitle: `${cl.label} · ${plural(rounds.length, 'round')} · ${cites.length} cite ${cites.length === 1 ? 'entry' : 'entries'}`,
+      rounds,
+      cites,
+      pageUrl: `https://opencaselist.com/${cl.name}/${team.school}/${team.team}`,
+      onViewOnline: openExternal ? (url) => openExternal(url) : null,
+      onOpen: async (key) => {
+        const r = data.rounds.find((x) => x.id === key);
+        if (!r || !r.opensource) return;
+        const name = r.opensource.split('/').pop();
+        api.showToast(`Opening "${name}"…`);
+        try {
+          const res = await runJob(api, '/caselist/open', { caselist: cl.name, school: team.school, team: team.team, path: r.opensource }, u.sleep);
+          api.showToast(`Opened "${res.name}" in ${res.app === 'CardMirror' ? 'CardMirror' : 'your default app'}`);
+        } catch (err) {
+          api.showToast(message(err.message, { ...ctx, name }));
+        }
+      },
+      onCopy: async (text, what) => {
+        try {
+          await navigator.clipboard.writeText(text);
+          api.showToast(`Copied the ${what}.`);
+        } catch {
+          api.showToast("Couldn't copy to the clipboard.");
+        }
+      },
+    });
+  }
+
+  async function caselistScout(api) {
+    const u = ui();
+    const ctx = { caselist: true };
+    try {
+      const { current, rounds } = await runJob(api, '/tabroom/rounds', {}, u.sleep);
+      const withOpp = rounds.filter((r) => r.opponent);
+      if (!withOpp.length) return api.showToast(current ? 'Your current round has no opponent yet.' : 'No Tabroom rounds with an opponent.');
+      let round = withOpp[0];
+      if (!(current && withOpp.length === 1)) {
+        const i = await u.choose('Scout which round?', withOpp.map((r) => [r.tournament, roundName(r.round), `vs ${r.opponent}`].filter(Boolean).join(' · ')));
+        if (i == null) return;
+        round = withOpp[i];
+      }
+      const cl = ownCaselist(api) || api.storage.get('scoutCaselist') || (await pickCaselist(api, u));
+      if (!cl) return;
+      const teams = await runJob(api, '/caselist/search', { caselist: cl.name, q: round.opponent }, u.sleep);
+      let team = teams.find((t) => normName(t.label) === normName(round.opponent));
+      if (!team) {
+        if (!teams.length) return api.showToast(`No caselist page for ${round.opponent} on ${cl.label} yet.`);
+        const i = await u.choose(`Which team is ${round.opponent}?`, teams.map((t) => t.label));
+        if (i == null) return;
+        team = teams[i];
+      }
+      await openTeamPage(api, u, cl, team, ctx);
+    } catch (err) {
+      api.showToast(message(err.message, ctx));
+    }
+  }
+
+  async function caselistSearch(api) {
+    const u = ui();
+    const ctx = { caselist: true };
+    try {
+      const cl = await pickCaselist(api, u);
+      if (!cl) return;
+      const raw = await u.prompt(`Search ${cl.label} (team or school)`, api.storage.get('lastCaselistSearch') || '');
+      const q = raw == null ? '' : String(raw).trim();
+      if (!q) return;
+      api.storage.set('lastCaselistSearch', q);
+      const teams = await runJob(api, '/caselist/search', { caselist: cl.name, q }, u.sleep);
+      if (!teams.length) return api.showToast(`No teams matching "${q}" on ${cl.label}.`);
+      const i = teams.length === 1 ? 0 : await u.choose(`Teams matching "${q}"`, teams.map((t) => t.label));
+      if (i == null) return;
+      await openTeamPage(api, u, cl, teams[i], ctx);
+    } catch (err) {
+      api.showToast(message(err.message, ctx));
+    }
+  }
+
   window.__registerCardMirrorPlugin && window.__registerCardMirrorPlugin({
     id: ID,
     name: 'Debate Uploader',
@@ -862,6 +998,20 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         keywords: ['caselist', 'opencaselist', 'team', 'school'],
         defaultKey: null,
         run: (api) => caselistTeam(api),
+      },
+      {
+        id: `${ID}.caselistScout`,
+        label: 'Scout next opponent…',
+        keywords: ['scout', 'opponent', 'caselist', 'prep', 'disclosure'],
+        defaultKey: null,
+        run: (api) => caselistScout(api),
+      },
+      {
+        id: `${ID}.caselistSearch`,
+        label: 'Search the caselist…',
+        keywords: ['caselist', 'search', 'team', 'school', 'opencaselist'],
+        defaultKey: null,
+        run: (api) => caselistSearch(api),
       },
     ],
   });

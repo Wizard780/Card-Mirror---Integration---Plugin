@@ -35,10 +35,10 @@ function harness({ responses = [], settings = {}, storage = {}, room = 'abc12', 
   return { api, calls, toasts, prompts, store };
 }
 
-test('registers nine commands and one setting under the plugin id', () => {
+test('registers eleven commands and one setting under the plugin id', () => {
   assert.equal(def.id, 'debate-uploader');
   assert.equal(def.apiVersion, 1);
-  assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.caselistTeam', 'debate-uploader.caselistUpload', 'debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdPick', 'debate-uploader.setFolder',
+  assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.caselistScout', 'debate-uploader.caselistSearch', 'debate-uploader.caselistTeam', 'debate-uploader.caselistUpload', 'debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdPick', 'debate-uploader.setFolder',
  'debate-uploader.tabroomLogin', 'debate-uploader.tabroomLogout', 'debate-uploader.tabroomRounds']);
   assert.deepEqual(def.settings.map((s) => [s.key, s.type, s.default]), [['sendDocFolder', 'text', '']]);
 });
@@ -650,4 +650,83 @@ test('DOM form: Upload with missing side shows an error and posts nothing', asyn
     dom.button('Cancel').dispatch('click');
   });
   assert.equal(h.calls.find((c) => c.route === '/caselist/upload'), undefined);
+});
+
+function scoutHarness({ results = {}, choose = [], storage = {}, prompt = null } = {}) {
+  const h = caselistHarness({ results, choose, storage });
+  h.pages = [];
+  window.__debateUploaderUI.teamPage = async (spec) => { h.pages.push(spec); if (h.onPage) await h.onPage(spec); };
+  if (prompt !== null) window.__debateUploaderUI.prompt = async (label, initial) => { h.prompts.push([label, initial]); return prompt; };
+  return h;
+}
+const TEAM = { rounds: [
+  { id: 11, side: 'N', tournament: '03---Glenbrooks', round: '3', opponent: 'Strake KM', judge: 'Smith', report: 'AI DA, Econ', opensource: 'hspf26/Lexington/AlHu/a.docx', video: null, updated: '2026-10-04 10:00:00' },
+  { id: 12, side: 'A', tournament: '01---Yale', round: '2', opponent: '', judge: '', report: '', opensource: null, video: null, updated: '2026-09-20 10:00:00' },
+], cites: [{ id: 5, roundId: 11, title: '1NC', cites: 'Smith 24', side: 'N', tournament: '03---Glenbrooks', round: '3' }] };
+const LEX = [{ school: 'Lexington', team: 'AlHu', label: 'Lexington AlHu', schoolLabel: 'Lexington' }];
+const ONE_ROUND = { current: true, rounds: [{ id: 9, tournament: 'Glenbrooks', round: '4', side: 'Pro', opponent: 'lexington-alhu', judge: 'Lee', start_time: null }] };
+
+test('scout: single current round → exact match (case/punctuation-insensitive) → team page with details', async () => {
+  const h = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/search': LEX, '/caselist/team': TEAM, '/caselist/open': { name: 'a.docx', path: '/p', app: 'CardMirror' } } });
+  await cmd('caselistScout').run(h.api);
+  assert.equal(h.chooseTitles.length, 0, 'no pickers needed');
+  assert.deepEqual(h.calls.find((c) => c.route === '/caselist/search').body, { caselist: 'hspf26', q: 'lexington-alhu' });
+  const p = h.pages[0];
+  assert.equal(p.title, 'Lexington AlHu');
+  assert.equal(p.subtitle, 'HS PF 2026 · 2 rounds · 1 cite entry');
+  assert.deepEqual(p.rounds.map((r) => [r.label, r.detail, r.hasFile]), [
+    ['Glenbrooks · Round 3 · Con vs Strake KM', p.rounds[0].detail, true],
+    ['Yale · Round 2 · Pro', 'cites only', false],
+  ]);
+  assert.deepEqual(p.rounds[0].info.map(([k]) => k), ['Tournament', 'Round', 'Side', 'Opponent', 'Judge', 'Uploaded', 'File']);
+  assert.equal(p.rounds[0].report, 'AI DA, Econ');
+  assert.deepEqual(p.rounds[0].cites, [{ title: '1NC', text: 'Smith 24' }]);
+  assert.deepEqual(p.cites.map((c) => [c.label, c.detail, c.text]), [['1NC', 'Glenbrooks · Round 3', 'Smith 24']]);
+  assert.equal(p.pageUrl, 'https://opencaselist.com/hspf26/Lexington/AlHu');
+  await p.onOpen(11);
+  assert.deepEqual(h.calls.find((c) => c.route === '/caselist/open').body, { caselist: 'hspf26', school: 'Lexington', team: 'AlHu', path: 'hspf26/Lexington/AlHu/a.docx' });
+  assert.equal(h.toasts.at(-1), 'Opened "a.docx" in CardMirror');
+  await p.onOpen(12);
+  assert.equal(h.calls.filter((c) => c.route === '/caselist/open').length, 1, 'cites-only round opens nothing');
+});
+
+test('scout: several rounds → pick one; no exact match → pick a team; nothing found → toast', async () => {
+  const two = { current: false, rounds: [ONE_ROUND.rounds[0], { ...ONE_ROUND.rounds[0], id: 10, round: '5', opponent: 'Strake KM' }] };
+  const pick = scoutHarness({ storage: { caselistTarget: TARGET }, choose: [1, 0], results: { '/tabroom/rounds': two, '/caselist/search': LEX, '/caselist/team': TEAM } });
+  await cmd('caselistScout').run(pick.api);
+  assert.deepEqual(pick.chooseTitles.map(([t]) => t), ['Scout which round?', 'Which team is Strake KM?']);
+  assert.equal(pick.pages[0].title, 'Lexington AlHu');
+
+  const none = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/search': [] } });
+  await cmd('caselistScout').run(none.api);
+  assert.equal(none.toasts.at(-1), 'No caselist page for lexington-alhu on HS PF 2026 yet.');
+
+  const out = scoutHarness({ results: { '/tabroom/rounds': new Error('not_logged_in') } });
+  await cmd('caselistScout').run(out.api);
+  assert.equal(out.toasts.at(-1), 'Not logged in to Tabroom. Run "Log in to Tabroom…".');
+});
+
+test('search: your caselist is offered first, the query is remembered, one match opens directly', async () => {
+  const h = scoutHarness({ storage: { caselistTarget: { ...TARGET, caselist: 'ndt26', caselistLabel: 'NDT 2026' } }, prompt: ' Lexington ', choose: [0],
+    results: { '/caselist/caselists': LISTS['/caselist/caselists'], '/caselist/search': LEX, '/caselist/team': TEAM } });
+  await cmd('caselistSearch').run(h.api);
+  assert.deepEqual(h.chooseTitles[0], ['Pick a caselist', ['NDT 2026', 'HS PF 2026']]);
+  assert.deepEqual(h.store.get('scoutCaselist'), { name: 'ndt26', label: 'NDT 2026', event: 'cx' });
+  assert.equal(h.store.get('lastCaselistSearch'), 'Lexington');
+  assert.deepEqual(h.calls.find((c) => c.route === '/caselist/search').body, { caselist: 'ndt26', q: 'Lexington' });
+  assert.equal(h.pages[0].title, 'Lexington AlHu');
+  assert.equal(h.pages[0].rounds[0].label, 'Glenbrooks · Round 3 · Neg vs Strake KM', 'policy caselist shows Aff/Neg');
+
+  const empty = scoutHarness({ prompt: 'zzz', choose: [0], results: { '/caselist/caselists': LISTS['/caselist/caselists'], '/caselist/search': [] } });
+  await cmd('caselistSearch').run(empty.api);
+  assert.equal(empty.toasts.at(-1), 'No teams matching "zzz" on HS PF 2026.');
+});
+
+test('team page actions: copy without a clipboard explains; a vanished file says so', async () => {
+  const h = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/search': LEX, '/caselist/team': TEAM, '/caselist/open': new Error('removed') } });
+  await cmd('caselistScout').run(h.api);
+  await h.pages[0].onCopy('text', 'report');
+  assert.equal(h.toasts.at(-1), "Couldn't copy to the clipboard.");
+  await h.pages[0].onOpen(11);
+  assert.equal(h.toasts.at(-1), "That round's file is no longer on the caselist.");
 });
