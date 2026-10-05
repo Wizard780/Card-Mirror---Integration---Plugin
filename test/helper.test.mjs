@@ -27,7 +27,8 @@ const ROOM2 = [
 let fakeCL, keyStore, helperLog;
 // Fake Gmail SMTP: app password "abcdefghijklmnop" works; records each message.
 const mail = [];
-let smtpServer;
+let smtpServer, imapServer;
+const CHAIN_HDR = 'From: Judge Lee <lee@school.edu>\r\nTo: opp1@x.org, me@gmail.com\r\nCc: opp2@x.org\r\nSubject: Glenbrooks R3 chain\r\nDate: Sun, 05 Oct 2026 14:00:00 +0000\r\nMessage-ID: <chain-1@school.edu>\r\n\r\n';
 let clRejectAll = false;
 let uploads = []; let clStaleToken = false;
 const upstream = {}; // fake caselist request counts by URL
@@ -185,6 +186,25 @@ esac
     });
   });
   await new Promise((r) => smtpServer.listen(0, '127.0.0.1', r));
+  imapServer = net.createServer((c) => {
+    c.write('* OK ready\r\n');
+    let buf = '';
+    c.on('data', (d) => {
+      buf += d.toString();
+      let i;
+      while ((i = buf.indexOf('\r\n')) !== -1) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 2);
+        const [tag, cmd] = line.split(' ');
+        if (cmd === 'LOGIN') c.write(line.includes('"abcdefghijklmnop"') ? `${tag} OK\r\n` : `${tag} NO bad\r\n`);
+        else if (cmd === 'LIST') c.write(`* LIST (\\All) "/" "[Gmail]/All Mail"\r\n${tag} OK\r\n`);
+        else if (cmd === 'EXAMINE') c.write(`${tag} OK\r\n`);
+        else if (line.includes('SEARCH')) c.write(`* SEARCH 7\r\n${tag} OK\r\n`);
+        else if (line.includes('FETCH')) { const b = Buffer.from(CHAIN_HDR); c.write(Buffer.concat([Buffer.from(`* 1 FETCH (UID 7 BODY[HEADER] {${b.length}}\r\n`), b, Buffer.from(`)\r\n${tag} OK\r\n`)])); }
+        else if (cmd === 'LOGOUT') { c.write(`${tag} OK\r\n`); c.end(); }
+      }
+    });
+  });
+  await new Promise((r) => imapServer.listen(0, '127.0.0.1', r));
   helperLog = join(downloadDir, 'helper.log');
   helper = spawn(process.execPath, [join(ROOT, 'helper.mjs')], {
     env: { ...process.env, DEBATE_UPLOADER_BRIDGE_DIR: bridgeDir, DEBATE_UPLOADER_SD_BASE: `http://127.0.0.1:${fakeSD.address().port}`,
@@ -194,6 +214,7 @@ esac
       DEBATE_UPLOADER_PREFS_FILE: join(downloadDir, 'prefs', 'prefs.json'),
       DEBATE_UPLOADER_TEST_ALLOW_PRIVATE: '1',
       DEBATE_UPLOADER_SMTP: `127.0.0.1:${smtpServer.address().port}:plain`,
+      DEBATE_UPLOADER_IMAP: `127.0.0.1:${imapServer.address().port}:plain`,
       DEBATE_UPLOADER_EVIDENCE_FILE: join(downloadDir, 'prefs', 'evidence-index.json'), DEBATE_UPLOADER_CARDS_DIR: join(downloadDir, 'cards'),
       DEBATE_UPLOADER_SD_WS: `ws://127.0.0.1:${fakeSD.address().port}/sock/websocket`,
       DEBATE_UPLOADER_CASELIST_BASE: `http://127.0.0.1:${fakeCL.address().port}/v1`, DEBATE_UPLOADER_SECURITY_BIN: security },
@@ -206,7 +227,7 @@ esac
   assert.ok(session, 'helper never wrote its session file');
 });
 
-after(() => { helper.kill('SIGKILL'); fakeSD.close(); fakeCL.close(); smtpServer.close(); });
+after(() => { helper.kill('SIGKILL'); fakeSD.close(); fakeCL.close(); smtpServer.close(); imapServer.close(); });
 
 const call = (route, body, token = session.token) =>
   fetch(`http://127.0.0.1:${session.port}${route}`, {
@@ -579,6 +600,17 @@ test('gmail: a wrong app password is never saved; the right one is; sends attach
   const second = await waitJob((await call('/gmail/send', { to: ['judge@s.edu'], subject: 'Glenbrooks R3', folder: sendDir })).body.job);
   assert.equal(second.result.reply, true);
   assert.match(mail.at(-1).data, new RegExp(`Subject: Re: Glenbrooks R3\\r\\n[\\s\\S]*In-Reply-To: ${id1.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+
+  // Reply all into a chain someone else started.
+  const recent = await waitJob((await call('/gmail/recent', {})).body.job);
+  assert.deepEqual(recent.result.messages.map((m) => [m.messageId, m.from, m.cc]), [['<chain-1@school.edu>', 'lee@school.edu', ['opp2@x.org']]]);
+  const m = recent.result.messages[0];
+  const replied = await waitJob((await call('/gmail/send', { to: ['lee@school.edu', 'opp1@x.org', 'opp2@x.org'], subject: m.subject, text: 'Our 1AC.', replyTo: { messageId: m.messageId, references: m.references }, folder: sendDir })).body.job);
+  assert.equal(replied.result.reply, true);
+  const r = mail.at(-1).data;
+  assert.match(r, /Subject: Re: Glenbrooks R3 chain\r\n/);
+  assert.match(r, /In-Reply-To: <chain-1@school\.edu>\r\nReferences: <chain-1@school\.edu>\r\n/);
+  assert.match(Buffer.from(r.split('Content-Transfer-Encoding: base64\r\n\r\n')[1].split('\r\n--')[0].replace(/\r\n/g, ''), 'base64').toString(), /^Our 1AC\.$/);
 
   const badTo = await waitJob((await call('/gmail/send', { to: ['not an email'], subject: 'x', folder: sendDir })).body.job);
   assert.equal(badTo.message, 'bad_recipients');

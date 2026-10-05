@@ -21,7 +21,7 @@ test('only known keys are accepted; null removes a key; a corrupt file reads as 
   const file = await tmp();
   const p = createPrefs(file);
   await assert.rejects(p.set('password', 'x'), /^Error: bad_key$/);
-  assert.deepEqual([...PREF_KEYS].sort(), ['caselistTarget', 'emailChain', 'emailThreads', 'lastRoom', 'scoutCaselist', 'sendDocFolder', 'tabroomEmail']);
+  assert.deepEqual([...PREF_KEYS].sort(), ['caselistTarget', 'emailBody', 'emailChain', 'emailThreads', 'lastRoom', 'scoutCaselist', 'sendDocFolder', 'tabroomEmail']);
   await p.set('lastRoom', 'abc12');
   await p.set('lastRoom', null);
   assert.deepEqual(await p.getAll(), {});

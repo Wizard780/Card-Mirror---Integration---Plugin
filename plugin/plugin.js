@@ -116,7 +116,7 @@
 
   // CardMirror wipes a file-loaded plugin's storage at every launch, so settings are
   // mirrored to the helper and restored before each command.
-  const PREF_KEYS = ['caselistTarget', 'scoutCaselist', 'sendDocFolder', 'lastRoom', 'tabroomEmail', 'emailChain'];
+  const PREF_KEYS = ['caselistTarget', 'scoutCaselist', 'sendDocFolder', 'lastRoom', 'tabroomEmail', 'emailChain', 'emailBody'];
   const restored = new WeakSet();
   async function restorePrefs(api) {
     if (restored.has(api)) return;
@@ -723,10 +723,28 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         const field = (label, control) => el('label', { class: 'du-field du-span' }, [el('span', { class: 'du-label', textContent: label }), control]);
         const to = el('textarea', { class: 'du-input', rows: 2, value: spec.to || '', placeholder: 'judge@school.edu, opp1@…, opp2@…', data: { field: 'to' } });
         const subject = el('input', { class: 'du-input', value: spec.subject || '', data: { field: 'subject' } });
+        const body = el('textarea', { class: 'du-input', rows: 3, value: spec.body || '', data: { field: 'body' } });
+        // Reply all: picking a recent email fills To with everyone on it and keeps its thread.
+        const replies = spec.replies || [];
+        const replySel = el('select', { class: 'du-input', data: { field: 'reply' } });
+        replySel.append(new Option('New email', ''));
+        replies.forEach((r, i) => replySel.append(new Option(r.label, String(i))));
+        const fresh = { to: to.value, subject: subject.value };
+        replySel.addEventListener('change', () => {
+          const r = replies[Number(replySel.value)];
+          to.value = r ? r.to.join(', ') : fresh.to;
+          subject.value = r ? r.subject : fresh.subject;
+        });
         const err = el('p', { class: 'du-error', attrs: { role: 'alert' } });
         d.body.append(el('div', { class: 'du-grid' }, [
+          replies.length || spec.replyNote ? el('div', { class: 'du-field du-span' }, [
+            el('span', { class: 'du-label', textContent: 'Reply all to' }),
+            replies.length ? replySel : null,
+            spec.replyNote ? el('span', { class: 'du-hint', textContent: spec.replyNote }) : null,
+          ]) : null,
           field('To (commas or spaces between addresses)', to),
           field('Subject', subject),
+          field('Message', body),
           el('div', { class: 'du-field du-span' }, [el('span', { class: 'du-label', textContent: 'Attached' }), el('span', { class: 'du-hint', textContent: spec.attached })]),
         ]), err);
         const submit = () => {
@@ -734,10 +752,11 @@ textarea.du-input{resize:vertical;min-height:3.4em}
           const bad = list.filter((x) => !/^[^\s@<>(),;:"]+@[^\s@<>(),;:"]+\.[A-Za-z]{2,}$/.test(x));
           if (!list.length) { err.textContent = 'Add at least one address.'; return; }
           if (bad.length) { err.textContent = `Not an email address: ${bad.join(', ')}`; return; }
-          done({ to: list, subject: subject.value.trim() });
+          const r = replies[Number(replySel.value)];
+          done({ to: list, subject: subject.value.trim(), body: body.value, replyTo: r ? r.replyTo : null });
         };
         subject.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
-        to.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); } });
+        for (const area of [to, body]) area.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); } });
         d.foot.append(note(`From ${spec.from}`).node, button('Cancel', false, () => done(null)), button('Send', true, submit));
         to.focus();
       });
@@ -1771,21 +1790,33 @@ textarea.du-input{resize:vertical;min-height:3.4em}
       }
       const folder = sendDocFolder(api);
       if (!folder) throw new Error('no_folder');
-      const [newest, subject] = await Promise.all([call(api, '/caselist/newest', { folder }), chainSubject(api, u)]);
+      const recent = runJob(api, '/gmail/recent', {}, u.sleep).catch(() => null);
+      const [newest, subject, inbox] = await Promise.all([call(api, '/caselist/newest', { folder }), chainSubject(api, u), recent]);
       const last = api.storage.get('emailChain') || {};
+      const me = String(from).toLowerCase();
+      const replies = (inbox ? inbox.messages : []).map((m) => ({
+        label: [m.subject || '(no subject)', m.from.toLowerCase() === me ? 'you' : m.fromName || m.from, m.date ? formatTime(m.date) : ''].filter(Boolean).join(' · '),
+        to: [...new Set([m.from, ...m.to, ...m.cc].map((a) => a.toLowerCase()))].filter((a) => a && a !== me),
+        subject: m.subject,
+        replyTo: { messageId: m.messageId, references: m.references },
+      })).filter((r) => r.to.length);
       const values = await u.emailForm({
         title: 'Email the chain',
-        subtitle: 'Sends now from your Gmail; the same subject stays one thread',
+        subtitle: 'Sends now from your Gmail',
         from,
         to: (last.to || []).join(', '),
         subject: subject || last.subject || '',
+        body: api.storage.get('emailBody') || 'Speech doc attached.',
+        replies,
+        replyNote: inbox ? '' : "Couldn't read your recent emails, so reply-all isn't available; New email still works.",
         attached: `${newest.name} (newest send doc, ${formatTime(newest.mtime)})`,
       });
       if (!values) return;
       remember(api, 'emailChain', { to: values.to, subject: values.subject });
+      remember(api, 'emailBody', values.body);
       busy = true;
       api.showToast(`Sending "${newest.name}"…`);
-      const r = await runJob(api, '/gmail/send', { to: values.to, subject: values.subject, folder }, u.sleep);
+      const r = await runJob(api, '/gmail/send', { to: values.to, subject: values.subject, text: values.body, replyTo: values.replyTo, folder }, u.sleep);
       api.showToast(`Sent "${r.name}" to ${r.recipients} ${r.recipients === 1 ? 'person' : 'people'}${r.reply ? ' (same thread)' : ''}.`);
     } catch (err) {
       api.showToast(message(err.message, ctx));

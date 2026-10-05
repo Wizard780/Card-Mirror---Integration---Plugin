@@ -18,9 +18,10 @@ import { draftReport } from './lib/report-draft.mjs';
 import { compare, skippedQualifiers, verdict, urlsIn } from './lib/cardcheck.mjs';
 import { getSource, safeFetch } from './lib/fetchsafe.mjs';
 import { buildMessage, newMessageId, sendMail, verifyLogin, isEmail } from './lib/smtp.mjs';
+import { recentMessages } from './lib/imap.mjs';
 import { readFile, stat } from 'node:fs/promises';
 
-const VERSION = '0.1.8';
+const VERSION = '0.1.9';
 const bridgeDir = process.env.DEBATE_UPLOADER_BRIDGE_DIR || defaultBridgeDir();
 const sdBase = process.env.DEBATE_UPLOADER_SD_BASE || SD_BASE;
 const sdMedia = process.env.DEBATE_UPLOADER_SD_MEDIA || SD_MEDIA;
@@ -69,6 +70,11 @@ const smtp = (() => {
   const [host, port, mode] = String(process.env.DEBATE_UPLOADER_SMTP || 'smtp.gmail.com:465:tls').split(':');
   return { host, port: Number(port), secure: mode !== 'plain' };
 })();
+const imap = (() => {
+  const [host, port, mode] = String(process.env.DEBATE_UPLOADER_IMAP || 'imap.gmail.com:993:tls').split(':');
+  return { host, port: Number(port), secure: mode !== 'plain' };
+})();
+const threadKey = (subject) => String(subject ?? '').trim().replace(/^((re|fwd?|aw)\s*:\s*)+/i, '').toLowerCase();
 const MAX_MAIL_BYTES = 20 * 1024 * 1024; // Gmail's limit is 25 MB including base64 overhead
 const prefs = createPrefs(process.env.DEBATE_UPLOADER_PREFS_FILE || join(homedir(), 'Library', 'Application Support', 'debate-uploader', 'prefs.json'));
 // Live room lists. Budget per /speechdrop/watch call must stay under CardMirror's
@@ -401,8 +407,20 @@ const routes = {
     }),
   }),
   '/gmail/forget': async () => { await gmail.remove(); log('gmail forget'); return { ok: true }; },
-  // One email to the chain with the doc attached. Same subject = same thread (In-Reply-To).
-  '/gmail/send': ({ to, subject, folder, file, text }) => ({
+  // Recent emails (headers only) to reply-all to a chain someone else started.
+  '/gmail/recent': () => ({
+    ok: true,
+    job: jobs.start(async () => {
+      const g = await gmail.get();
+      if (!g) throw new Error('gmail_not_set_up');
+      const list = await recentMessages({ ...imap, user: g.email, pass: g.appPassword, days: 3, limit: 40 });
+      log('gmail recent', `${list.length} messages`);
+      return { me: g.email, messages: list };
+    }),
+  }),
+  // One email to the chain with the doc attached. replyTo = reply-all into that email's thread;
+  // otherwise the same subject continues our own thread (In-Reply-To).
+  '/gmail/send': ({ to, subject, folder, file, text, replyTo }) => ({
     ok: true,
     job: jobs.start(async () => {
       const g = await gmail.get();
@@ -415,11 +433,14 @@ const routes = {
       if (doc.bytes.length > MAX_MAIL_BYTES) throw new Error('too_large');
       const subj = String(subject ?? '').trim() || doc.name.replace(/\.docx$/i, '');
       const threads = (await prefs.getAll()).emailThreads || {};
-      const key = subj.toLowerCase();
-      const prior = Array.isArray(threads[key]) ? threads[key] : [];
+      const key = threadKey(subj);
+      const reply = replyTo && /^<[^<>\s]+>$/.test(String(replyTo.messageId || '')) ? replyTo : null;
+      const prior = reply
+        ? [...(Array.isArray(reply.references) ? reply.references.filter((r) => /^<[^<>\s]+>$/.test(r)) : []), reply.messageId]
+        : Array.isArray(threads[key]) ? threads[key] : [];
       const messageId = newMessageId();
       const raw = buildMessage({
-        from: g.email, to: list, subject: prior.length ? `Re: ${subj}` : subj, text: String(text ?? '') || `${doc.name} attached.`,
+        from: g.email, to: list, subject: prior.length && !/^re:/i.test(subj) ? `Re: ${subj}` : subj, text: String(text ?? '').trim() || `${doc.name} attached.`,
         attachments: [{ name: doc.name, bytes: doc.bytes }], messageId, inReplyTo: prior.at(-1), references: prior.slice(-10),
       });
       await sendMail({ ...smtp, user: g.email, pass: g.appPassword }, { from: g.email, to: list, raw });

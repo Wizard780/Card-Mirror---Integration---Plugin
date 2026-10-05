@@ -1368,9 +1368,9 @@ test('card check: a card without a marked cite uses its first unhighlighted para
 });
 
 // ---------------------------------------------------------------- Email chain
-function mailHarness({ status = { email: 'me@gmail.com' }, prompts = [], form = (spec) => ({ to: ['j@s.edu', 'o@x.org'], subject: spec.subject }), send = { name: 'Send 1AC.docx', recipients: 2, reply: false }, rounds = { current: true, rounds: [{ id: 1, tournament: 'Glenbrooks', round: '3', side: 'A', opponent: 'Cranbrook FZ', judge: 'Lee' }] }, storage = {} } = {}) {
+function mailHarness({ status = { email: 'me@gmail.com' }, prompts = [], form = (spec) => ({ to: ['j@s.edu', 'o@x.org'], subject: spec.subject, body: spec.body, replyTo: null }), send = { name: 'Send 1AC.docx', recipients: 2, reply: false }, rounds = { current: true, rounds: [{ id: 1, tournament: 'Glenbrooks', round: '3', side: 'A', opponent: 'Cranbrook FZ', judge: 'Lee' }] }, storage = {}, recent = { me: 'me@gmail.com', messages: [] } } = {}) {
   const h = caselistHarness({ storage: { caselistTarget: TARGET, sendDocFolder: '/send', ...storage },
-    results: { '/tabroom/rounds': rounds, '/gmail/send': send, '/gmail/setup': (b) => (b.appPassword === 'abcd efgh ijkl mnop' ? { email: b.email } : new Error('bad_login')) },
+    results: { '/tabroom/rounds': rounds, '/gmail/send': send, '/gmail/recent': recent, '/gmail/setup': (b) => (b.appPassword === 'abcd efgh ijkl mnop' ? { email: b.email } : new Error('bad_login')) },
     direct: { '/gmail/status': status, '/caselist/newest': { name: 'Send 1AC.docx', size: 5, mtime: 1 } } });
   h.prompts = [];
   const answers = [...prompts];
@@ -1386,7 +1386,7 @@ test('email chain: subject from the Tabroom pairing, last chain prefilled, sends
   const spec = h.mailForms[0];
   assert.deepEqual([spec.from, spec.to, spec.subject], ['me@gmail.com', 'old@x.org', "Glenbrooks · Round 3 · St. Mark's AB vs Cranbrook FZ"]);
   assert.match(spec.attached, /^Send 1AC\.docx \(newest send doc/);
-  assert.deepEqual(h.calls.find((c) => c.route === '/gmail/send').body, { to: ['j@s.edu', 'o@x.org'], subject: "Glenbrooks · Round 3 · St. Mark's AB vs Cranbrook FZ", folder: '/send' });
+  assert.deepEqual(h.calls.find((c) => c.route === '/gmail/send').body, { to: ['j@s.edu', 'o@x.org'], subject: "Glenbrooks · Round 3 · St. Mark's AB vs Cranbrook FZ", text: 'Speech doc attached.', replyTo: null, folder: '/send' });
   assert.deepEqual(h.store.get('emailChain'), { to: ['j@s.edu', 'o@x.org'], subject: "Glenbrooks · Round 3 · St. Mark's AB vs Cranbrook FZ" });
   assert.equal(h.toasts.at(-1), 'Sent "Send 1AC.docx" to 2 people.');
 });
@@ -1411,4 +1411,27 @@ test('email chain: first use sets up Gmail (password prompt is secret); cancel s
   const unsure = mailHarness({ send: new Error('send_unknown') });
   await cmd('emailChain').run(unsure.api);
   assert.equal(unsure.toasts.at(-1), "Gmail didn't confirm. Check your Sent folder before sending again.");
+});
+
+test('email chain: reply all to a recent email (everyone but me, its thread); the message is editable and remembered', async () => {
+  const recent = { me: 'me@gmail.com', messages: [
+    { messageId: '<c2@x.org>', subject: 'Re: Glenbrooks R3 chain', from: 'opp1@x.org', fromName: 'Opp One', to: ['lee@school.edu', 'Me@Gmail.com'], cc: ['opp2@x.org'], date: Date.parse('2026-10-05T14:20:00Z'), references: ['<c1@school.edu>'] },
+    { messageId: '<news@y>', subject: 'Newsletter', from: 'me@gmail.com', fromName: 'Me', to: [], cc: [], date: 1, references: [] },
+  ] };
+  const h = mailHarness({ recent, storage: { emailBody: 'Our 1AC, thanks!' },
+    form: (spec) => ({ to: spec.replies[0].to, subject: spec.replies[0].subject, body: 'Here is the 1AC.', replyTo: spec.replies[0].replyTo }) });
+  await cmd('emailChain').run(h.api);
+  const spec = h.mailForms[0];
+  assert.equal(spec.body, 'Our 1AC, thanks!');
+  assert.equal(spec.replies.length, 1, 'emails with nobody else on them are not reply targets');
+  assert.match(spec.replies[0].label, /^Re: Glenbrooks R3 chain · Opp One · /);
+  assert.deepEqual(spec.replies[0].to, ['opp1@x.org', 'lee@school.edu', 'opp2@x.org']);
+  assert.deepEqual(h.calls.find((c) => c.route === '/gmail/send').body, { to: ['opp1@x.org', 'lee@school.edu', 'opp2@x.org'], subject: 'Re: Glenbrooks R3 chain', text: 'Here is the 1AC.', replyTo: { messageId: '<c2@x.org>', references: ['<c1@school.edu>'] }, folder: '/send' });
+  assert.equal(h.store.get('emailBody'), 'Here is the 1AC.');
+
+  const noInbox = mailHarness({ recent: new Error('imap_unreachable') });
+  await cmd('emailChain').run(noInbox.api);
+  assert.deepEqual(noInbox.mailForms[0].replies, []);
+  assert.match(noInbox.mailForms[0].replyNote, /^Couldn't read your recent emails/);
+  assert.ok(noInbox.calls.some((c) => c.route === '/gmail/send'), 'a new email still works');
 });

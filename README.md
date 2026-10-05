@@ -119,10 +119,16 @@ CardMirror update changes those, the command says it couldn't reach the editor i
   myaccount.google.com/apppasswords (it needs 2-Step Verification on). The helper checks it with Gmail before
   saving it in macOS Keychain (item `debate-uploader` / `gmail`); it's never logged. An app password can read and
   send mail on your account, so treat it like a password; **Forget Gmail login** deletes it.
-- **Email newest send doc to the chain…**: To (the last chain's addresses filled in) and Subject (from your
-  Tabroom pairing, e.g. "Glenbrooks · Round 3 · University AS vs Cranbrook FZ"), with your newest send doc
-  attached. **Send** emails it right away from your Gmail. Sending again with the same subject replies in the same
-  thread, so each speech lands in one conversation.
+- **Email newest send doc to the chain…**: your newest send doc attached, then:
+  - **Reply all to**: pick a recent email (last 3 days, newest first) to reply-all into a chain someone else
+    started. To fills with everyone on it (sender, To and Cc, minus you) and the reply joins that thread for everyone.
+    The helper reads only email headers (sender, recipients, subject, date) over IMAP, read-only; nothing is marked
+    read and no message bodies are fetched.
+  - **New email**: To (the last chain's addresses filled in) and Subject (from your Tabroom pairing, e.g.
+    "Glenbrooks · Round 3 · University AS vs Cranbrook FZ"). Sending again with the same subject replies in your
+    own thread.
+  - **Message**: the email's text, editable; your last message is remembered.
+  **Send** (or ⌘Enter) emails it right away from your Gmail.
 - Never retried automatically. If a toast says Gmail didn't confirm, check your Sent folder before sending again.
 
 ## Card Check
