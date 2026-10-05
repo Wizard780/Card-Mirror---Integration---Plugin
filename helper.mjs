@@ -13,7 +13,7 @@ import { login, getRounds, listCaselists, listSchools, listTeams, createRound, s
 import { parseOpponent, schoolScore, pickTeam } from './lib/scout.mjs';
 import { uploadToSpeechDrop, newestDocx, MAX_BYTES, listRoom, downloadFile, saveUnique, SD_BASE, SD_MEDIA } from './lib/speechdrop.mjs';
 
-const VERSION = '0.1.1';
+const VERSION = '0.1.2';
 const bridgeDir = process.env.DEBATE_UPLOADER_BRIDGE_DIR || defaultBridgeDir();
 const sdBase = process.env.DEBATE_UPLOADER_SD_BASE || SD_BASE;
 const sdMedia = process.env.DEBATE_UPLOADER_SD_MEDIA || SD_MEDIA;
@@ -47,6 +47,30 @@ const watcher = createRoomWatcher({
   list: (room) => listRoom(room, { base: sdBase, timeoutMs: 1500 }),
 });
 const WATCH_WAIT_MS = 1000;
+
+// Lists that barely change within a session are cached (in-flight requests shared,
+// failures never cached). Team pages and Tabroom rounds (new pairings post mid-tournament)
+// stay fresh. Login/logout clears everything.
+const cache = new Map();
+async function cached(key, ttlMs, fn) {
+  const hit = cache.get(key);
+  if (hit && hit.until > Date.now()) return hit.value;
+  const value = fn();
+  cache.set(key, { until: Date.now() + ttlMs, value });
+  try {
+    return await value;
+  } catch (err) {
+    if (cache.get(key)?.value === value) cache.delete(key);
+    throw err;
+  }
+}
+const TEN_MIN = 10 * 60_000;
+const cl = {
+  caselists: (t) => cached('caselists', TEN_MIN, () => listCaselists(t, clOpts)),
+  schools: (t, c) => cached(`schools:${c}`, TEN_MIN, () => listSchools(t, c, clOpts)),
+  teams: (t, c, s) => cached(`teams:${c}:${s}`, TEN_MIN, () => listTeams(t, c, s, clOpts)),
+  teamsDetailed: (t, c, s) => cached(`teamsDetailed:${c}:${s}`, TEN_MIN, () => listTeamsDetailed(t, c, s, clOpts)),
+};
 const token = newToken();
 const jobs = createJobStore();
 // Logs names, rooms and sizes only. Never tokens, cookies or contents.
@@ -85,7 +109,7 @@ const authedJob = (label, fn) => ({
 
 async function scoutIn(t, caselist, opponent) {
   const { school } = parseOpponent(opponent);
-  const schools = await listSchools(t, caselist, clOpts);
+  const schools = await cl.schools(t, caselist);
   const likely = schools
     .map((s, i) => ({ s, i, score: schoolScore(school, s.label) }))
     .filter((x) => x.score > 0)
@@ -93,14 +117,18 @@ async function scoutIn(t, caselist, opponent) {
     .slice(0, 6)
     .map((x) => x.s);
   const teams = (await Promise.all(likely.map((s) =>
-    listTeamsDetailed(t, caselist, s.name, clOpts).then((ts) => ts.map((x) => ({ ...x, schoolLabel: s.label })))))).flat();
+    cl.teamsDetailed(t, caselist, s.name).then((ts) => ts.map((x) => ({ ...x, schoolLabel: s.label })))))).flat();
   const { match, candidates } = pickTeam(opponent, teams);
   log('caselist scout', caselist, opponent, match ? `${match.school}/${match.team}` : `${candidates.length} candidates`);
   return { match, candidates: candidates.slice(0, 15) };
 }
 
 const routes = {
-  '/job': ({ id }) => jobs.get(id),
+  // Long-poll (≤2 s, inside CardMirror's 3 s flowPost limit): answers the moment the job ends.
+  '/job': ({ id, waitMs }) => {
+    const ms = Math.min(Math.max(Number(waitMs) || 0, 0), 2000);
+    return ms ? jobs.wait(id, ms) : jobs.get(id);
+  },
 
   '/speechdrop/upload': ({ room, file, folder }) => {
     const id = jobs.start(async () => {
@@ -154,6 +182,7 @@ const routes = {
       try {
         const session = await login({ username, password }, { base: clBase });
         await keychain.set(session);
+        cache.clear();
         log('tabroom login ok');
         return { loggedIn: true };
       } catch (err) {
@@ -165,6 +194,7 @@ const routes = {
 
   '/tabroom/logout': async () => {
     await keychain.remove();
+    cache.clear();
     log('tabroom logout');
     return { ok: true };
   },
@@ -175,9 +205,9 @@ const routes = {
     return out;
   }),
 
-  '/caselist/caselists': () => authedJob('caselist list', (t) => listCaselists(t, clOpts)),
-  '/caselist/schools': ({ caselist }) => authedJob('caselist schools', (t) => listSchools(t, caselist, clOpts)),
-  '/caselist/teams': ({ caselist, school }) => authedJob('caselist teams', (t) => listTeams(t, caselist, school, clOpts)),
+  '/caselist/caselists': () => authedJob('caselist list', (t) => cl.caselists(t)),
+  '/caselist/schools': ({ caselist }) => authedJob('caselist schools', (t) => cl.schools(t, caselist)),
+  '/caselist/teams': ({ caselist, school }) => authedJob('caselist teams', (t) => cl.teams(t, caselist, school)),
 
   // Local only (no network): lets the form show which file "newest send doc" means.
   '/caselist/newest': async ({ folder }) => {
@@ -202,7 +232,7 @@ const routes = {
   // With no caselist given, every open caselist is tried and the matching one is reported.
   '/caselist/scout': ({ caselist, opponent }) => authedJob('caselist scout', async (t) => {
     if (caselist) return { caselist: null, ...(await scoutIn(t, caselist, opponent)) };
-    const open = await listCaselists(t, clOpts);
+    const open = await cl.caselists(t);
     const tries = await Promise.all(open.map((c) => scoutIn(t, c.name, opponent).then((r) => ({ c, r }), () => ({ c, r: { match: null, candidates: [] } }))));
     const { school } = parseOpponent(opponent);
     const hits = tries.filter((x) => x.r.match).sort((a, b) => schoolScore(school, b.r.match.schoolLabel) - schoolScore(school, a.r.match.schoolLabel));

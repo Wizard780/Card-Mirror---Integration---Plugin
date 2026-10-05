@@ -13,6 +13,7 @@ let fakeSD, helper, bridgeDir, session, sendDir, downloadDir, openLog;
 let fakeCL, keyStore, helperLog;
 let clRejectAll = false;
 let uploads = []; let clStaleToken = false;
+const upstream = {}; // fake caselist request counts by URL
 const received = [];
 
 before(async () => {
@@ -67,6 +68,7 @@ before(async () => {
         ? send(201, { message: 'Logged in', token: 'CLTOKEN0123456789abcdef01234567', expires: '2099-01-01T00:00:00Z' })
         : send(401, { message: 'Invalid username or password' });
     }
+    upstream[req.url] = (upstream[req.url] || 0) + 1;
     if (clRejectAll || req.headers.cookie !== 'caselist_token=CLTOKEN0123456789abcdef01234567') return send(401, { message: 'Not Authorized' });
     if (req.url === '/v1/caselists') return send(200, [
       { name: 'hspf26', display_name: 'HS PF 2026', event: 'pf', archived: false },
@@ -401,6 +403,27 @@ test('prefs: set then get round-trips through the helper; unknown keys are refus
   assert.deepEqual((await call('/prefs/set', { key: 'lastRoom', value: 'FwaXtA' })).body, { ok: true });
   assert.deepEqual((await call('/prefs/get', {})).body, { ok: true, prefs: { lastRoom: 'FwaXtA' } });
   assert.deepEqual((await call('/prefs/set', { key: 'password', value: 'x' })).body, { ok: false, error: 'bad_key' });
+});
+
+test('speed: one /job call with waitMs returns the finished result (no client-side sleeps needed)', async () => {
+  const start = await call('/caselist/caselists', {});
+  const t0 = Date.now();
+  const r = await call('/job', { id: start.body.job, waitMs: 2000 });
+  assert.equal(r.body.state, 'done');
+  assert.ok(Date.now() - t0 < 1500, `answered in ${Date.now() - t0} ms`);
+});
+
+test('speed: school lists are cached; logging in clears the cache', async () => {
+  const key = '/v1/caselists/hspf26/schools';
+  await loginOk(); // start from an empty cache (earlier tests may have filled it)
+  const before = upstream[key] || 0;
+  await waitJob((await call('/caselist/schools', { caselist: 'hspf26' })).body.job);
+  await waitJob((await call('/caselist/schools', { caselist: 'hspf26' })).body.job);
+  await waitJob((await call('/caselist/scout', { caselist: 'hspf26', opponent: 'Lexington AH' })).body.job);
+  assert.ok((upstream[key] || 0) - before <= 1, `fetched ${(upstream[key] || 0) - before} times`);
+  await loginOk();
+  await waitJob((await call('/caselist/schools', { caselist: 'hspf26' })).body.job);
+  assert.equal((upstream[key] || 0) - before, 2, 'refetched after login');
 });
 
 test('scouting: a path not in the team round list is refused without downloading', async () => {

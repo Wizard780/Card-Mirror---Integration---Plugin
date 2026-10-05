@@ -57,7 +57,7 @@ test('pick: uploads, polls the job, toasts success, remembers the room', async (
     ['debate-uploader', '/speechdrop/upload'], ['debate-uploader', '/job'], ['debate-uploader', '/job'],
   ]);
   assert.deepEqual(h.calls[0].body, { room: 'abc12', file: { name: 'a.docx', base64: 'QUJD' } });
-  assert.deepEqual(h.calls[1].body, { id: 'j1' });
+  assert.deepEqual(h.calls[1].body, { id: 'j1', waitMs: 1000 }, 'the helper is asked to wait for the job (long-poll)');
   assert.equal(h.toasts.at(-1), 'Uploaded "a.docx" to SpeechDrop room abc12');
   assert.equal(h.store.get('lastRoom'), 'abc12');
 });
@@ -927,4 +927,13 @@ test('DOM team page filters: tournament + side narrow rounds and cites; counts s
   } finally {
     globalThis.document = saved.document; globalThis.Option = saved.Option; window.__debateUploaderUI = saved.ui;
   }
+});
+
+test('speed: no sleep before the first status check; the helper answers when the job is done', async () => {
+  const h = harness({ responses: [ok({ ok: true, job: 'j1' }), ok({ state: 'done', result: { room: 'abc12', name: 'a.docx' } })] });
+  let slept = 0;
+  window.__debateUploaderUI.sleep = async () => { slept++; };
+  await cmd('sdPick').run(h.api);
+  assert.equal(slept, 0, 'no fixed 1 s sleep any more');
+  assert.equal(h.toasts.at(-1), 'Uploaded "a.docx" to SpeechDrop room abc12');
 });

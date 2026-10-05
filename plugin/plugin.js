@@ -3,8 +3,8 @@
 (() => {
   const ID = 'debate-uploader';
   const MAX_BYTES = 10 * 1024 * 1024;
-  const POLL_MS = 1000;
-  const MAX_WAIT_MS = 90_000;
+  const POLL_WAIT_MS = 1000; // the helper holds each status check up to this long (long-poll)
+  const MAX_POLLS = 90;
   const START_HELPER = 'launchctl kickstart gui/$(id -u)/debate-uploader';
   const SET_FOLDER_LABEL = 'Set send doc folder for SpeechDrop…';
 
@@ -128,18 +128,20 @@
       throw err; // helper down / restarted / unsupported: nothing was sent
     }
     let failures = 0;
-    for (let waited = 0; waited < MAX_WAIT_MS; waited += POLL_MS) {
-      await sleep(POLL_MS);
+    for (let polls = 0; polls < MAX_POLLS; polls++) {
+      const asked = Date.now();
       let s;
       try {
-        s = await call(api, '/job', { id: job });
+        s = await call(api, '/job', { id: job, waitMs: POLL_WAIT_MS });
       } catch {
         if (++failures >= MAX_POLL_FAILURES) throw new Error('upload_unknown');
+        await sleep(250);
         continue;
       }
       failures = 0;
       if (s.state === 'done') return s.result;
       if (s.state === 'error') throw new Error(s.message);
+      if (Date.now() - asked < 100) await sleep(250); // an older helper answers at once: don't spin
     }
     throw new Error('still_running');
   }
