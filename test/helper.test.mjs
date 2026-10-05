@@ -2,6 +2,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
+import net from 'node:net';
 import { mkdtemp, readFile, writeFile, access, chmod, mkdir, readdir } from 'node:fs/promises';
 import { deflateRawSync, crc32 } from 'node:zlib';
 import { writeZip, readZip, unzipEntry } from '../lib/docx.mjs';
@@ -24,6 +25,9 @@ const ROOM2 = [
   { name: 'cards.pdf', ctime: Date.now(), bytes: Buffer.from('%PDF') },
 ];
 let fakeCL, keyStore, helperLog;
+// Fake Gmail SMTP: app password "abcdefghijklmnop" works; records each message.
+const mail = [];
+let smtpServer;
 let clRejectAll = false;
 let uploads = []; let clStaleToken = false;
 const upstream = {}; // fake caselist request counts by URL
@@ -139,8 +143,12 @@ before(async () => {
   // Fake `security`: stores the -w value in a file so tests can inspect it.
   keyStore = join(downloadDir, 'keychain.txt');
   const security = join(downloadDir, 'fake-security.sh');
+  // One file per account, like separate Keychain items: caselist_token → keyStore, gmail → keyStore.gmail
   await writeFile(security, `#!/bin/sh
 F='${keyStore}'
+A=caselist_token
+for arg in "$@"; do [ "$prev" = "-a" ] && A="$arg"; prev="$arg"; done
+[ "$A" != caselist_token ] && F="$F.$A"
 case "$1" in
   add-generic-password) while [ $# -gt 0 ]; do [ "$1" = "-w" ] && printf '%s' "$2" > "$F"; shift; done ;;
   find-generic-password) [ -f "$F" ] && cat "$F" && echo || exit 44 ;;
@@ -148,6 +156,35 @@ case "$1" in
 esac
 `);
   await chmod(security, 0o755);
+  smtpServer = net.createServer((c) => {
+    let inData = false;
+    let buf = '';
+    let cur = null;
+    c.write('220 fake\r\n');
+    c.on('data', (d) => {
+      buf += d.toString();
+      if (inData) {
+        const end = buf.indexOf('\r\n.\r\n');
+        if (end === -1) return;
+        cur.data = buf.slice(0, end + 2); buf = buf.slice(end + 5); inData = false; mail.push(cur);
+        c.write('250 ok\r\n');
+      }
+      let i;
+      while (!inData && (i = buf.indexOf('\r\n')) !== -1) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 2);
+        if (line.startsWith('EHLO')) c.write('250-fake\r\n250 AUTH PLAIN\r\n');
+        else if (line.startsWith('AUTH PLAIN')) {
+          const [, user, pass] = Buffer.from(line.slice(11), 'base64').toString().split('\0');
+          cur = { user, rcpt: [] };
+          c.write(pass === 'abcdefghijklmnop' ? '235 ok\r\n' : '535 bad\r\n');
+        } else if (line.startsWith('MAIL FROM')) c.write('250 ok\r\n');
+        else if (line.startsWith('RCPT TO')) { cur.rcpt.push(line.slice(9, -1)); c.write('250 ok\r\n'); }
+        else if (line === 'DATA') { c.write('354 go\r\n'); inData = true; }
+        else if (line === 'QUIT') { c.write('221 bye\r\n'); c.end(); }
+      }
+    });
+  });
+  await new Promise((r) => smtpServer.listen(0, '127.0.0.1', r));
   helperLog = join(downloadDir, 'helper.log');
   helper = spawn(process.execPath, [join(ROOT, 'helper.mjs')], {
     env: { ...process.env, DEBATE_UPLOADER_BRIDGE_DIR: bridgeDir, DEBATE_UPLOADER_SD_BASE: `http://127.0.0.1:${fakeSD.address().port}`,
@@ -156,6 +193,7 @@ esac
       DEBATE_UPLOADER_CASELIST_DIR: join(downloadDir, 'caselist'),
       DEBATE_UPLOADER_PREFS_FILE: join(downloadDir, 'prefs', 'prefs.json'),
       DEBATE_UPLOADER_TEST_ALLOW_PRIVATE: '1',
+      DEBATE_UPLOADER_SMTP: `127.0.0.1:${smtpServer.address().port}:plain`,
       DEBATE_UPLOADER_EVIDENCE_FILE: join(downloadDir, 'prefs', 'evidence-index.json'), DEBATE_UPLOADER_CARDS_DIR: join(downloadDir, 'cards'),
       DEBATE_UPLOADER_SD_WS: `ws://127.0.0.1:${fakeSD.address().port}/sock/websocket`,
       DEBATE_UPLOADER_CASELIST_BASE: `http://127.0.0.1:${fakeCL.address().port}/v1`, DEBATE_UPLOADER_SECURITY_BIN: security },
@@ -168,7 +206,7 @@ esac
   assert.ok(session, 'helper never wrote its session file');
 });
 
-after(() => { helper.kill('SIGKILL'); fakeSD.close(); fakeCL.close(); });
+after(() => { helper.kill('SIGKILL'); fakeSD.close(); fakeCL.close(); smtpServer.close(); });
 
 const call = (route, body, token = session.token) =>
   fetch(`http://127.0.0.1:${session.port}${route}`, {
@@ -516,6 +554,37 @@ test('card check: each card against its linked page, with progress; no link and 
     assert.deepEqual(done.result.results[1].issues, ['Not found in the source: "Experts agree every grid will certainly fail within the year."']);
     assert.equal(done.result.results[3].reason, 'http_404');
   } finally { page.close(); }
+});
+
+test('gmail: a wrong app password is never saved; the right one is; sends attach the newest send doc and reply in one thread', async () => {
+  assert.equal((await call('/gmail/status', {})).body.email, null);
+  const bad = await waitJob((await call('/gmail/setup', { email: 'me@gmail.com', appPassword: 'wrong-password' })).body.job);
+  assert.deepEqual([bad.state, bad.message], ['error', 'bad_login']);
+  await assert.rejects(access(`${keyStore}.gmail`));
+  const ok = await waitJob((await call('/gmail/setup', { email: 'me@gmail.com', appPassword: 'abcd efgh ijkl mnop' })).body.job);
+  assert.equal(ok.state, 'done');
+  assert.deepEqual(JSON.parse(await readFile(`${keyStore}.gmail`, 'utf8')), { email: 'me@gmail.com', appPassword: 'abcdefghijklmnop' });
+  assert.equal((await call('/gmail/status', {})).body.email, 'me@gmail.com');
+  assert.ok(!(await readFile(helperLog, 'utf8')).includes('abcdefghijklmnop'), 'never logged');
+
+  const first = await waitJob((await call('/gmail/send', { to: ['judge@s.edu', 'opp@x.org'], subject: 'Glenbrooks R3', folder: sendDir })).body.job);
+  assert.deepEqual(first.result, { name: 'Send 1AC.docx', recipients: 2, reply: false });
+  const m1 = mail.at(-1);
+  assert.deepEqual(m1.rcpt, ['judge@s.edu', 'opp@x.org']);
+  assert.match(m1.data, /^From: me@gmail\.com\r\nTo: judge@s\.edu, opp@x\.org\r\nSubject: Glenbrooks R3\r\n/);
+  const att = m1.data.split('Content-Transfer-Encoding: base64\r\n\r\n')[2].split('\r\n--')[0];
+  assert.equal(Buffer.from(att.replace(/\r\n/g, ''), 'base64').toString(), 'docx-bytes');
+  const id1 = /Message-ID: (<[^>]+>)/.exec(m1.data)[1];
+
+  const second = await waitJob((await call('/gmail/send', { to: ['judge@s.edu'], subject: 'Glenbrooks R3', folder: sendDir })).body.job);
+  assert.equal(second.result.reply, true);
+  assert.match(mail.at(-1).data, new RegExp(`Subject: Re: Glenbrooks R3\\r\\n[\\s\\S]*In-Reply-To: ${id1.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+
+  const badTo = await waitJob((await call('/gmail/send', { to: ['not an email'], subject: 'x', folder: sendDir })).body.job);
+  assert.equal(badTo.message, 'bad_recipients');
+  await call('/gmail/forget', {});
+  await assert.rejects(access(`${keyStore}.gmail`));
+  assert.equal((await waitJob((await call('/gmail/send', { to: ['a@b.org'], subject: 'x', folder: sendDir })).body.job)).message, 'gmail_not_set_up');
 });
 
 test('SIGTERM removes the session file but keeps identity', async () => {

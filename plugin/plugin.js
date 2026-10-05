@@ -61,6 +61,24 @@
           break; // shared messages below (helper down, no_folder, read_failed, …)
       }
     }
+    if (ctx.email) {
+      if (code.startsWith('smtp_rejected:')) return `Gmail refused it: ${code.slice('smtp_rejected:'.length)}`;
+      switch (code) {
+        case 'bad_login': return 'Gmail rejected that address or app password. Make a new app password and run "Set up Gmail for email chains…".';
+        case 'bad_email': return "That isn't an email address.";
+        case 'gmail_not_set_up': return 'Set up Gmail first: run "Set up Gmail for email chains…".';
+        case 'bad_recipients': return 'Check the To list: one or more addresses look wrong.';
+        case 'too_large': return 'The doc is over 20 MB, too big for Gmail.';
+        case 'smtp_unreachable':
+        case 'smtp_timeout': return "Couldn't reach Gmail. Nothing was sent; check your connection.";
+        case 'send_unknown':
+        case 'upload_unknown':
+        case 'start_unknown':
+        case 'unknown_job': return "Gmail didn't confirm. Check your Sent folder before sending again.";
+        case 'keychain_failed': return "Couldn't use Keychain. Is it locked?";
+        default: break;
+      }
+    }
     if (ctx.evidence) {
       if (code.startsWith('no_folder:')) return `No folder at ${code.slice('no_folder:'.length)}.`;
       switch (code) {
@@ -98,7 +116,7 @@
 
   // CardMirror wipes a file-loaded plugin's storage at every launch, so settings are
   // mirrored to the helper and restored before each command.
-  const PREF_KEYS = ['caselistTarget', 'scoutCaselist', 'sendDocFolder', 'lastRoom', 'tabroomEmail'];
+  const PREF_KEYS = ['caselistTarget', 'scoutCaselist', 'sendDocFolder', 'lastRoom', 'tabroomEmail', 'emailChain'];
   const restored = new WeakSet();
   async function restorePrefs(api) {
     if (restored.has(api)) return;
@@ -694,6 +712,35 @@ textarea.du-input{resize:vertical;min-height:3.4em}
           render();
         },
       };
+    },
+
+    // Email the chain: To + Subject, the attached doc named. Resolves {to, subject} or null.
+    emailForm(spec) {
+      return new Promise((resolve) => {
+        const d = openDialog({ title: spec.title, subtitle: spec.subtitle, width: '560px' });
+        const done = (v) => { d.close(); resolve(v); };
+        d.onDismiss(() => done(null));
+        const field = (label, control) => el('label', { class: 'du-field du-span' }, [el('span', { class: 'du-label', textContent: label }), control]);
+        const to = el('textarea', { class: 'du-input', rows: 2, value: spec.to || '', placeholder: 'judge@school.edu, opp1@…, opp2@…', data: { field: 'to' } });
+        const subject = el('input', { class: 'du-input', value: spec.subject || '', data: { field: 'subject' } });
+        const err = el('p', { class: 'du-error', attrs: { role: 'alert' } });
+        d.body.append(el('div', { class: 'du-grid' }, [
+          field('To (commas or spaces between addresses)', to),
+          field('Subject', subject),
+          el('div', { class: 'du-field du-span' }, [el('span', { class: 'du-label', textContent: 'Attached' }), el('span', { class: 'du-hint', textContent: spec.attached })]),
+        ]), err);
+        const submit = () => {
+          const list = to.value.split(/[\s,;]+/).filter(Boolean);
+          const bad = list.filter((x) => !/^[^\s@<>(),;:"]+@[^\s@<>(),;:"]+\.[A-Za-z]{2,}$/.test(x));
+          if (!list.length) { err.textContent = 'Add at least one address.'; return; }
+          if (bad.length) { err.textContent = `Not an email address: ${bad.join(', ')}`; return; }
+          done({ to: list, subject: subject.value.trim() });
+        };
+        subject.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
+        to.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); } });
+        d.foot.append(note(`From ${spec.from}`).node, button('Cancel', false, () => done(null)), button('Send', true, submit));
+        to.focus();
+      });
     },
 
     // Filterable single-select. Resolves with the chosen index, or null.
@@ -1672,6 +1719,81 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     }
   }
 
+  // ---------------------------------------------------------------- Email chain (Gmail)
+  async function gmailSetup(api) {
+    const u = ui();
+    const st = await call(api, '/gmail/status', {});
+    const email = await u.prompt('Gmail address for email chains', st.email || '');
+    if (email == null || !email.trim()) return null;
+    const pass = await u.prompt('Gmail app password (myaccount.google.com/apppasswords; needs 2-Step Verification)', '', { secret: true });
+    if (pass == null || !pass.trim()) return null;
+    api.showToast('Checking with Gmail…');
+    const r = await runJob(api, '/gmail/setup', { email: email.trim(), appPassword: pass }, u.sleep);
+    api.showToast(`Gmail ready: chains send from ${r.email}.`);
+    return r.email;
+  }
+
+  async function gmailSetupCommand(api) {
+    try { await gmailSetup(api); } catch (err) { api.showToast(message(err.message, { email: true })); }
+  }
+
+  async function gmailForget(api) {
+    try {
+      await call(api, '/gmail/forget', {});
+      api.showToast('Removed the Gmail app password from Keychain.');
+    } catch (err) {
+      api.showToast(message(err.message, { email: true }));
+    }
+  }
+
+  // "Glenbrooks · Round 3 · University AS vs Cranbrook FZ", from the current Tabroom pairing.
+  async function chainSubject(api, u) {
+    try {
+      const { rounds } = await runJob(api, '/tabroom/rounds', {}, u.sleep);
+      const r = rounds.find((x) => x.opponent) || null;
+      if (!r) return '';
+      const us = (api.storage.get('caselistTarget') || {}).teamLabel;
+      return [r.tournament, roundName(r.round), us ? `${us} vs ${r.opponent}` : `vs ${r.opponent}`].filter(Boolean).join(' · ');
+    } catch {
+      return '';
+    }
+  }
+
+  async function emailChain(api) {
+    if (busy) return api.showToast('An upload is already in progress.');
+    const u = ui();
+    const ctx = { email: true };
+    try {
+      let from = (await call(api, '/gmail/status', {})).email;
+      if (!from) {
+        from = await gmailSetup(api);
+        if (!from) return;
+      }
+      const folder = sendDocFolder(api);
+      if (!folder) throw new Error('no_folder');
+      const [newest, subject] = await Promise.all([call(api, '/caselist/newest', { folder }), chainSubject(api, u)]);
+      const last = api.storage.get('emailChain') || {};
+      const values = await u.emailForm({
+        title: 'Email the chain',
+        subtitle: 'Sends now from your Gmail; the same subject stays one thread',
+        from,
+        to: (last.to || []).join(', '),
+        subject: subject || last.subject || '',
+        attached: `${newest.name} (newest send doc, ${formatTime(newest.mtime)})`,
+      });
+      if (!values) return;
+      remember(api, 'emailChain', { to: values.to, subject: values.subject });
+      busy = true;
+      api.showToast(`Sending "${newest.name}"…`);
+      const r = await runJob(api, '/gmail/send', { to: values.to, subject: values.subject, folder }, u.sleep);
+      api.showToast(`Sent "${r.name}" to ${r.recipients} ${r.recipients === 1 ? 'person' : 'people'}${r.reply ? ' (same thread)' : ''}.`);
+    } catch (err) {
+      api.showToast(message(err.message, ctx));
+    } finally {
+      busy = false;
+    }
+  }
+
   // ---------------------------------------------------------------- Card Check
   const CHECK = {
     pending: ['…', 'Checking…'],
@@ -1993,6 +2115,27 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         keywords: ['mark', 'marked', 'red', 'cards', 'select'],
         defaultKey: null,
         run: (api) => withPrefs(api, () => markCards(api)),
+      },
+      {
+        id: `${ID}.emailChain`,
+        label: 'Email newest send doc to the chain…',
+        keywords: ['email', 'chain', 'gmail', 'send', 'doc', 'speech'],
+        defaultKey: null,
+        run: (api) => withPrefs(api, () => emailChain(api)),
+      },
+      {
+        id: `${ID}.gmailSetup`,
+        label: 'Set up Gmail for email chains…',
+        keywords: ['email', 'chain', 'gmail', 'app password', 'setup'],
+        defaultKey: null,
+        run: (api) => withPrefs(api, () => gmailSetupCommand(api)),
+      },
+      {
+        id: `${ID}.gmailForget`,
+        label: 'Forget Gmail login',
+        keywords: ['email', 'gmail', 'logout', 'forget'],
+        defaultKey: null,
+        run: (api) => withPrefs(api, () => gmailForget(api)),
       },
       {
         id: `${ID}.cardCheck`,

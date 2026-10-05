@@ -113,6 +113,18 @@ in CardMirror; **Copy report** / **Copy cites** copy text; ←→ switches tabs;
 The plugin API can't edit documents, so this reaches CardMirror's editor through ProseMirror internals. If a
 CardMirror update changes those, the command says it couldn't reach the editor instead of doing anything.
 
+## Email chain (Gmail)
+
+- **Set up Gmail for email chains…** (once): your Gmail address, then a Google **app password**. Make one at
+  myaccount.google.com/apppasswords (it needs 2-Step Verification on). The helper checks it with Gmail before
+  saving it in macOS Keychain (item `debate-uploader` / `gmail`); it's never logged. An app password can read and
+  send mail on your account, so treat it like a password; **Forget Gmail login** deletes it.
+- **Email newest send doc to the chain…**: To (the last chain's addresses filled in) and Subject (from your
+  Tabroom pairing, e.g. "Glenbrooks · Round 3 · University AS vs Cranbrook FZ"), with your newest send doc
+  attached. **Send** emails it right away from your Gmail. Sending again with the same subject replies in the same
+  thread, so each speech lands in one conversation.
+- Never retried automatically. If a toast says Gmail didn't confirm, check your Sent folder before sending again.
+
 ## Card Check
 
 - **Card Check this document…**: checks every card in the open document against the page its cite links to.

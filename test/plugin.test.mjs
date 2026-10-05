@@ -42,10 +42,10 @@ function harness({ prefs = {}, responses = [], settings = {}, storage = {}, room
   return { api, calls, toasts, prompts, store, prefsReply, prefsSets };
 }
 
-test('registers sixteen commands and one setting under the plugin id', () => {
+test('registers nineteen commands and one setting under the plugin id', () => {
   assert.equal(def.id, 'debate-uploader');
   assert.equal(def.apiVersion, 1);
-  assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.cardCheck', 'debate-uploader.cardCheckLast', 'debate-uploader.caselistScout', 'debate-uploader.caselistSearch', 'debate-uploader.caselistTeam', 'debate-uploader.caselistUpload', 'debate-uploader.evidenceFolders', 'debate-uploader.evidenceSearch', 'debate-uploader.markCards', 'debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdPick', 'debate-uploader.setFolder',
+  assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.cardCheck', 'debate-uploader.cardCheckLast', 'debate-uploader.caselistScout', 'debate-uploader.caselistSearch', 'debate-uploader.caselistTeam', 'debate-uploader.caselistUpload', 'debate-uploader.emailChain', 'debate-uploader.evidenceFolders', 'debate-uploader.evidenceSearch', 'debate-uploader.gmailForget', 'debate-uploader.gmailSetup', 'debate-uploader.markCards', 'debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdPick', 'debate-uploader.setFolder',
  'debate-uploader.tabroomLogin', 'debate-uploader.tabroomLogout', 'debate-uploader.tabroomRounds']);
   assert.deepEqual(def.settings.map((s) => [s.key, s.type, s.default]), [['sendDocFolder', 'text', '']]);
 });
@@ -1365,4 +1365,50 @@ test('card check: a card without a marked cite uses its first unhighlighted para
   await cmd('cardCheck').run(h.api);
   const [c] = h.calls.find((x) => x.route === '/cardcheck/run').body.cards;
   assert.deepEqual([c.cite, c.urls, c.runs.map((r) => r.t).join('')], ['Chen 25 link', ['https://a.org/1'], 'Read this.\n']);
+});
+
+// ---------------------------------------------------------------- Email chain
+function mailHarness({ status = { email: 'me@gmail.com' }, prompts = [], form = (spec) => ({ to: ['j@s.edu', 'o@x.org'], subject: spec.subject }), send = { name: 'Send 1AC.docx', recipients: 2, reply: false }, rounds = { current: true, rounds: [{ id: 1, tournament: 'Glenbrooks', round: '3', side: 'A', opponent: 'Cranbrook FZ', judge: 'Lee' }] }, storage = {} } = {}) {
+  const h = caselistHarness({ storage: { caselistTarget: TARGET, sendDocFolder: '/send', ...storage },
+    results: { '/tabroom/rounds': rounds, '/gmail/send': send, '/gmail/setup': (b) => (b.appPassword === 'abcd efgh ijkl mnop' ? { email: b.email } : new Error('bad_login')) },
+    direct: { '/gmail/status': status, '/caselist/newest': { name: 'Send 1AC.docx', size: 5, mtime: 1 } } });
+  h.prompts = [];
+  const answers = [...prompts];
+  window.__debateUploaderUI.prompt = async (label, initial, opts) => { h.prompts.push([label, initial, !!(opts && opts.secret)]); return answers.shift() ?? null; };
+  h.mailForms = [];
+  window.__debateUploaderUI.emailForm = async (spec) => { h.mailForms.push(spec); return form(spec); };
+  return h;
+}
+
+test('email chain: subject from the Tabroom pairing, last chain prefilled, sends the newest send doc, remembers the chain', async () => {
+  const h = mailHarness({ storage: { emailChain: { to: ['old@x.org'], subject: 'Old' } } });
+  await cmd('emailChain').run(h.api);
+  const spec = h.mailForms[0];
+  assert.deepEqual([spec.from, spec.to, spec.subject], ['me@gmail.com', 'old@x.org', "Glenbrooks · Round 3 · St. Mark's AB vs Cranbrook FZ"]);
+  assert.match(spec.attached, /^Send 1AC\.docx \(newest send doc/);
+  assert.deepEqual(h.calls.find((c) => c.route === '/gmail/send').body, { to: ['j@s.edu', 'o@x.org'], subject: "Glenbrooks · Round 3 · St. Mark's AB vs Cranbrook FZ", folder: '/send' });
+  assert.deepEqual(h.store.get('emailChain'), { to: ['j@s.edu', 'o@x.org'], subject: "Glenbrooks · Round 3 · St. Mark's AB vs Cranbrook FZ" });
+  assert.equal(h.toasts.at(-1), 'Sent "Send 1AC.docx" to 2 people.');
+});
+
+test('email chain: first use sets up Gmail (password prompt is secret); cancel sends nothing; errors explain', async () => {
+  const h = mailHarness({ status: { email: null }, prompts: ['me@gmail.com', 'abcd efgh ijkl mnop'] });
+  await cmd('emailChain').run(h.api);
+  assert.deepEqual(h.prompts.map(([, , secret]) => secret), [false, true]);
+  assert.deepEqual(h.calls.find((c) => c.route === '/gmail/setup').body, { email: 'me@gmail.com', appPassword: 'abcd efgh ijkl mnop' });
+  assert.ok(h.toasts.includes('Gmail ready: chains send from me@gmail.com.'));
+  assert.ok(h.calls.some((c) => c.route === '/gmail/send'));
+
+  const wrong = mailHarness({ status: { email: null }, prompts: ['me@gmail.com', 'nope'] });
+  await cmd('emailChain').run(wrong.api);
+  assert.match(wrong.toasts.at(-1), /^Gmail rejected that address or app password/);
+  assert.equal(wrong.calls.filter((c) => c.route === '/gmail/send').length, 0);
+
+  const cancel = mailHarness({ form: () => null });
+  await cmd('emailChain').run(cancel.api);
+  assert.equal(cancel.calls.filter((c) => c.route === '/gmail/send').length, 0);
+
+  const unsure = mailHarness({ send: new Error('send_unknown') });
+  await cmd('emailChain').run(unsure.api);
+  assert.equal(unsure.toasts.at(-1), "Gmail didn't confirm. Check your Sent folder before sending again.");
 });

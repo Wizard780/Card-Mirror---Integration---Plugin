@@ -17,9 +17,10 @@ import { cardDocx, headingsOf } from './lib/docx.mjs';
 import { draftReport } from './lib/report-draft.mjs';
 import { compare, skippedQualifiers, verdict, urlsIn } from './lib/cardcheck.mjs';
 import { getSource, safeFetch } from './lib/fetchsafe.mjs';
+import { buildMessage, newMessageId, sendMail, verifyLogin, isEmail } from './lib/smtp.mjs';
 import { readFile, stat } from 'node:fs/promises';
 
-const VERSION = '0.1.7';
+const VERSION = '0.1.8';
 const bridgeDir = process.env.DEBATE_UPLOADER_BRIDGE_DIR || defaultBridgeDir();
 const sdBase = process.env.DEBATE_UPLOADER_SD_BASE || SD_BASE;
 const sdMedia = process.env.DEBATE_UPLOADER_SD_MEDIA || SD_MEDIA;
@@ -59,6 +60,16 @@ const cardFileName = (tag) => `${String(tag).replace(/[^A-Za-z0-9 ,'’-]+/g, ' 
 const clBase = process.env.DEBATE_UPLOADER_CASELIST_BASE || CASELIST_BASE;
 const keychain = createKeychain({ bin: process.env.DEBATE_UPLOADER_SECURITY_BIN || '/usr/bin/security' });
 const clOpts = { base: clBase };
+// Gmail for email chains: {email, appPassword} in its own Keychain item. Never logged.
+const gmail = createKeychain({
+  bin: process.env.DEBATE_UPLOADER_SECURITY_BIN || '/usr/bin/security', account: 'gmail',
+  valid: (v) => isEmail(v.email) && typeof v.appPassword === 'string' && v.appPassword.length >= 8,
+});
+const smtp = (() => {
+  const [host, port, mode] = String(process.env.DEBATE_UPLOADER_SMTP || 'smtp.gmail.com:465:tls').split(':');
+  return { host, port: Number(port), secure: mode !== 'plain' };
+})();
+const MAX_MAIL_BYTES = 20 * 1024 * 1024; // Gmail's limit is 25 MB including base64 overhead
 const prefs = createPrefs(process.env.DEBATE_UPLOADER_PREFS_FILE || join(homedir(), 'Library', 'Application Support', 'debate-uploader', 'prefs.json'));
 // Live room lists. Budget per /speechdrop/watch call must stay under CardMirror's
 // 3 s flowPost limit: ≤1 s socket wait + ≤1.5 s HTTP fallback, or a ≤1 s long-poll.
@@ -372,6 +383,52 @@ const routes = {
     log('evidence card', card.file, ordinal);
     return { ok: true, name: where.split('/').pop(), path: where, ...how };
   },
+  '/gmail/status': async () => {
+    const g = await gmail.get();
+    return { ok: true, email: g ? g.email : null };
+  },
+  '/gmail/setup': ({ email, appPassword }) => ({
+    ok: true,
+    job: jobs.start(async () => {
+      const address = String(email ?? '').trim();
+      const pass = String(appPassword ?? '').replace(/\s+/g, ''); // Google shows it in groups of 4
+      if (!isEmail(address)) throw new Error('bad_email');
+      if (pass.length < 8) throw new Error('bad_login');
+      await verifyLogin({ ...smtp, user: address, pass }); // never saved unless Gmail accepts it
+      await gmail.set({ email: address, appPassword: pass });
+      log('gmail setup', address);
+      return { email: address };
+    }),
+  }),
+  '/gmail/forget': async () => { await gmail.remove(); log('gmail forget'); return { ok: true }; },
+  // One email to the chain with the doc attached. Same subject = same thread (In-Reply-To).
+  '/gmail/send': ({ to, subject, folder, file, text }) => ({
+    ok: true,
+    job: jobs.start(async () => {
+      const g = await gmail.get();
+      if (!g) throw new Error('gmail_not_set_up');
+      const list = [...new Set((Array.isArray(to) ? to : []).map((x) => String(x).trim()).filter(Boolean))];
+      if (!list.length || list.length > 30 || !list.every(isEmail)) throw new Error('bad_recipients');
+      const doc = file
+        ? { name: String(file.name), bytes: Buffer.from(String(file.base64 ?? ''), 'base64') }
+        : await newestDocx(folder);
+      if (doc.bytes.length > MAX_MAIL_BYTES) throw new Error('too_large');
+      const subj = String(subject ?? '').trim() || doc.name.replace(/\.docx$/i, '');
+      const threads = (await prefs.getAll()).emailThreads || {};
+      const key = subj.toLowerCase();
+      const prior = Array.isArray(threads[key]) ? threads[key] : [];
+      const messageId = newMessageId();
+      const raw = buildMessage({
+        from: g.email, to: list, subject: prior.length ? `Re: ${subj}` : subj, text: String(text ?? '') || `${doc.name} attached.`,
+        attachments: [{ name: doc.name, bytes: doc.bytes }], messageId, inReplyTo: prior.at(-1), references: prior.slice(-10),
+      });
+      await sendMail({ ...smtp, user: g.email, pass: g.appPassword }, { from: g.email, to: list, raw });
+      log('gmail send', doc.name, `${list.length} recipients`, prior.length ? 'reply' : 'new thread');
+      const keep = Object.fromEntries(Object.entries({ ...threads, [key]: [...prior, messageId].slice(-20) }).slice(-30));
+      await prefs.set('emailThreads', keep);
+      return { name: doc.name, recipients: list.length, reply: prior.length > 0 };
+    }),
+  }),
   '/prefs/get': async () => ({ ok: true, prefs: await prefs.getAll() }),
   '/prefs/set': async ({ key, value }) => {
     try {
