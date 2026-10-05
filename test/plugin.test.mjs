@@ -369,7 +369,7 @@ test('tabroom logout calls the helper and confirms', async () => {
 
 // Caselist harness: each route's job answers from `results[route]`
 // (a value, an Error, or a function of the request body).
-function caselistHarness({ results = {}, choose = [], form = () => null, storage = {}, settings = {}, file } = {}) {
+function caselistHarness({ results = {}, direct = {}, choose = [], form = () => null, storage = {}, settings = {}, file } = {}) {
   const h = harness({ storage, settings, file });
   const jobs = new Map();
   let n = 0;
@@ -378,6 +378,10 @@ function caselistHarness({ results = {}, choose = [], form = () => null, storage
     if (route === '/job') {
       const r = jobs.get(body.id);
       return ok(r instanceof Error ? { state: 'error', message: r.message } : { state: 'done', result: r });
+    }
+    if (route in direct) {
+      const d = direct[route];
+      return d instanceof Error ? { ok: true, status: 500, body: { ok: false, error: d.message } } : ok({ ok: true, ...d });
     }
     const id = `J${n++}`;
     const r = results[route];
@@ -432,7 +436,8 @@ test('caselist form: Tabroom rounds become fill choices (PF shows Pro/Con) plus 
   assert.deepEqual(spec.choices.map((c) => c.label), ['Glenbrooks · Round 3 · Con vs Lexington AB', 'General disclosure (all tournaments)']);
   assert.deepEqual(spec.choices[0].fields, { tournament: 'Glenbrooks', side: 'N', round: '3', opponent: 'Lexington AB', judge: 'Smith', report: '' });
   assert.deepEqual(spec.choices[1].fields, { tournament: 'All Tournaments', side: '', round: 'All', opponent: '', judge: '', report: '' });
-  assert.equal(spec.fileMode, 'newest');
+  assert.equal(spec.fileMode, 'pick', 'no send doc folder → pick is the default');
+  assert.equal(spec.newestLabel, 'Newest send doc (set a send doc folder first)');
   assert.equal(uploadCall(h), undefined, 'form cancelled → nothing sent');
 });
 
@@ -440,6 +445,7 @@ test('caselist form: manual entry with a policy caselist (Aff/Neg) and the newes
   const h = caselistHarness({
     storage: { caselistTarget: { ...TARGET, event: 'cx', caselistLabel: 'NDT 2026' }, sendDocFolder: '~/Send' },
     results: { '/tabroom/rounds': { current: false, rounds: [] }, '/caselist/upload': { name: 'Send.docx' } },
+    direct: { '/caselist/newest': { name: 'Send.docx', size: 10, mtime: 1791166355023 } },
     form: () => ({ tournament: ' Harvard ', side: 'A', round: 'Octas', opponent: 'X', judge: '', report: '', fileMode: 'newest' }),
   });
   await cmd('caselistUpload').run(h.api);
@@ -447,8 +453,10 @@ test('caselist form: manual entry with a policy caselist (Aff/Neg) and the newes
   assert.deepEqual(h.forms[0].choices.map((c) => c.label), ['General disclosure (all tournaments)']);
   assert.deepEqual(uploadCall(h).body, {
     caselist: 'hspf26', school: 'StMarks', team: 'StMarksAB',
-    round: { tournament: 'Harvard', side: 'A', round: 'Octas', opponent: 'X', judge: '', report: '' }, folder: '~/Send',
+    round: { tournament: 'Harvard', side: 'A', round: 'Octas', opponent: 'X', judge: '', report: '' }, folder: '~/Send', expectName: 'Send.docx',
   });
+  assert.match(h.forms[0].newestLabel, /^Newest send doc: Send\.docx \(.+\)$/);
+  assert.equal(h.forms[0].fileMode, 'newest');
 });
 
 test('caselist form: Tabroom unreachable still allows manual entry; not logged in stops early', async () => {
@@ -503,4 +511,115 @@ test('caselist team chooser: cancel keeps the old team; empty school list explai
   await cmd('caselistTeam').run(change.api);
   assert.equal(change.store.get('caselistTarget').caselist, 'ndt26');
   assert.equal(change.toasts.at(-1), `Caselist team set to NDT 2026 · St. Mark's · St. Mark's AB`);
+});
+
+test('caselist newest: a too-big or missing newest doc is refused before upload; a changed one explains', async () => {
+  const big = caselistHarness({ storage: { caselistTarget: TARGET, sendDocFolder: '/s' }, results: { '/tabroom/rounds': TAB },
+    direct: { '/caselist/newest': { name: 'Huge.docx', size: 10 * 1024 * 1024 + 1, mtime: 1 } },
+    form: (spec) => ({ ...spec.choices[0].fields, fileMode: 'newest' }) });
+  await cmd('caselistUpload').run(big.api);
+  assert.equal(uploadCall(big), undefined);
+  assert.equal(big.toasts.at(-1), 'File is over the 10 MB upload limit.');
+
+  const none = caselistHarness({ storage: { caselistTarget: TARGET, sendDocFolder: '/s' }, results: { '/tabroom/rounds': TAB },
+    direct: { '/caselist/newest': new Error('no_docx:/s') }, form: (spec) => ({ ...spec.choices[0].fields, fileMode: 'newest' }) });
+  await cmd('caselistUpload').run(none.api);
+  assert.equal(none.forms[0].newestLabel, 'Newest send doc (none found)');
+  assert.equal(uploadCall(none), undefined);
+  assert.match(none.toasts.at(-1), /^No \.docx in \/s\./);
+
+  const changed = caselistHarness({ storage: { caselistTarget: TARGET, sendDocFolder: '/s' },
+    results: { '/tabroom/rounds': TAB, '/caselist/upload': new Error('newest_changed') },
+    direct: { '/caselist/newest': { name: 'A.docx', size: 1, mtime: 1 } }, form: (spec) => ({ ...spec.choices[0].fields, fileMode: 'newest' }) });
+  await cmd('caselistUpload').run(changed.api);
+  assert.equal(changed.toasts.at(-1), 'The newest send doc changed after the form opened. Run Upload to Caselist again to check it.');
+});
+
+// ---- Minimal fake DOM, enough to drive the real form() overlay ----
+function fakeDom() {
+  const doc = { activeElement: null };
+  class El {
+    constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.listeners = {}; this.style = {}; this.value = ''; this.textContent = ''; }
+    append(...kids) { for (const k of kids) { k.parent = this; this.children.push(k); } }
+    remove() { if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this); this.removed = true; }
+    addEventListener(t, f) { (this.listeners[t] ||= []).push(f); }
+    dispatch(t, ev = {}) {
+      const e = { target: this, key: undefined, preventDefault() {}, stopPropagation() { this.stopped = true; }, ...ev };
+      for (let n = this; n && !e.stopped; n = n.parent) for (const f of n.listeners[t] || []) f(e);
+    }
+    focus() { doc.activeElement = this; }
+    scrollIntoView() {}
+  }
+  doc.createElement = (t) => new El(t);
+  doc.body = new El('body');
+  const Option = function (text, value) { const o = new El('option'); o.textContent = text; o.value = value; return o; };
+  const all = (n) => [n, ...n.children.flatMap(all)];
+  const byLabel = (text) => { const kids = doc.body.children[0].children[0].children; return kids[kids.findIndex((k) => k.tagName === 'LABEL' && k.textContent === text) + 1]; };
+  const button = (text) => all(doc.body).find((n) => n.tagName === 'BUTTON' && n.textContent === text);
+  return { doc, Option, byLabel, button, all };
+}
+
+async function withDom(fn) {
+  const dom = fakeDom();
+  const saved = { document: globalThis.document, Option: globalThis.Option, ui: window.__debateUploaderUI };
+  globalThis.document = dom.doc; globalThis.Option = dom.Option;
+  let captured;
+  try {
+    // Reach the real domUI.form through the plugin: run a caselist upload whose form step we drive.
+    const h = harness({ storage: { caselistTarget: TARGET, sendDocFolder: '/s' } });
+    delete window.__debateUploaderUI; // harness() installs the fake UI; drive the real DOM UI instead
+    h.api.flowPost = async (app, route, body) => {
+      h.calls.push({ app, route, body });
+      if (route === '/caselist/newest') return ok({ ok: true, name: 'Send 1AC.docx', size: 5, mtime: 1791166355023 });
+      if (route === '/tabroom/rounds') return ok({ ok: true, job: 'R' });
+      if (route === '/job' && body.id === 'R') return ok({ state: 'done', result: TAB });
+      if (route === '/caselist/upload') return ok({ ok: true, job: 'U' });
+      return ok({ state: 'done', result: { name: 'Send 1AC.docx' } });
+    };
+    const running = cmd('caselistUpload').run(h.api);
+    // The real UI polls jobs with real 1 s sleeps, so the form appears after ~1 s.
+    for (let i = 0; i < 150 && !dom.doc.body.children.length; i++) await new Promise((r) => setTimeout(r, 20));
+    captured = await fn(dom, h);
+    if (dom.doc.body.children.length) dom.button('Cancel')?.dispatch('click'); // close a form the test left open
+    await running; // let the command finish so the plugin's busy flag is released
+    return { captured, h };
+  } finally {
+    for (const n of dom.doc.body.children) n.remove();
+    globalThis.document = saved.document; globalThis.Option = saved.Option; window.__debateUploaderUI = saved.ui;
+  }
+}
+
+test('DOM form: the File choice names the actual newest send doc', async () => {
+  const { captured } = await withDom(async (dom) => dom.byLabel('File').children.map((o) => o.textContent));
+  assert.match(captured[0], /^Newest send doc: Send 1AC\.docx \(.+\)$/);
+  assert.equal(captured[1], 'Pick a file…');
+});
+
+test('DOM form: Enter on the Fill dropdown fills nothing and never submits; Enter in a text box submits', async () => {
+  const { h } = await withDom(async (dom) => {
+    const fill = dom.byLabel('Fill from Tabroom');
+    fill.value = '0';
+    fill.dispatch('change');
+    assert.equal(dom.byLabel('Opponent').value, 'Lexington AB', 'choosing a round auto-fills');
+    dom.byLabel('Opponent').value = 'Edited Opp';
+    fill.dispatch('keydown', { key: 'Enter' });
+    assert.equal(dom.doc.body.children.length, 1, 'Enter on a select must not submit');
+    dom.byLabel('Judge').dispatch('keydown', { key: 'Enter' });
+    assert.equal(dom.doc.body.children.length, 0, 'Enter in a text input submits');
+  });
+  const up = h.calls.find((c) => c.route === '/caselist/upload');
+  assert.equal(up.body.round.opponent, 'Edited Opp', 'edits after auto-fill are kept');
+  assert.equal(up.body.expectName, 'Send 1AC.docx');
+});
+
+test('DOM form: Upload with missing side shows an error and posts nothing', async () => {
+  const { h } = await withDom(async (dom) => {
+    dom.byLabel('Tournament').value = 'Harvard';
+    dom.byLabel('Round').value = '2';
+    dom.button('Upload').dispatch('click');
+    assert.equal(dom.doc.body.children.length, 1);
+    assert.equal(dom.all(dom.doc.body).find((n) => n.textContent === 'Tournament, side and round are required.') !== undefined, true);
+    dom.button('Cancel').dispatch('click');
+  });
+  assert.equal(h.calls.find((c) => c.route === '/caselist/upload'), undefined);
 });

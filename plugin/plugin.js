@@ -43,6 +43,7 @@
         case 'unreachable': return "Couldn't reach openCaselist. Try again.";
         case 'bad_round': return 'Tournament, side and round are required.';
         case 'too_large': return 'File is over the 10 MB upload limit.';
+        case 'newest_changed': return 'The newest send doc changed after the form opened. Run Upload to Caselist again to check it.';
         case 'start_unknown':
         case 'upload_unknown':
         case 'unknown_job':
@@ -327,7 +328,7 @@
         report.style.cssText = 'font:inherit;padding:4px 6px';
         add('Report (optional)', report);
         const fileMode = document.createElement('select');
-        fileMode.append(new Option('Newest send doc', 'newest'), new Option('Pick a file…', 'pick'));
+        fileMode.append(new Option(spec.newestLabel, 'newest'), new Option('Pick a file…', 'pick'));
         fileMode.value = spec.fileMode;
         add('File', fileMode);
         fill.addEventListener('change', () => {
@@ -364,7 +365,8 @@
         box.addEventListener('keydown', (e) => {
           e.stopPropagation(); // keep CardMirror hotkeys out of the form
           if (e.key === 'Escape') { e.preventDefault(); done(null); }
-          if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') { e.preventDefault(); submit(); }
+          // Enter submits only from a text box: Enter on a dropdown must never post publicly.
+          if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); submit(); }
         });
         wrap.addEventListener('mousedown', (e) => { if (e.target === wrap) done(null); });
         wrap.append(box);
@@ -637,6 +639,16 @@
       // Login problems stop here (the upload would fail too); anything else falls back to manual entry.
       if (['not_logged_in', 'login_expired', 'keychain_failed'].includes(err.message)) throw err;
     }
+    // Name the actual newest send doc in the form, so a public upload is never a surprise.
+    const folder = sendDocFolder(api);
+    let newest = null;
+    let newestErr = 'no_folder';
+    if (folder) {
+      try { newest = await call(api, '/caselist/newest', { folder }); } catch (err) { newestErr = err.message; }
+    }
+    const newestLabel = newest
+      ? `Newest send doc: ${newest.name} (${formatTime(newest.mtime)})`
+      : folder ? 'Newest send doc (none found)' : 'Newest send doc (set a send doc folder first)';
     const pf = /pf|public forum/i.test(`${target.event} ${target.caselistLabel}`);
     const sideLabels = pf ? { A: 'Pro', N: 'Con' } : { A: 'Aff', N: 'Neg' };
     const values = await u.form({
@@ -644,7 +656,8 @@
       choices: roundChoices(rounds, sideLabels),
       sideLabels,
       fields: { tournament: '', side: '', round: '', opponent: '', judge: '', report: '' },
-      fileMode: 'newest',
+      newestLabel,
+      fileMode: newest ? 'newest' : 'pick',
     });
     if (!values) return;
     const round = {
@@ -665,9 +678,10 @@
       try { base64 = await picked.read(); } catch { throw new Error('read_failed'); }
       body.file = { name: picked.name, base64 };
     } else {
-      const folder = sendDocFolder(api);
-      if (!folder) throw new Error('no_folder');
+      if (!newest) throw new Error(newestErr);
+      if (newest.size > MAX_BYTES) throw new Error('too_large');
       body.folder = folder;
+      body.expectName = newest.name;
     }
     ctx.uploading = true;
     api.showToast('Uploading to the caselist…');

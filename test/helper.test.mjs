@@ -260,6 +260,30 @@ test('caselist: upload the newest send doc from a folder', async () => {
   assert.equal(Buffer.from(uploads.at(-1).opensource, 'base64').toString(), 'docx-bytes');
 });
 
+test('caselist: /caselist/newest names the newest send doc without uploading', async () => {
+  const r = await call('/caselist/newest', { folder: sendDir });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.name, 'Send 1AC.docx');
+  assert.equal(r.body.size, 'docx-bytes'.length);
+  assert.equal(typeof r.body.mtime, 'number');
+});
+
+test('caselist: newest doc changed since the form opened → newest_changed, nothing posted', async () => {
+  const before = uploads.length;
+  const r = await waitJob((await call('/caselist/upload', { caselist: 'hspf26', school: 'StMarks', team: 'StMarksAB', round: ROUND_IN, folder: sendDir, expectName: 'Old 1AC.docx' })).body.job);
+  assert.deepEqual(r, { state: 'error', message: 'newest_changed' });
+  assert.equal(uploads.length, before);
+});
+
+test('caselist: a send doc over 10 MB is refused before posting', async () => {
+  const big = await mkdtemp(join(tmpdir(), 'big-'));
+  await writeFile(join(big, 'Huge.docx'), Buffer.alloc(10 * 1024 * 1024 + 1));
+  const before = uploads.length;
+  const r = await waitJob((await call('/caselist/upload', { caselist: 'hspf26', school: 'StMarks', team: 'StMarksAB', round: ROUND_IN, folder: big, expectName: 'Huge.docx' })).body.job);
+  assert.deepEqual(r, { state: 'error', message: 'too_large' });
+  assert.equal(uploads.length, before);
+});
+
 test('caselist: a stale 401 does not delete a newer saved login', async () => {
   clStaleToken = true;
   const r = await waitJob((await call('/caselist/upload', { caselist: 'hspf26', school: 'StMarks', team: 'StMarksAB', round: ROUND_IN, folder: sendDir })).body.job);

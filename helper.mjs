@@ -8,7 +8,7 @@ import { homedir } from 'node:os';
 import { promisify } from 'node:util';
 import { createKeychain } from './lib/keychain.mjs';
 import { login, getRounds, listCaselists, listSchools, listTeams, createRound, CASELIST_BASE } from './lib/caselist.mjs';
-import { uploadToSpeechDrop, newestDocx, listRoom, downloadFile, saveUnique, SD_BASE, SD_MEDIA } from './lib/speechdrop.mjs';
+import { uploadToSpeechDrop, newestDocx, MAX_BYTES, listRoom, downloadFile, saveUnique, SD_BASE, SD_MEDIA } from './lib/speechdrop.mjs';
 
 const VERSION = '0.1.0';
 const bridgeDir = process.env.DEBATE_UPLOADER_BRIDGE_DIR || defaultBridgeDir();
@@ -132,10 +132,19 @@ const routes = {
   '/caselist/schools': ({ caselist }) => authedJob('caselist schools', (t) => listSchools(t, caselist, clOpts)),
   '/caselist/teams': ({ caselist, school }) => authedJob('caselist teams', (t) => listTeams(t, caselist, school, clOpts)),
 
-  '/caselist/upload': ({ caselist, school, team, round, file, folder }) => authedJob('caselist upload', async (t) => {
+  // Local only (no network): lets the form show which file "newest send doc" means.
+  '/caselist/newest': async ({ folder }) => {
+    const doc = await newestDocx(folder);
+    return { ok: true, name: doc.name, size: doc.bytes.length, mtime: doc.mtimeMs };
+  },
+
+  '/caselist/upload': ({ caselist, school, team, round, file, folder, expectName }) => authedJob('caselist upload', async (t) => {
     const doc = file
       ? { name: String(file.name), bytes: Buffer.from(String(file.base64 ?? ''), 'base64') }
       : await newestDocx(folder);
+    // Public and permanent: post only the file the user saw in the form, and nothing oversized.
+    if (!file && expectName && doc.name !== expectName) throw new Error('newest_changed');
+    if (doc.bytes.length > MAX_BYTES) throw new Error('too_large');
     log('caselist upload', caselist, school, team, doc.name, `${doc.bytes.length} bytes`);
     await createRound(t, { caselist, school, team }, { ...(round || {}), filename: doc.name, base64: doc.bytes.toString('base64') }, clOpts);
     log('caselist upload ok', caselist, school, team, doc.name);
