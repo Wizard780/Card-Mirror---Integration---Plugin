@@ -3,12 +3,15 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtemp, readFile, writeFile, access, chmod } from 'node:fs/promises';
+import { openSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 let fakeSD, helper, bridgeDir, session, sendDir, downloadDir, openLog;
+let fakeCL, keyStore, helperLog;
+let clRejectAll = false;
 const received = [];
 
 before(async () => {
@@ -53,11 +56,42 @@ before(async () => {
   const opener = join(downloadDir, 'fake-open.sh');
   await writeFile(opener, `#!/bin/sh\nprintf '%s|' "$@" >> '${openLog}'\necho >> '${openLog}'\n`);
   await chmod(opener, 0o755);
+  // Fake openCaselist: password "right" logs in; the cookie must carry the token.
+  fakeCL = createServer(async (req, res) => {
+    const send = (status, body) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
+    if (req.method === 'POST' && req.url === '/v1/login') {
+      const chunks = []; for await (const c of req) chunks.push(c);
+      const { password } = JSON.parse(Buffer.concat(chunks).toString());
+      return password === 'right-pw-123'
+        ? send(201, { message: 'Logged in', token: 'CLTOKEN0123456789abcdef01234567', expires: '2099-01-01T00:00:00Z' })
+        : send(401, { message: 'Invalid username or password' });
+    }
+    if (clRejectAll || req.headers.cookie !== 'caselist_token=CLTOKEN0123456789abcdef01234567') return send(401, { message: 'Not Authorized' });
+    if (req.url === '/v1/tabroom/rounds?current=true') return send(200, []);
+    if (req.url === '/v1/tabroom/rounds') return send(200, [{ id: 9, tournament: 'Glenbrooks', round: 'R3', side: 'Neg', opponent: 'Lexington AB', judge: 'Smith', start_time: '2026-10-10T14:00:00Z', share: 'x' }]);
+    return send(404, {});
+  });
+  await new Promise((r) => fakeCL.listen(0, '127.0.0.1', r));
+
+  // Fake `security`: stores the -w value in a file so tests can inspect it.
+  keyStore = join(downloadDir, 'keychain.txt');
+  const security = join(downloadDir, 'fake-security.sh');
+  await writeFile(security, `#!/bin/sh
+F='${keyStore}'
+case "$1" in
+  add-generic-password) while [ $# -gt 0 ]; do [ "$1" = "-w" ] && printf '%s' "$2" > "$F"; shift; done ;;
+  find-generic-password) [ -f "$F" ] && cat "$F" && echo || exit 44 ;;
+  delete-generic-password) rm -f "$F" ;;
+esac
+`);
+  await chmod(security, 0o755);
+  helperLog = join(downloadDir, 'helper.log');
   helper = spawn(process.execPath, [join(ROOT, 'helper.mjs')], {
     env: { ...process.env, DEBATE_UPLOADER_BRIDGE_DIR: bridgeDir, DEBATE_UPLOADER_SD_BASE: `http://127.0.0.1:${fakeSD.address().port}`,
       DEBATE_UPLOADER_SD_MEDIA: `http://127.0.0.1:${fakeSD.address().port}/media/`, DEBATE_UPLOADER_DOWNLOAD_DIR: downloadDir,
-      DEBATE_UPLOADER_OPENER: opener },
-    stdio: 'ignore',
+      DEBATE_UPLOADER_OPENER: opener,
+      DEBATE_UPLOADER_CASELIST_BASE: `http://127.0.0.1:${fakeCL.address().port}/v1`, DEBATE_UPLOADER_SECURITY_BIN: security },
+    stdio: ['ignore', openSync(helperLog, 'w'), openSync(helperLog, 'a')],
   });
   const sessionPath = join(bridgeDir, 'debate-uploader.session.json');
   for (let i = 0; i < 50 && !session; i++) {
@@ -66,7 +100,7 @@ before(async () => {
   assert.ok(session, 'helper never wrote its session file');
 });
 
-after(() => { helper.kill('SIGKILL'); fakeSD.close(); });
+after(() => { helper.kill('SIGKILL'); fakeSD.close(); fakeCL.close(); });
 
 const call = (route, body, token = session.token) =>
   fetch(`http://127.0.0.1:${session.port}${route}`, {
@@ -133,6 +167,45 @@ test('open: same file again reuses the path; a name not in the room is "removed"
   assert.equal(again.result.path, join(downloadDir, 'room1', 'Send 1AC.docx'));
   const gone = await waitJob((await call('/speechdrop/open', { room: 'room1', index: 1, name: '../../evil.docx' })).body.job);
   assert.deepEqual(gone, { state: 'error', message: 'removed' });
+});
+
+test('tabroom: rounds before login is not_logged_in', async () => {
+  const r = await waitJob((await call('/tabroom/rounds', {})).body.job);
+  assert.deepEqual(r, { state: 'error', message: 'not_logged_in' });
+});
+
+test('tabroom: wrong password is bad_login and stores nothing', async () => {
+  const r = await waitJob((await call('/tabroom/login', { username: 'me@x.com', password: 'wrong-pw-456' })).body.job);
+  assert.deepEqual(r, { state: 'error', message: 'bad_login' });
+  await assert.rejects(access(keyStore));
+});
+
+test('tabroom: login stores only token+expires; rounds fall back to recent', async () => {
+  const r = await waitJob((await call('/tabroom/login', { username: 'me@x.com', password: 'right-pw-123' })).body.job);
+  assert.deepEqual(r, { state: 'done', result: { loggedIn: true } });
+  assert.deepEqual(JSON.parse(await readFile(keyStore, 'utf8')), { token: 'CLTOKEN0123456789abcdef01234567', expires: '2099-01-01T00:00:00Z' });
+  const rounds = await waitJob((await call('/tabroom/rounds', {})).body.job);
+  assert.equal(rounds.result.current, false);
+  assert.deepEqual(rounds.result.rounds.map((x) => [x.opponent, x.judge, x.side]), [['Lexington AB', 'Smith', 'Neg']]);
+});
+
+test('tabroom: password never reaches the log or Keychain', async () => {
+  const logText = await readFile(helperLog, 'utf8');
+  assert.ok(!logText.includes('right-pw-123') && !logText.includes('wrong-pw-456'));
+  assert.ok(!logText.includes('CLTOKEN0123456789abcdef01234567'), 'token not logged either');
+  assert.ok(!(await readFile(keyStore, 'utf8')).includes('right-pw-123'));
+});
+
+test('tabroom: a 401 later deletes the stored token (login_expired); logout also clears it', async () => {
+  clRejectAll = true;
+  const r = await waitJob((await call('/tabroom/rounds', {})).body.job);
+  assert.deepEqual(r, { state: 'error', message: 'login_expired' });
+  await assert.rejects(access(keyStore));
+  clRejectAll = false;
+  await waitJob((await call('/tabroom/login', { username: 'me@x.com', password: 'right-pw-123' })).body.job);
+  await access(keyStore);
+  assert.deepEqual((await call('/tabroom/logout', {})).body, { ok: true });
+  await assert.rejects(access(keyStore));
 });
 
 test('SIGTERM removes the session file but keeps identity', async () => {
