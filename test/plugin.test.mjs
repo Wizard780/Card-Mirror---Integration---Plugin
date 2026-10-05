@@ -42,10 +42,10 @@ function harness({ prefs = {}, responses = [], settings = {}, storage = {}, room
   return { api, calls, toasts, prompts, store, prefsReply, prefsSets };
 }
 
-test('registers eleven commands and one setting under the plugin id', () => {
+test('registers thirteen commands and one setting under the plugin id', () => {
   assert.equal(def.id, 'debate-uploader');
   assert.equal(def.apiVersion, 1);
-  assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.caselistScout', 'debate-uploader.caselistSearch', 'debate-uploader.caselistTeam', 'debate-uploader.caselistUpload', 'debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdPick', 'debate-uploader.setFolder',
+  assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.caselistScout', 'debate-uploader.caselistSearch', 'debate-uploader.caselistTeam', 'debate-uploader.caselistUpload', 'debate-uploader.evidenceFolders', 'debate-uploader.evidenceSearch', 'debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdPick', 'debate-uploader.setFolder',
  'debate-uploader.tabroomLogin', 'debate-uploader.tabroomLogout', 'debate-uploader.tabroomRounds']);
   assert.deepEqual(def.settings.map((s) => [s.key, s.type, s.default]), [['sendDocFolder', 'text', '']]);
 });
@@ -405,7 +405,7 @@ function caselistHarness({ results = {}, direct = {}, choose = [], form = () => 
       return ok(r instanceof Error ? { state: 'error', message: r.message } : { state: 'done', result: r });
     }
     if (route in direct) {
-      const d = direct[route];
+      const d = typeof direct[route] === 'function' ? direct[route](body) : direct[route];
       return d instanceof Error ? { ok: true, status: 500, body: { ok: false, error: d.message } } : ok({ ok: true, ...d });
     }
     const id = `J${n++}`;
@@ -1010,6 +1010,112 @@ test('DOM team page summary: tallies their case and last speech per side, respec
     assert.equal(tabs()[1].getAttribute('aria-selected'), 'true');
     dialog.dispatch('keydown', { key: 'Escape' });
     await running;
+  } finally {
+    globalThis.document = saved.document; globalThis.Option = saved.Option; window.__debateUploaderUI = saved.ui;
+  }
+});
+
+// ---------------------------------------------------------------- Search my files
+const CARD = { path: '/ev/Grid.docx', ordinal: 3, file: 'Grid.docx', tag: 'Data centers stay onshore', cite: 'Rogan 26', headings: ['AFF', 'AT: Offshoring'], quote: 'Data centers stay onshore', approxPos: 120, copies: 2 };
+const IDLE = { folders: ['/ev'], files: 2535, cards: 254415, unreadable: 2, scanning: false, done: 2535, total: 2535, scannedAt: 1 };
+
+function evidenceHarness({ status = IDLE, search = () => ({ results: [CARD], ...IDLE }), promptAnswer = null, docInfo = () => null, jump } = {}) {
+  const h = caselistHarness({ direct: {
+    '/evidence/status': status, '/evidence/search': search, '/evidence/folders': (b) => ({ ...IDLE, folders: b.folders, scanning: true, done: 0, total: 0 }),
+    '/evidence/open': { name: 'Grid.docx', app: 'CardMirror', quote: CARD.quote, approxPos: 120 },
+    '/evidence/card': { name: 'Data centers stay onshore.docx', path: '/cards/x.docx', app: 'CardMirror' },
+  } });
+  h.prompts = [];
+  h.searches = [];
+  window.__debateUploaderUI.prompt = async (label, initial) => { h.prompts.push([label, initial]); return promptAnswer; };
+  window.__debateUploaderUI.search = async (spec) => { h.searches.push(spec); };
+  window.__debateUploaderUI.sleep = async () => {};
+  h.api.docInfo = docInfo;
+  if (jump) h.api.jumpToSource = jump;
+  return h;
+}
+
+test('search my files: first run asks for folders (; separated), then opens the search with the index status', async () => {
+  const h = evidenceHarness({ status: { ...IDLE, folders: [] }, promptAnswer: ' ~/Ryan Files ; ~/Downloads/Caselist ;' });
+  await cmd('evidenceSearch').run(h.api);
+  assert.deepEqual(h.calls.find((c) => c.route === '/evidence/status').body, { refresh: true });
+  assert.deepEqual(h.calls.find((c) => c.route === '/evidence/folders').body, { folders: ['~/Ryan Files', '~/Downloads/Caselist'] });
+  assert.equal(h.toasts.at(-1), 'Indexing 2 folders. Search works while it runs.');
+  assert.equal(h.searches[0].status, 'Indexing… 0 of 0 files');
+
+  const cancel = evidenceHarness({ status: { ...IDLE, folders: [] } });
+  await cmd('evidenceSearch').run(cancel.api);
+  assert.equal(cancel.searches.length, 0);
+
+  const bad = evidenceHarness();
+  bad.api.flowPost = async () => ({ ok: true, status: 500, body: { ok: false, error: 'no_folder:/nope' } });
+  await cmd('evidenceFolders').run(bad.api);
+  assert.equal(bad.toasts.at(-1), 'No folder at /nope.');
+});
+
+test('search my files: results show tag, cite, and block over file (with copies); status counts cards; analytics are labeled', async () => {
+  const h = evidenceHarness({ search: (b) => ({ results: b.query === 'none' ? [] : [CARD, { ...CARD, ordinal: 4, cite: '', copies: 1, headings: [] }], ...IDLE }) });
+  await cmd('evidenceSearch').run(h.api);
+  const spec = h.searches[0];
+  assert.equal(spec.status, '254,415 cards in 2,535 files · 2 unreadable');
+  const r = await spec.onQuery('onshore');
+  assert.deepEqual(h.calls.find((c) => c.route === '/evidence/search').body, { query: 'onshore', limit: 60 });
+  assert.deepEqual(r.items.map((i) => [i.label, i.sub, i.where]), [
+    ['Data centers stay onshore', 'Rogan 26', ['AT: Offshoring', 'Grid.docx · 2 copies']],
+    ['Data centers stay onshore', 'Analytic', ['Grid.docx']],
+  ]);
+  assert.equal((await spec.onQuery('none')).empty, 'No matches.');
+  assert.equal((await spec.onQuery('  ')).empty, 'Type to search your cards.');
+});
+
+test('search my files: open jumps to the card once CardMirror shows the file; otherwise names the card', async () => {
+  let n = 0;
+  const jumps = [];
+  const h = evidenceHarness({ docInfo: () => (++n < 3 ? { docId: 'old', docTitle: 'Other' } : { docId: 'd1', docTitle: 'Grid' }), jump: async (src) => { jumps.push(src); return { ok: true }; } });
+  await cmd('evidenceSearch').run(h.api);
+  await h.searches[0].onOpen({ card: CARD });
+  assert.deepEqual(h.calls.find((c) => c.route === '/evidence/open').body, { path: '/ev/Grid.docx', ordinal: 3 });
+  assert.equal(jumps.length, 1);
+  assert.match(jumps[0], /^cmsrc1\./);
+  const decoded = JSON.parse(Buffer.from(jumps[0].slice(7).replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+  assert.deepEqual(decoded, { docId: 'd1', docTitle: 'Grid', headingId: null, anchor: { quote: 'Data centers stay onshore', prefix: '', suffix: '', approxPos: 120 } });
+  assert.equal(h.toasts.at(-1), 'Opened "Grid.docx" at "Data centers stay onshore"');
+
+  const nojump = evidenceHarness();
+  await cmd('evidenceSearch').run(nojump.api);
+  await nojump.searches[0].onOpen({ card: CARD });
+  assert.equal(nojump.toasts.at(-1), 'Opened "Grid.docx". The card: "Data centers stay onshore"');
+
+  await nojump.searches[0].onCard({ card: CARD });
+  assert.deepEqual(nojump.calls.find((c) => c.route === '/evidence/card').body, { path: '/ev/Grid.docx', ordinal: 3 });
+  assert.equal(nojump.toasts.at(-1), 'Opened just the card: "Data centers stay onshore.docx"');
+});
+
+test('DOM search: typing queries the helper, arrows move, Enter opens, ⌘Enter opens the card', async () => {
+  const dom = fakeDom();
+  const saved = { document: globalThis.document, Option: globalThis.Option, ui: window.__debateUploaderUI };
+  globalThis.document = dom.doc; globalThis.Option = dom.Option;
+  const h = evidenceHarness({ search: (b) => ({ results: b.query ? [CARD, { ...CARD, ordinal: 4, tag: `Second ${b.query}` }] : [], ...IDLE }) });
+  delete window.__debateUploaderUI;
+  try {
+    const running = cmd('evidenceSearch').run(h.api);
+    for (let i = 0; i < 300 && !dom.byField('query'); i++) await new Promise((r) => setTimeout(r, 20));
+    const input = dom.byField('query');
+    const rows = () => dom.byField('list').children.filter((n) => n.className.startsWith('du-row'));
+    const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 20)); };
+    await settle();
+    assert.ok(dom.all(dom.byField('list')).some((n) => n.textContent === 'Type to search your cards.'));
+    input.value = 'grid'; input.dispatch('input');
+    await settle();
+    assert.equal(rows().length, 2);
+    assert.match(dom.all(rows()[1]).map((n) => n.textContent).join('|'), /Second grid/);
+    input.dispatch('keydown', { key: 'ArrowDown' });
+    assert.equal(rows()[1].getAttribute('aria-selected'), 'true');
+    input.dispatch('keydown', { key: 'Enter', metaKey: true });
+    await settle();
+    assert.deepEqual(h.calls.find((c) => c.route === '/evidence/card').body, { path: '/ev/Grid.docx', ordinal: 4 });
+    await running;
+    assert.equal(dom.doc.body.children.length, 0, 'dialog closed');
   } finally {
     globalThis.document = saved.document; globalThis.Option = saved.Option; window.__debateUploaderUI = saved.ui;
   }

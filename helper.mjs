@@ -11,9 +11,12 @@ import { createRoomWatcher } from './lib/roomwatch.mjs';
 import { createPrefs } from './lib/prefs.mjs';
 import { login, getRounds, listCaselists, listSchools, listTeams, createRound, searchTeams, getTeam, downloadOpenSource, listTeamsDetailed, CASELIST_BASE } from './lib/caselist.mjs';
 import { parseOpponent, schoolScore, pickTeam } from './lib/scout.mjs';
-import { uploadToSpeechDrop, newestDocx, MAX_BYTES, listRoom, downloadFile, saveUnique, SD_BASE, SD_MEDIA } from './lib/speechdrop.mjs';
+import { uploadToSpeechDrop, newestDocx, MAX_BYTES, listRoom, downloadFile, saveUnique, expandHome, SD_BASE, SD_MEDIA } from './lib/speechdrop.mjs';
+import { createEvidenceIndex } from './lib/evidence.mjs';
+import { cardDocx } from './lib/docx.mjs';
+import { readFile, stat } from 'node:fs/promises';
 
-const VERSION = '0.1.3';
+const VERSION = '0.1.4';
 const bridgeDir = process.env.DEBATE_UPLOADER_BRIDGE_DIR || defaultBridgeDir();
 const sdBase = process.env.DEBATE_UPLOADER_SD_BASE || SD_BASE;
 const sdMedia = process.env.DEBATE_UPLOADER_SD_MEDIA || SD_MEDIA;
@@ -36,6 +39,18 @@ async function openSafely(path) {
     return { app, opened: false }; // saved, but the open step failed
   }
 }
+// Evidence search: loaded on first use (≈0.5 GB for 250k cards), rescanned in the background.
+const evidence = createEvidenceIndex({ file: process.env.DEBATE_UPLOADER_EVIDENCE_FILE || join(homedir(), 'Library', 'Application Support', 'debate-uploader', 'evidence-index.json') });
+const cardsDir = process.env.DEBATE_UPLOADER_CARDS_DIR || join(homedir(), 'Downloads', 'Cards');
+function rescan(folders) {
+  if (!folders.length) return;
+  const t0 = Date.now();
+  evidence.scan(folders).then(
+    () => { const s = evidence.status(); log('evidence scan', s.files, 'files', s.cards, 'cards', Date.now() - t0, 'ms'); },
+    (err) => log('evidence scan failed', err.message),
+  );
+}
+const cardFileName = (tag) => `${String(tag).replace(/[^A-Za-z0-9 ,'’-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60).trim() || 'Card'}.docx`;
 const clBase = process.env.DEBATE_UPLOADER_CASELIST_BASE || CASELIST_BASE;
 const keychain = createKeychain({ bin: process.env.DEBATE_UPLOADER_SECURITY_BIN || '/usr/bin/security' });
 const clOpts = { base: clBase };
@@ -241,6 +256,50 @@ const routes = {
     return { caselist: { name: c.name, label: c.label, event: c.event || '' }, ...r };
   }),
 
+  '/evidence/folders': async ({ folders }) => {
+    const list = [];
+    for (const raw of Array.isArray(folders) ? folders : []) {
+      const dir = expandHome(String(raw).trim());
+      if (!dir) continue;
+      let st;
+      try { st = await stat(dir); } catch { throw new Error(`no_folder:${dir}`); }
+      if (!st.isDirectory()) throw new Error(`no_folder:${dir}`);
+      if (!list.includes(dir)) list.push(dir);
+    }
+    if (!list.length) throw new Error('no_folder');
+    rescan(list);
+    return { ok: true, ...evidence.status() };
+  },
+  '/evidence/status': async ({ refresh }) => {
+    await evidence.load();
+    const s = evidence.status();
+    if (refresh && !s.scanning && Date.now() - s.scannedAt > 60_000) rescan(s.folders);
+    return { ok: true, ...evidence.status() };
+  },
+  '/evidence/search': async ({ query, limit }) => {
+    await evidence.load();
+    return { ok: true, results: evidence.search(query, Math.min(Number(limit) || 50, 200)), ...evidence.status() };
+  },
+  '/evidence/open': async ({ path, ordinal }) => {
+    const card = evidence.lookup(path, ordinal);
+    if (!card) throw new Error('not_indexed');
+    const how = await openSafely(card.path);
+    log('evidence open', card.file, how.app);
+    return { ok: true, name: card.file, ...how, quote: card.quote, approxPos: card.approxPos };
+  },
+  '/evidence/card': async ({ path, ordinal }) => {
+    const card = evidence.lookup(path, ordinal);
+    if (!card) throw new Error('not_indexed');
+    let bytes;
+    try { bytes = cardDocx(await readFile(card.path), ordinal, card.tag); } catch {
+      rescan(evidence.status().folders);
+      throw new Error('card_changed');
+    }
+    const where = await saveUnique(cardsDir, cardFileName(card.tag), bytes);
+    const how = await openSafely(where);
+    log('evidence card', card.file, ordinal);
+    return { ok: true, name: where.split('/').pop(), path: where, ...how };
+  },
   '/prefs/get': async () => ({ ok: true, prefs: await prefs.getAll() }),
   '/prefs/set': async ({ key, value }) => {
     try {

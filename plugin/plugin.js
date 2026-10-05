@@ -61,6 +61,16 @@
           break; // shared messages below (helper down, no_folder, read_failed, …)
       }
     }
+    if (ctx.evidence) {
+      if (code.startsWith('no_folder:')) return `No folder at ${code.slice('no_folder:'.length)}.`;
+      switch (code) {
+        case 'no_folder': return 'Enter at least one folder.';
+        case 'not_indexed': return 'That file is no longer in the index. Search again.';
+        case 'card_changed': return 'That file changed since it was indexed. Re-indexing now; search again in a moment.';
+        case 'bad_name': return "Couldn't save the card as its own file.";
+        default: break;
+      }
+    }
     if (code.startsWith('no_docx:')) return `No .docx in ${code.slice('no_docx:'.length)}. Set your send doc folder again.`;
     switch (code) {
       case 'app-not-running':
@@ -248,6 +258,10 @@ textarea.du-input{resize:vertical;min-height:3.4em}
 .du-round{margin:6px 0 0;font-size:.85rem;color:var(--pmd-c-text-secondary)}
 .du-link{font:inherit;padding:0;border:0;background:none;color:var(--pmd-c-accent);cursor:pointer;text-decoration:underline;text-underline-offset:2px}
 .du-link:focus-visible{outline:2px solid var(--pmd-c-accent);outline-offset:2px}
+.du-find .du-list{max-height:min(60vh,520px);min-height:120px}
+.du-find .du-row{align-items:flex-start}
+.du-where{flex:0 1 34%;min-width:0;display:flex;flex-direction:column;align-items:flex-end;gap:1px;font-size:.8rem;color:var(--pmd-c-text-muted)}
+.du-where span{max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .du-btn:disabled{opacity:.5;cursor:default}
 .du-btn:disabled:hover{background:var(--pmd-c-bg)}
 `;
@@ -423,6 +437,82 @@ textarea.du-input{resize:vertical;min-height:3.4em}
           render();
         },
       };
+    },
+
+    // Live search: the query goes to spec.onQuery (debounced; stale answers dropped).
+    // Enter opens the file, ⌘Enter just the card. Resolves when closed.
+    search(spec) {
+      return new Promise((resolve) => {
+        const d = openDialog({ title: spec.title, width: '760px' });
+        d.dialog.className += ' du-find';
+        const input = el('input', { class: 'du-input du-search', placeholder: spec.placeholder, data: { field: 'query' }, attrs: { 'aria-label': spec.title } });
+        const list = el('div', { class: 'du-list', data: { field: 'list' }, attrs: { role: 'listbox', 'aria-label': spec.title } });
+        d.body.remove();
+        if (d.dialog.insertBefore) { d.dialog.insertBefore(input, d.foot); d.dialog.insertBefore(list, d.foot); } else d.dialog.append(input, list);
+        const status = note(spec.status || '');
+        let items = [];
+        let rows = [];
+        let sel = 0;
+        let seq = 0;
+        let timer = null;
+        let closed = false;
+        const done = () => { if (closed) return; closed = true; clearTimeout(timer); d.close(); resolve(); };
+        const pick = (how) => {
+          const it = items[sel];
+          if (!it) return;
+          done();
+          (how === 'card' ? spec.onCard : spec.onOpen)(it);
+        };
+        const cardBtn = button('Open card only', false, () => pick('card'));
+        const openBtn = button('Open file', true, () => pick('file'));
+        cardBtn.title = '⌘Enter: just this card, as its own doc';
+        openBtn.title = 'Enter';
+        d.foot.append(status.node, cardBtn, openBtn);
+        d.onDismiss(done);
+        const paint = () => rows.forEach((r, i) => {
+          r.setAttribute('aria-selected', i === sel ? 'true' : 'false');
+          if (i === sel && r.scrollIntoView) r.scrollIntoView({ block: 'nearest' });
+        });
+        const render = (empty) => {
+          list.textContent = '';
+          cardBtn.disabled = openBtn.disabled = !items.length;
+          if (!items.length) { list.append(el('div', { class: 'du-empty', textContent: empty || '' })); rows = []; return; }
+          rows = items.map((it, i) => {
+            const row = el('div', { class: 'du-row', attrs: { role: 'option' } }, [
+              el('span', { class: 'du-row-text' }, [
+                el('span', { class: 'du-row-main', textContent: it.label, title: it.label }),
+                el('span', { class: 'du-row-sub', textContent: it.sub, title: it.sub }),
+              ]),
+              el('span', { class: 'du-where' }, (it.where || []).map((w) => el('span', { textContent: w, title: w }))),
+            ]);
+            row.addEventListener('mousedown', (e) => { e.preventDefault(); sel = i; paint(); });
+            row.addEventListener('dblclick', () => { sel = i; pick('file'); });
+            list.append(row);
+            return row;
+          });
+          paint();
+        };
+        const run = async () => {
+          clearTimeout(timer);
+          const mine = ++seq;
+          const r = await spec.onQuery(input.value);
+          if (closed || mine !== seq) return; // a newer query is on its way
+          items = r.items;
+          sel = 0;
+          status.set(r.status || '');
+          render(r.empty);
+          if (r.again) timer = setTimeout(run, 1500); // still indexing: refresh as it grows
+        };
+        input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 120); });
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'ArrowDown' && items.length) { e.preventDefault(); sel = Math.min(sel + 1, items.length - 1); paint(); }
+          else if (e.key === 'ArrowUp' && items.length) { e.preventDefault(); sel = Math.max(sel - 1, 0); paint(); }
+          else if (e.key === 'Enter') { e.preventDefault(); pick(e.metaKey || e.ctrlKey ? 'card' : 'file'); }
+        });
+        render(spec.empty);
+        run();
+        input.focus();
+      });
     },
 
     // Filterable single-select. Resolves with the chosen index, or null.
@@ -1235,6 +1325,112 @@ textarea.du-input{resize:vertical;min-height:3.4em}
   }
 
 
+  // ---------------------------------------------------------------- Search my files
+  const fmt = (n) => Number(n || 0).toLocaleString('en-US');
+  const short = (s) => (s.length > 70 ? `${s.slice(0, 70)}…` : s);
+  const indexStatus = (s) => (s.scanning
+    ? `Indexing… ${fmt(s.done)} of ${fmt(s.total)} files`
+    : `${fmt(s.cards)} cards in ${fmt(s.files)} files${s.unreadable ? ` · ${fmt(s.unreadable)} unreadable` : ''}`);
+  const b64url = (text) => {
+    let bin = '';
+    for (const b of new TextEncoder().encode(text)) bin += String.fromCharCode(b);
+    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  };
+
+  async function setEvidenceFolders(api, current) {
+    const raw = await ui().prompt('Evidence folders (separate several with ;)', (current || []).join('; '));
+    if (raw == null) return null;
+    const folders = raw.split(';').map((f) => f.trim()).filter(Boolean);
+    const st = await call(api, '/evidence/folders', { folders });
+    api.showToast(`Indexing ${plural(st.folders.length, 'folder')}. Search works while it runs.`);
+    return st;
+  }
+
+  async function evidenceFolders(api) {
+    try {
+      const st = await call(api, '/evidence/status', {});
+      await setEvidenceFolders(api, st.folders);
+    } catch (err) {
+      api.showToast(message(err.message, { evidence: true }));
+    }
+  }
+
+  // Best effort: once CardMirror shows the opened file, scroll to the card's tag.
+  // Needs the doc's id, which only the active doc in this window exposes.
+  async function jumpToCard(api, name, quote, approxPos) {
+    if (typeof api.jumpToSource !== 'function' || typeof api.docInfo !== 'function' || !quote) return false;
+    const titles = [name, name.replace(/\.docx$/i, '')];
+    for (let i = 0; i < 20; i++) {
+      const info = api.docInfo();
+      if (info && info.docId && titles.includes(info.docTitle)) {
+        const source = `cmsrc1.${b64url(JSON.stringify({ docId: info.docId, docTitle: info.docTitle, headingId: null, anchor: { quote, prefix: '', suffix: '', approxPos } }))}`;
+        try { return !!(await api.jumpToSource(source)).ok; } catch { return false; }
+      }
+      await ui().sleep(150);
+    }
+    return false;
+  }
+
+  async function openEvidence(api, card) {
+    try {
+      const r = await call(api, '/evidence/open', { path: card.path, ordinal: card.ordinal });
+      if (r.opened === false) return api.showToast(`Couldn't open "${r.name}".`);
+      const jumped = await jumpToCard(api, r.name, r.quote, r.approxPos);
+      api.showToast(jumped ? `Opened "${r.name}" at "${short(card.tag)}"` : `Opened "${r.name}". The card: "${short(card.tag)}"`);
+    } catch (err) {
+      api.showToast(message(err.message, { evidence: true }));
+    }
+  }
+
+  async function openCardOnly(api, card) {
+    try {
+      const r = await call(api, '/evidence/card', { path: card.path, ordinal: card.ordinal });
+      api.showToast(r.opened === false ? `Saved "${r.name}" but couldn't open it.` : `Opened just the card: "${r.name}"`);
+    } catch (err) {
+      api.showToast(message(err.message, { evidence: true }));
+    }
+  }
+
+  async function evidenceSearch(api) {
+    const ctx = { evidence: true };
+    try {
+      let st = await call(api, '/evidence/status', { refresh: true });
+      if (!st.folders.length) {
+        st = await setEvidenceFolders(api, []);
+        if (!st) return;
+      }
+      await ui().search({
+        title: 'Search my files',
+        placeholder: 'Tag, author, year, block or file name',
+        status: indexStatus(st),
+        empty: 'Type to search your cards.',
+        onQuery: async (q) => {
+          try {
+            const r = await call(api, '/evidence/search', { query: q, limit: 60 });
+            return {
+              items: r.results.map((c) => ({
+                card: c,
+                label: c.tag,
+                sub: c.cite || 'Analytic',
+                // Right column: the block it sits under, then the file (and how many copies exist).
+                where: [c.headings[c.headings.length - 1], `${c.file}${c.copies > 1 ? ` · ${c.copies} copies` : ''}`].filter(Boolean),
+              })),
+              status: indexStatus(r),
+              again: r.scanning,
+              empty: !q.trim() ? 'Type to search your cards.' : r.scanning ? 'No matches yet. Still indexing…' : 'No matches.',
+            };
+          } catch (err) {
+            return { items: [], status: message(err.message, ctx), empty: '' };
+          }
+        },
+        onOpen: (it) => openEvidence(api, it.card),
+        onCard: (it) => openCardOnly(api, it.card),
+      });
+    } catch (err) {
+      api.showToast(message(err.message, ctx));
+    }
+  }
+
   window.__registerCardMirrorPlugin && window.__registerCardMirrorPlugin({
     id: ID,
     name: 'Debate Uploader',
@@ -1318,6 +1514,20 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         keywords: ['scout', 'opponent', 'caselist', 'prep', 'disclosure'],
         defaultKey: null,
         run: (api) => withPrefs(api, () => caselistScout(api)),
+      },
+      {
+        id: `${ID}.evidenceSearch`,
+        label: 'Search my files…',
+        keywords: ['search', 'evidence', 'card', 'find', 'files', 'backfile', 'tub', 'author', 'cite'],
+        defaultKey: null,
+        run: (api) => withPrefs(api, () => evidenceSearch(api)),
+      },
+      {
+        id: `${ID}.evidenceFolders`,
+        label: 'Set evidence folders…',
+        keywords: ['search', 'evidence', 'folder', 'files', 'index'],
+        defaultKey: null,
+        run: (api) => withPrefs(api, () => evidenceFolders(api)),
       },
       {
         id: `${ID}.caselistSearch`,

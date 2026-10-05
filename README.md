@@ -96,6 +96,22 @@ cites. Filter by **tournament** (dropdown) and **side** (All / Pro / Con) above 
 and show "x of y" counts. **Enter** or **Open doc** downloads the doc to `~/Downloads/Caselist/<caselist>/<school>-<team>/` and opens it
 in CardMirror; **Copy report** / **Copy cites** copy text; ←→ switches tabs; Esc closes. Requires **Log in to Tabroom…**.
 
+## Search my files
+
+- **Set evidence folders…**: the folders to search, separated by `;` (e.g. `~/Downloads/Ryan Files; ~/Downloads/Caselist`).
+  The first **Search my files…** asks for them. Subfolders are included; hidden folders, Word lock files (`~$…`) and
+  symlinks are skipped.
+- **Search my files…**: type words from a card's **tag, cite (author, year, source), block heading or file name**;
+  every word must match. Whole-word matches rank first, real cards beat analytics, and the same card saved in several
+  files shows once (with a copy count; the newest copy opens). ↑↓ moves, **Enter** opens the file in CardMirror and
+  tries to jump to the card (if it can't, the toast names the card to look for). **⌘Enter** / **Open card only**
+  saves just that card, formatting kept, to `~/Downloads/Cards/` and opens it, ready to copy into a speech doc.
+
+The helper indexes in the background (about 13 s for 2,500 files the first time; later only changed files are read)
+and search works while it runs. The index lives in `~/Library/Application Support/debate-uploader/evidence-index.json`.
+Tags are paragraphs in a Heading 4 style (including custom styles based on it). Tags typed as bold Normal text
+aren't found.
+
 ## Updating
 
 - Plugin: Settings → Plugins → **Update** on Debate Uploader (needs `__plugins('community-on')` still on).

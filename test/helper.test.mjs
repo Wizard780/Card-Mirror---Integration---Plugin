@@ -2,7 +2,9 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, writeFile, access, chmod } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, access, chmod, mkdir, readdir } from 'node:fs/promises';
+import { deflateRawSync, crc32 } from 'node:zlib';
+import { writeZip, readZip, unzipEntry } from '../lib/docx.mjs';
 import { openSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -135,6 +137,7 @@ esac
       DEBATE_UPLOADER_OPENER: opener,
       DEBATE_UPLOADER_CASELIST_DIR: join(downloadDir, 'caselist'),
       DEBATE_UPLOADER_PREFS_FILE: join(downloadDir, 'prefs', 'prefs.json'),
+      DEBATE_UPLOADER_EVIDENCE_FILE: join(downloadDir, 'prefs', 'evidence-index.json'), DEBATE_UPLOADER_CARDS_DIR: join(downloadDir, 'cards'),
       DEBATE_UPLOADER_SD_WS: `ws://127.0.0.1:${fakeSD.address().port}/sock/websocket`,
       DEBATE_UPLOADER_CASELIST_BASE: `http://127.0.0.1:${fakeCL.address().port}/v1`, DEBATE_UPLOADER_SECURITY_BIN: security },
     stdio: ['ignore', openSync(helperLog, 'w'), openSync(helperLog, 'a')],
@@ -429,6 +432,38 @@ test('speed: school lists are cached; logging in clears the cache', async () => 
 test('scouting: a path not in the team round list is refused without downloading', async () => {
   const r = await waitJob((await call('/caselist/open', { caselist: 'hspf26', school: 'Lexington', team: 'AlHu', path: 'hspf26/Other/Team/secret.docx' })).body.job);
   assert.deepEqual(r, { state: 'error', message: 'removed' });
+});
+
+test('evidence: set folders → background scan → search → open the file or just the card', async () => {
+  const dir = join(downloadDir, 'evidence');
+  await mkdir(dir, { recursive: true });
+  const xml = '<w:document><w:body><w:p><w:pPr><w:pStyle w:val="Heading3"/></w:pPr><w:r><w:t>AT: Offshoring</w:t></w:r></w:p>'
+    + '<w:p><w:pPr><w:pStyle w:val="Heading4"/></w:pPr><w:r><w:t>Data centers stay onshore</w:t></w:r></w:p><w:p><w:r><w:t>Rogan 26</w:t></w:r></w:p>'
+    + '<w:p><w:pPr><w:pStyle w:val="Heading4"/></w:pPr><w:r><w:t>Other card</w:t></w:r></w:p></w:body></w:document>';
+  const raw = Buffer.from(xml);
+  await writeFile(join(dir, 'Grid.docx'), writeZip([{ name: 'word/document.xml', method: 8, crc: crc32(raw), usize: raw.length, data: deflateRawSync(raw) }]));
+
+  assert.equal((await call('/evidence/folders', { folders: [join(downloadDir, 'missing')] })).body.error, `no_folder:${join(downloadDir, 'missing')}`);
+  assert.equal((await call('/evidence/folders', { folders: [dir, dir] })).body.ok, true);
+  let st;
+  for (let i = 0; i < 100; i++) { st = (await call('/evidence/status', {})).body; if (!st.scanning && st.files) break; await new Promise((r) => setTimeout(r, 50)); }
+  assert.deepEqual([st.folders, st.files, st.cards], [[dir], 1, 2]);
+
+  const { results } = (await call('/evidence/search', { query: 'onshore rogan' })).body;
+  assert.deepEqual(results.map((r) => [r.tag, r.cite, r.headings, r.file]), [['Data centers stay onshore', 'Rogan 26', ['AT: Offshoring'], 'Grid.docx']]);
+  assert.equal((await call('/evidence/open', { path: '/etc/hosts', ordinal: 0 })).body.error, 'not_indexed');
+
+  const opened = (await call('/evidence/open', { path: results[0].path, ordinal: results[0].ordinal })).body;
+  assert.deepEqual([opened.name, opened.app, opened.quote], ['Grid.docx', 'CardMirror', 'Data centers stay onshore']);
+  const card = (await call('/evidence/card', { path: results[0].path, ordinal: results[0].ordinal })).body;
+  assert.equal(card.name, 'Data centers stay onshore.docx');
+  assert.deepEqual(await readdir(join(downloadDir, 'cards')), ['Data centers stay onshore.docx']);
+  const out = unzipEntry(readZip(await readFile(card.path)).get('word/document.xml')).toString();
+  assert.match(out, /Rogan 26/);
+  assert.doesNotMatch(out, /Other card|AT: Offshoring/);
+  const lines = (await readFile(openLog, 'utf8')).trim().split('\n');
+  assert.equal(lines.at(-1), `-b|com.cardmirror.app|${card.path}|`);
+  assert.equal(lines.at(-2), `-b|com.cardmirror.app|${join(dir, 'Grid.docx')}|`);
 });
 
 test('SIGTERM removes the session file but keeps identity', async () => {
