@@ -18,11 +18,21 @@ It starts at login and restarts itself if it crashes. Log: `~/Library/Logs/debat
 
 **2. The plugin** (from GitHub, survives relaunches):
 1. CardMirror → Settings → Plugins → turn on **Enable plugins**, then relaunch CardMirror.
-2. CardMirror only installs plugins from its curated list by default. To allow this one, open the developer
-   console (View → Toggle Developer Tools → Console) and run `__plugins('community-on')`.
-3. Settings → Plugins → paste `Wizard780/Card-Mirror---Integration---Plugin` into the install field → accept the
-   consent prompt → enable it.
+2. **Required: allow community plugins.** CardMirror only installs plugins from its own curated list, so without
+   this step the install fails with *"This repository is not on the curated plugin list."* Open the developer
+   console (**View → Toggle Developer Tools → Console**, or Cmd+Option+I) and run:
+
+   ```js
+   __plugins('community-on')
+   ```
+
+   It answers "community plugin installs ENABLED…" and is remembered. (It allows installs from any GitHub repo;
+   check with `__plugins('status')`, turn it off again with `__plugins('community-off')` after installing.)
+3. Settings → Plugins → paste `Wizard780/Card-Mirror---Integration---Plugin` (or the full GitHub URL) into the
+   install field → **Install** → accept the consent prompt → turn the plugin on.
 4. Optional: bind your favorite commands under Settings → Keyboard.
+
+If you previously used **Load plugin from file…**, relaunch CardMirror before installing so the two copies don't clash.
 
 For development you can instead use **Load plugin from file…** → `plugin/plugin.js` (session only).
 
