@@ -14,6 +14,26 @@
     if (ctx.browse && ['start_unknown', 'upload_unknown', 'unknown_job', 'still_running'].includes(code)) {
       return "The helper didn't answer in time. Try again.";
     }
+    if (ctx.tabroom) {
+      switch (code) {
+        case 'bad_login': return 'Tabroom rejected that email or password.';
+        case 'not_logged_in': return 'Not logged in to Tabroom. Run "Log in to Tabroom…".';
+        case 'login_expired': return 'Tabroom login expired. Run "Log in to Tabroom…".';
+        case 'keychain_failed': return "Couldn't save your login to Keychain. Is Keychain locked?";
+        case 'unreachable': return "Couldn't reach Tabroom. Try again.";
+        case 'start_unknown':
+        case 'upload_unknown':
+        case 'unknown_job':
+        case 'still_running': return "Tabroom didn't answer in time. Try again.";
+        case 'app-not-running':
+        case 'no-such-app':
+        case 'timeout':
+        case 'unsupported':
+        case 'bad-response':
+        case 'bad_token': break; // fall through to the shared helper messages below
+        default: return `Tabroom error: ${code}`;
+      }
+    }
     if (code.startsWith('no_docx:')) return `No .docx in ${code.slice('no_docx:'.length)}. Set your send doc folder again.`;
     switch (code) {
       case 'app-not-running':
@@ -78,7 +98,7 @@
   const domUI = {
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
 
-    prompt(labelText, initial) {
+    prompt(labelText, initial, opts = {}) {
       return new Promise((resolve) => {
         const wrap = document.createElement('div');
         wrap.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:flex-start;justify-content:center;padding-top:15vh;background:rgba(0,0,0,.25)';
@@ -88,6 +108,7 @@
         label.textContent = `${labelText} (Enter to confirm, Esc to cancel)`;
         label.style.marginBottom = '6px';
         const input = document.createElement('input');
+        if (opts.secret) input.type = 'password';
         input.value = initial || '';
         input.style.cssText = 'width:320px;font:inherit;padding:4px 6px';
         box.append(label, input);
@@ -107,7 +128,7 @@
 
     // Returns { closed: Promise, update(items, status) }. Items carry a
     // stable `key`, so the selection follows its file across refreshes.
-    showList(title, initialItems, onPick) {
+    showList(title, initialItems, onPick, opts = {}) {
       let resolveClosed;
       const closed = new Promise((r) => { resolveClosed = r; });
       const prev = document.activeElement;
@@ -122,7 +143,7 @@
       head.textContent = title;
       const hint = document.createElement('div');
       hint.style.cssText = 'padding:0 16px 8px;color:#666;font-size:12px';
-      hint.textContent = HINT;
+      hint.textContent = opts.hint || HINT;
       const list = document.createElement('div');
       list.style.cssText = 'max-height:50vh;overflow:auto';
       let items = [];
@@ -147,7 +168,7 @@
         if (!items.some((it) => it.key === selKey)) selKey = items[0].key;
         rows = items.map((it) => {
           const row = document.createElement('div');
-          row.style.cssText = 'padding:6px 16px;cursor:pointer;display:flex;justify-content:space-between;gap:12px';
+          row.style.cssText = `padding:6px 16px;cursor:pointer;display:flex;gap:${opts.stacked ? '2px' : '12px'};${opts.stacked ? 'flex-direction:column' : 'justify-content:space-between'}`;
           const label = document.createElement('span');
           label.textContent = it.label;
           if (it.isNew) {
@@ -157,7 +178,7 @@
             label.append(badge);
           }
           const detail = document.createElement('span');
-          detail.style.cssText = 'color:#666;white-space:nowrap';
+          detail.style.cssText = `color:#666;${opts.stacked ? 'font-size:12px' : 'white-space:nowrap'}`;
           detail.textContent = it.detail;
           row.append(label, detail);
           row.addEventListener('mousedown', (e) => { e.preventDefault(); selKey = it.key; paint(); onPick(it); });
@@ -188,7 +209,7 @@
         closed,
         update(next, status) {
           items = next;
-          hint.textContent = status || HINT;
+          hint.textContent = status || opts.hint || HINT;
           render();
         },
       };
@@ -334,6 +355,53 @@
     }
   }
 
+  async function tabroomLogin(api) {
+    const u = ui();
+    try {
+      const rawEmail = await u.prompt('Tabroom email', api.storage.get('tabroomEmail') || '');
+      const email = rawEmail == null ? '' : String(rawEmail).trim();
+      if (!email) return;
+      const password = await u.prompt('Tabroom password', '', { secret: true });
+      if (!password) return;
+      api.showToast('Logging in to Tabroom…');
+      await runJob(api, '/tabroom/login', { username: email, password }, u.sleep);
+      api.storage.set('tabroomEmail', email);
+      api.showToast('Logged in to Tabroom.');
+    } catch (err) {
+      api.showToast(message(err.message, { tabroom: true }));
+    }
+  }
+
+  async function tabroomLogout(api) {
+    try {
+      await call(api, '/tabroom/logout', {});
+      api.showToast('Logged out of Tabroom.');
+    } catch (err) {
+      api.showToast(message(err.message, { tabroom: true }));
+    }
+  }
+
+  async function tabroomRounds(api) {
+    const u = ui();
+    try {
+      const { current, rounds } = await runJob(api, '/tabroom/rounds', {}, u.sleep);
+      if (!rounds.length) return api.showToast('No rounds. Is your Tabroom account linked to your student record?');
+      const items = rounds.map((r, i) => ({
+        key: r.id ?? i,
+        label: `${r.tournament} · ${r.round}`,
+        detail: [
+          r.side && `${r.side} vs ${r.opponent || 'TBA'}`,
+          r.judge && `judge ${r.judge}`,
+          r.start_time ? formatTime(Date.parse(r.start_time)) : '',
+        ].filter(Boolean).join(' · '),
+      }));
+      const view = u.showList(current ? 'Tabroom: current rounds' : 'Tabroom: recent rounds', items, () => {}, { hint: 'Esc to close', stacked: true });
+      await view.closed;
+    } catch (err) {
+      api.showToast(message(err.message, { tabroom: true }));
+    }
+  }
+
   window.__registerCardMirrorPlugin && window.__registerCardMirrorPlugin({
     id: ID,
     name: 'Debate Uploader',
@@ -375,6 +443,27 @@
         keywords: ['speechdrop', 'send doc', 'folder'],
         defaultKey: null,
         run: (api) => setFolder(api),
+      },
+      {
+        id: `${ID}.tabroomLogin`,
+        label: 'Log in to Tabroom…',
+        keywords: ['tabroom', 'caselist', 'login', 'sign in'],
+        defaultKey: null,
+        run: (api) => tabroomLogin(api),
+      },
+      {
+        id: `${ID}.tabroomLogout`,
+        label: 'Log out of Tabroom',
+        keywords: ['tabroom', 'caselist', 'logout', 'sign out'],
+        defaultKey: null,
+        run: (api) => tabroomLogout(api),
+      },
+      {
+        id: `${ID}.tabroomRounds`,
+        label: 'Show my Tabroom rounds',
+        keywords: ['tabroom', 'rounds', 'pairings', 'opponent', 'judge'],
+        defaultKey: null,
+        run: (api) => tabroomRounds(api),
       },
     ],
   });

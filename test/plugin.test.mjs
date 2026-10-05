@@ -10,12 +10,18 @@ before(async () => {
 const ok = (body) => ({ ok: true, status: 200, body });
 const cmd = (suffix) => def.commands.find((c) => c.id === `debate-uploader.${suffix}`);
 
-function harness({ responses = [], settings = {}, storage = {}, room = 'abc12', folderAnswer = null, file = { name: 'a.docx', size: 10, read: async () => 'QUJD' } } = {}) {
+function harness({ responses = [], settings = {}, storage = {}, room = 'abc12', folderAnswer = null, email = 'me@x.com', password = 'pw-secret', file = { name: 'a.docx', size: 10, read: async () => 'QUJD' } } = {}) {
   const calls = [], toasts = [], prompts = [];
   const store = new Map(Object.entries(storage));
   const next = typeof responses === 'function' ? responses : () => responses.shift();
   window.__debateUploaderUI = {
-    prompt: async (label, initial) => { prompts.push([label, initial]); return /room/i.test(label) ? room : folderAnswer; },
+    prompt: async (label, initial, opts = {}) => {
+      prompts.push([label, initial, opts]);
+      if (/email/i.test(label)) return email; // before /room/: "Tabroom email" contains "room"
+      if (/password/i.test(label)) return password;
+      if (/room/i.test(label)) return room;
+      return folderAnswer;
+    },
     pickFile: async () => file,
     sleep: () => new Promise((r) => setImmediate(r)),
   };
@@ -29,10 +35,11 @@ function harness({ responses = [], settings = {}, storage = {}, room = 'abc12', 
   return { api, calls, toasts, prompts, store };
 }
 
-test('registers four commands and one setting under the plugin id', () => {
+test('registers seven commands and one setting under the plugin id', () => {
   assert.equal(def.id, 'debate-uploader');
   assert.equal(def.apiVersion, 1);
-  assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdPick', 'debate-uploader.setFolder']);
+  assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdPick', 'debate-uploader.setFolder',
+ 'debate-uploader.tabroomLogin', 'debate-uploader.tabroomLogout', 'debate-uploader.tabroomRounds']);
   assert.deepEqual(def.settings.map((s) => [s.key, s.type, s.default]), [['sendDocFolder', 'text', '']]);
 });
 
@@ -295,4 +302,66 @@ test('browse: wrong room toasts without a list; cancel does nothing; open errors
     await cmd('sdBrowse').run(h.api);
     assert.equal(h.toasts.at(-1), text);
   }
+});
+
+test('tabroom login: email pre-fills, password is a secret prompt, only the email is remembered', async () => {
+  const h = harness({ storage: { tabroomEmail: 'old@x.com' },
+    responses: [ok({ ok: true, job: 'j' }), ok({ state: 'done', result: { loggedIn: true } })] });
+  await cmd('tabroomLogin').run(h.api);
+  assert.deepEqual(h.prompts.map(([label, initial, opts]) => [/email/i.test(label), initial, !!opts.secret]), [[true, 'old@x.com', false], [false, '', true]]);
+  assert.deepEqual(h.calls[0], { app: 'debate-uploader', route: '/tabroom/login', body: { username: 'me@x.com', password: 'pw-secret' } });
+  assert.equal(h.toasts.at(-1), 'Logged in to Tabroom.');
+  assert.equal(h.store.get('tabroomEmail'), 'me@x.com');
+  assert.ok(![...h.store.values()].some((v) => JSON.stringify(v).includes('pw-secret')));
+});
+
+test('tabroom login: cancel at either prompt sends nothing; wrong password and locked keychain get clear toasts', async () => {
+  for (const opts of [{ email: null }, { password: null }, { password: '' }]) {
+    const h = harness(opts);
+    await cmd('tabroomLogin').run(h.api);
+    assert.equal(h.calls.length, 0);
+  }
+  for (const [code, text] of [['bad_login', 'Tabroom rejected that email or password.'], ['keychain_failed', "Couldn't save your login to Keychain. Is Keychain locked?"], ['unreachable', "Couldn't reach Tabroom. Try again."]]) {
+    const h = harness({ responses: [ok({ ok: true, job: 'j' }), ok({ state: 'error', message: code })] });
+    await cmd('tabroomLogin').run(h.api);
+    assert.equal(h.toasts.at(-1), text);
+  }
+});
+
+test('tabroom rounds: current rounds show tournament, round, side, opponent, judge, time in a stacked list', async () => {
+  const h = harness({ responses: [ok({ ok: true, job: 'j' }), ok({ state: 'done', result: { current: true, rounds: [
+    { id: 9, tournament: 'Glenbrooks', round: 'R3', side: 'Neg', opponent: 'Lexington AB', judge: 'Smith', start_time: '2026-10-10T14:00:00Z' },
+  ] } })] });
+  let shown;
+  window.__debateUploaderUI.showList = (title, items, onPick, opts) => { shown = { title, items, opts }; return { closed: Promise.resolve(), update() {} }; };
+  await cmd('tabroomRounds').run(h.api);
+  assert.equal(shown.title, 'Tabroom: current rounds');
+  assert.equal(shown.opts.stacked, true);
+  assert.equal(shown.items[0].label, 'Glenbrooks · R3');
+  assert.match(shown.items[0].detail, /^Neg vs Lexington AB · judge Smith · /);
+  assert.equal(h.toasts.length, 0);
+});
+
+test('tabroom rounds: none, not logged in, expired each toast; recent rounds get a different title', async () => {
+  for (const [state, text] of [
+    [{ state: 'done', result: { current: false, rounds: [] } }, 'No rounds. Is your Tabroom account linked to your student record?'],
+    [{ state: 'error', message: 'not_logged_in' }, 'Not logged in to Tabroom. Run "Log in to Tabroom…".'],
+    [{ state: 'error', message: 'login_expired' }, 'Tabroom login expired. Run "Log in to Tabroom…".'],
+  ]) {
+    const h = harness({ responses: [ok({ ok: true, job: 'j' }), ok(state)] });
+    await cmd('tabroomRounds').run(h.api);
+    assert.equal(h.toasts.at(-1), text);
+  }
+  const h = harness({ responses: [ok({ ok: true, job: 'j' }), ok({ state: 'done', result: { current: false, rounds: [{ id: 1, tournament: 'T', round: 'R1', side: '', opponent: '', judge: '', start_time: null }] } })] });
+  let title;
+  window.__debateUploaderUI.showList = (t) => { title = t; return { closed: Promise.resolve(), update() {} }; };
+  await cmd('tabroomRounds').run(h.api);
+  assert.equal(title, 'Tabroom: recent rounds');
+});
+
+test('tabroom logout calls the helper and confirms', async () => {
+  const h = harness({ responses: [ok({ ok: true })] });
+  await cmd('tabroomLogout').run(h.api);
+  assert.deepEqual(h.calls.map((c) => c.route), ['/tabroom/logout']);
+  assert.equal(h.toasts.at(-1), 'Logged out of Tabroom.');
 });
