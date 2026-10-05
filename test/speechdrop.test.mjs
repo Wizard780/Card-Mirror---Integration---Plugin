@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, mkdir, utimes } from 'node:fs/promises';
+import { mkdtemp, writeFile, mkdir, utimes, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { mimeFor, expandHome, newestDocx, uploadToSpeechDrop, MAX_BYTES } from '../lib/speechdrop.mjs';
+import { mimeFor, expandHome, newestDocx, uploadToSpeechDrop, MAX_BYTES, listRoom, downloadFile, saveUnique } from '../lib/speechdrop.mjs';
 
 const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
@@ -125,4 +125,53 @@ test('upload: ambiguous answers after the POST are upload_unknown (non-JSON 200,
   await assert.rejects(uploadToSpeechDrop(doc(), opts(fakeSD({ uploadStatus: 502, uploadBody: 'bad gateway' }))), /^Error: upload_unknown$/);
   const broken = new ReadableStream({ start(c) { c.error(new TypeError('terminated')); } });
   await assert.rejects(uploadToSpeechDrop(doc(), opts(fakeSD({ uploadBody: broken }))), /^Error: upload_unknown$/);
+});
+
+const respond = (status, body) => async (url, init) => { respond.calls.push(url); return new Response(body, { status }); };
+
+test('listRoom: newest first, skips deleted entries, keeps SpeechDrop positions', async () => {
+  respond.calls = [];
+  const fetchImpl = respond(200, '[{"name":"a.docx","ctime":1},null,{"name":"b.pdf","ctime":3}]');
+  const files = await listRoom('abc12', { fetchImpl, base: 'https://sd.test' });
+  assert.deepEqual(files, [{ index: 2, name: 'b.pdf', ctime: 3 }, { index: 0, name: 'a.docx', ctime: 1 }]);
+  assert.deepEqual(respond.calls, ['https://sd.test/abc12/index']);
+});
+
+test('listRoom errors: 404 is no_room, network is unreachable, bad code never fetches', async () => {
+  respond.calls = [];
+  await assert.rejects(listRoom('abc12', { fetchImpl: respond(404, '[]'), base: 'x' }), /^Error: no_room$/);
+  await assert.rejects(listRoom('abc12', { fetchImpl: async () => { throw new TypeError('x'); }, base: 'x' }), /^Error: unreachable$/);
+  await assert.rejects(listRoom('ab/12', { fetchImpl: respond(200, '[]'), base: 'x' }), /^Error: bad_room$/);
+  assert.equal(respond.calls.length, 1);
+});
+
+test('downloadFile: URL-encodes the name under room/position; failures are download_failed', async () => {
+  respond.calls = [];
+  const bytes = await downloadFile({ room: 'abc12', index: 2, name: '1AC — Ports.docx' },
+    { fetchImpl: respond(200, 'DOCX'), mediaBase: 'https://media.test/uploads/' });
+  assert.equal(bytes.toString(), 'DOCX');
+  assert.deepEqual(respond.calls, ['https://media.test/uploads/abc12/2/1AC%20%E2%80%94%20Ports.docx']);
+  await assert.rejects(downloadFile({ room: 'abc12', index: 0, name: 'a.docx' }, { fetchImpl: respond(404, ''), mediaBase: 'm/' }), /^Error: download_failed$/);
+  await assert.rejects(downloadFile({ room: 'abc12', index: 0, name: 'a.docx' }, { fetchImpl: async () => { throw new TypeError('x'); }, mediaBase: 'm/' }), /^Error: download_failed$/);
+});
+
+test('saveUnique: new file written, identical file reused, different file gets (2), (3)', async () => {
+  const dir = join(await mkdtemp(join(tmpdir(), 'dl-')), 'abc12');
+  const p1 = await saveUnique(dir, '1AC.docx', Buffer.from('v1'));
+  assert.equal(p1, join(dir, '1AC.docx'));
+  assert.equal(await saveUnique(dir, '1AC.docx', Buffer.from('v1')), p1);
+  const p2 = await saveUnique(dir, '1AC.docx', Buffer.from('v2'));
+  assert.equal(p2, join(dir, '1AC (2).docx'));
+  const p3 = await saveUnique(dir, '1AC.docx', Buffer.from('v3'));
+  assert.equal(p3, join(dir, '1AC (3).docx'));
+  assert.equal((await readFile(p1)).toString(), 'v1', 'existing file never overwritten');
+  assert.equal(await saveUnique(dir, '1AC.docx', Buffer.from('v2')), p2);
+});
+
+test('saveUnique refuses names that could escape the folder', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dl-'));
+  for (const bad of ['../evil.docx', 'a/b.docx', '..', '.', '', 'x\\y.docx']) {
+    await assert.rejects(saveUnique(dir, bad, Buffer.from('x')), /^Error: bad_name$/, bad);
+  }
+  assert.deepEqual(await readdir(dir), []);
 });

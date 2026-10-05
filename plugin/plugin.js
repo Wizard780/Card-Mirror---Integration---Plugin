@@ -9,6 +9,10 @@
   const SET_FOLDER_LABEL = 'Set send doc folder for SpeechDrop…';
 
   function message(code, ctx = {}) {
+    // Browsing only reads, so a slow helper there is a plain "try again".
+    if (ctx.browse && ['start_unknown', 'upload_unknown', 'unknown_job', 'still_running'].includes(code)) {
+      return "The helper didn't answer in time. Try again.";
+    }
     if (code.startsWith('no_docx:')) return `No .docx in ${code.slice('no_docx:'.length)}. Set your send doc folder again.`;
     switch (code) {
       case 'app-not-running':
@@ -27,6 +31,8 @@
       case 'unknown_job': return "SpeechDrop didn't answer after the upload started. Check the room before re-uploading.";
       case 'start_unknown': return `The upload may have started. Check room ${ctx.room} on SpeechDrop before re-uploading.`;
       case 'read_failed': return "Couldn't read that file. Pick it again.";
+      case 'removed': return `"${ctx.name}" was removed from the room.`;
+      case 'download_failed': return `Couldn't download "${ctx.name}".`;
       case 'still_running': return 'Still running in helper. Check SpeechDrop before re-uploading.';
       default: return `Upload failed: ${code}`;
     }
@@ -95,6 +101,56 @@
         wrap.addEventListener('mousedown', (e) => { if (e.target === wrap) done(null); });
         input.focus();
         input.select();
+      });
+    },
+
+    showList(title, items, onPick) {
+      return new Promise((resolve) => {
+        const prev = document.activeElement;
+        const wrap = document.createElement('div');
+        wrap.tabIndex = -1;
+        wrap.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:flex-start;justify-content:center;padding-top:12vh;background:rgba(0,0,0,.25);outline:none';
+        const box = document.createElement('div');
+        box.style.cssText = 'background:#fff;color:#000;padding:12px 0;border-radius:8px;font:14px system-ui;box-shadow:0 8px 30px rgba(0,0,0,.3);width:420px';
+        const head = document.createElement('div');
+        head.style.cssText = 'padding:0 16px 8px;font-weight:600';
+        head.textContent = title;
+        const hint = document.createElement('div');
+        hint.style.cssText = 'padding:0 16px 8px;color:#666;font-size:12px';
+        hint.textContent = '↑↓ + Enter or click to open in CardMirror · Esc to close';
+        const list = document.createElement('div');
+        list.style.cssText = 'max-height:50vh;overflow:auto';
+        let sel = 0;
+        const rows = items.map((it, i) => {
+          const row = document.createElement('div');
+          row.style.cssText = 'padding:6px 16px;cursor:pointer;display:flex;justify-content:space-between;gap:12px';
+          const label = document.createElement('span');
+          label.textContent = it.label;
+          const detail = document.createElement('span');
+          detail.style.cssText = 'color:#666;white-space:nowrap';
+          detail.textContent = it.detail;
+          row.append(label, detail);
+          row.addEventListener('mousedown', (e) => { e.preventDefault(); sel = i; paint(); onPick(i); });
+          list.append(row);
+          return row;
+        });
+        const paint = () => rows.forEach((r, i) => { r.style.background = i === sel ? '#dbe7ff' : ''; if (i === sel) r.scrollIntoView({ block: 'nearest' }); });
+        const close = () => { wrap.remove(); if (prev && prev.focus) prev.focus(); resolve(); };
+        // Capture phase + focus kept on the overlay: keys never reach the document.
+        wrap.addEventListener('keydown', (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          if (e.key === 'ArrowDown') { sel = Math.min(sel + 1, rows.length - 1); paint(); }
+          else if (e.key === 'ArrowUp') { sel = Math.max(sel - 1, 0); paint(); }
+          else if (e.key === 'Enter') onPick(sel);
+          else if (e.key === 'Escape') close();
+        }, true);
+        wrap.addEventListener('mousedown', (e) => { if (e.target === wrap) close(); else e.preventDefault(); });
+        box.append(head, hint, list);
+        wrap.append(box);
+        document.body.append(wrap);
+        wrap.focus();
+        paint();
       });
     },
 
@@ -188,6 +244,41 @@
     api.showToast(`Uploaded "${result.name}" to SpeechDrop room ${result.room}`);
   }
 
+  function formatTime(ms) {
+    const d = new Date(ms);
+    return Number.isFinite(d.getTime())
+      ? d.toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })
+      : 'unknown time';
+  }
+
+  async function browse(api) {
+    const u = ui();
+    const ctx = { browse: true, room: '' };
+    try {
+      const raw = await u.prompt('SpeechDrop room code', api.storage.get('lastRoom') || '');
+      if (raw == null) return;
+      const room = normalizeRoom(raw);
+      ctx.room = room;
+      if (!room) return api.showToast(`"${String(raw).trim()}" doesn't look like a SpeechDrop room code.`);
+      const files = await runJob(api, '/speechdrop/list', { room }, u.sleep);
+      if (!files.length) return api.showToast(`Room ${room} has no files yet.`);
+      api.storage.set('lastRoom', room);
+      const items = files.map((f) => ({ label: f.name, detail: formatTime(f.ctime) }));
+      await u.showList(`SpeechDrop room ${room}`, items, async (i) => {
+        const f = files[i];
+        api.showToast(`Opening "${f.name}"…`);
+        try {
+          const r = await runJob(api, '/speechdrop/open', { room, index: f.index, name: f.name }, u.sleep);
+          api.showToast(`Opened "${r.name}" in ${r.app === 'CardMirror' ? 'CardMirror' : 'your default app'}`);
+        } catch (err) {
+          api.showToast(message(err.message, { ...ctx, name: f.name }));
+        }
+      });
+    } catch (err) {
+      api.showToast(message(err.message, ctx));
+    }
+  }
+
   window.__registerCardMirrorPlugin && window.__registerCardMirrorPlugin({
     id: ID,
     name: 'Debate Uploader',
@@ -215,6 +306,13 @@
         keywords: ['speechdrop', 'upload', 'file', 'drop'],
         defaultKey: null,
         run: (api) => uploadToSpeechDrop(api, 'pick'),
+      },
+      {
+        id: `${ID}.sdBrowse`,
+        label: 'Browse SpeechDrop room…',
+        keywords: ['speechdrop', 'browse', 'open', 'download', 'room'],
+        defaultKey: null,
+        run: (api) => browse(api),
       },
       {
         id: `${ID}.setFolder`,

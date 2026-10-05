@@ -2,13 +2,13 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
-import { mkdtemp, readFile, writeFile, access } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, access, chmod } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-let fakeSD, helper, bridgeDir, session, sendDir;
+let fakeSD, helper, bridgeDir, session, sendDir, downloadDir, openLog;
 const received = [];
 
 before(async () => {
@@ -18,6 +18,17 @@ before(async () => {
       res.setHeader('Set-Cookie', ['vertx-web.session=s1; Path=/', 'XSRF-TOKEN=tok123; Path=/']);
       return res.end('<html>');
     }
+    if (req.method === 'GET' && req.url === '/room1/index') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(received.map((r, i) => ({ name: r.name, ctime: i }))));
+    }
+    const media = req.method === 'GET' && req.url.match(/^\/media\/room1\/(\d+)\/(.+)$/);
+    if (media) {
+      const r = received[Number(media[1])];
+      if (!r || r.name !== decodeURIComponent(media[2])) { res.writeHead(404); return res.end(); }
+      return res.end(r.text);
+    }
+    if (req.method === 'GET' && req.url.endsWith('/index')) { res.writeHead(404); return res.end('[]'); }
     if (req.method === 'GET') { res.writeHead(302, { Location: '/' }); return res.end(); }
     const chunks = [];
     for await (const c of req) chunks.push(c);
@@ -37,8 +48,15 @@ before(async () => {
   bridgeDir = await mkdtemp(join(tmpdir(), 'bridge-'));
   sendDir = await mkdtemp(join(tmpdir(), 'send-'));
   await writeFile(join(sendDir, 'Send 1AC.docx'), 'docx-bytes');
+  downloadDir = await mkdtemp(join(tmpdir(), 'dl-'));
+  openLog = join(downloadDir, 'open.log');
+  const opener = join(downloadDir, 'fake-open.sh');
+  await writeFile(opener, `#!/bin/sh\nprintf '%s|' "$@" >> '${openLog}'\necho >> '${openLog}'\n`);
+  await chmod(opener, 0o755);
   helper = spawn(process.execPath, [join(ROOT, 'helper.mjs')], {
-    env: { ...process.env, DEBATE_UPLOADER_BRIDGE_DIR: bridgeDir, DEBATE_UPLOADER_SD_BASE: `http://127.0.0.1:${fakeSD.address().port}` },
+    env: { ...process.env, DEBATE_UPLOADER_BRIDGE_DIR: bridgeDir, DEBATE_UPLOADER_SD_BASE: `http://127.0.0.1:${fakeSD.address().port}`,
+      DEBATE_UPLOADER_SD_MEDIA: `http://127.0.0.1:${fakeSD.address().port}/media/`, DEBATE_UPLOADER_DOWNLOAD_DIR: downloadDir,
+      DEBATE_UPLOADER_OPENER: opener },
     stdio: 'ignore',
   });
   const sessionPath = join(bridgeDir, 'debate-uploader.session.json');
@@ -89,6 +107,32 @@ test('upload newest .docx from a folder end to end', async () => {
 test('bad room code finishes as a no_room job error', async () => {
   const start = await call('/speechdrop/upload', { room: 'nope1', file: { name: 'a.txt', base64: '' } });
   assert.deepEqual(await waitJob(start.body.job), { state: 'error', message: 'no_room' });
+});
+
+test('list a room: newest first with SpeechDrop positions', async () => {
+  const start = await call('/speechdrop/list', { room: 'room1' });
+  const done = await waitJob(start.body.job);
+  assert.deepEqual(done.result.map((f) => [f.index, f.name]), [[1, 'Send 1AC.docx'], [0, 'pick.txt']]);
+  const missing = await waitJob((await call('/speechdrop/list', { room: 'nope1' })).body.job);
+  assert.deepEqual(missing, { state: 'error', message: 'no_room' });
+});
+
+test('open: .docx downloads to <dir>/<room>/ and opens in CardMirror; .txt opens in default app', async () => {
+  const docx = await waitJob((await call('/speechdrop/open', { room: 'room1', index: 1, name: 'Send 1AC.docx' })).body.job);
+  const docxPath = join(downloadDir, 'room1', 'Send 1AC.docx');
+  assert.deepEqual(docx, { state: 'done', result: { name: 'Send 1AC.docx', path: docxPath, app: 'CardMirror' } });
+  assert.equal(await readFile(docxPath, 'utf8'), 'docx-bytes');
+  const txt = await waitJob((await call('/speechdrop/open', { room: 'room1', index: 0, name: 'pick.txt' })).body.job);
+  assert.equal(txt.result.app, 'default');
+  const lines = (await readFile(openLog, 'utf8')).trim().split('\n');
+  assert.deepEqual(lines, [`-b|com.cardmirror.app|${docxPath}|`, `${join(downloadDir, 'room1', 'pick.txt')}|`]);
+});
+
+test('open: same file again reuses the path; a name not in the room is "removed"', async () => {
+  const again = await waitJob((await call('/speechdrop/open', { room: 'room1', index: 1, name: 'Send 1AC.docx' })).body.job);
+  assert.equal(again.result.path, join(downloadDir, 'room1', 'Send 1AC.docx'));
+  const gone = await waitJob((await call('/speechdrop/open', { room: 'room1', index: 1, name: '../../evil.docx' })).body.job);
+  assert.deepEqual(gone, { state: 'error', message: 'removed' });
 });
 
 test('SIGTERM removes the session file but keeps identity', async () => {
