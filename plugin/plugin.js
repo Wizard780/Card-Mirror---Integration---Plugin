@@ -243,6 +243,11 @@ textarea.du-input{resize:vertical;min-height:3.4em}
 .du-pane-meta{margin:0 0 12px;font-size:.82rem;color:var(--pmd-c-text-muted)}
 .du-cite-title{font-weight:600;margin-bottom:2px}
 @media (max-width:640px){.du-split{grid-template-columns:1fr;grid-template-rows:minmax(0,2fr) minmax(0,3fr)}.du-split .du-list{border-right:0;border-bottom:1px solid var(--pmd-c-divider)}}
+.du-tally{display:grid;grid-template-columns:max-content minmax(0,1fr) max-content;gap:4px 14px;margin:0}
+.du-tally .du-n,.du-tally .du-rec{color:var(--pmd-c-text-muted);font-variant-numeric:tabular-nums}
+.du-round{margin:6px 0 0;font-size:.85rem;color:var(--pmd-c-text-secondary)}
+.du-link{font:inherit;padding:0;border:0;background:none;color:var(--pmd-c-accent);cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+.du-link:focus-visible{outline:2px solid var(--pmd-c-accent);outline-offset:2px}
 .du-btn:disabled{opacity:.5;cursor:default}
 .du-btn:disabled:hover{background:var(--pmd-c-bg)}
 `;
@@ -258,6 +263,39 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     }
     for (const kid of kids) if (kid) n.append(kid);
     return n;
+  }
+
+  // "What they run": tally the parsed reports per side. Each argument counts
+  // once per round, with the record of the rounds it was read in.
+  const reported = (r) => !!(r.parsed && (r.parsed.own.length || r.parsed.final.length));
+  const record = (rs) => {
+    const w = rs.filter((r) => r.parsed && r.parsed.result === 'W').length;
+    const l = rs.filter((r) => r.parsed && r.parsed.result === 'L').length;
+    return w + l ? `${w}-${l}` : '';
+  };
+  function tally(rounds, pick) {
+    const m = new Map();
+    for (const r of rounds) {
+      const seen = new Set();
+      for (const name of r.parsed[pick]) {
+        const key = name.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (!m.has(key)) m.set(key, { name, rounds: [] });
+        m.get(key).rounds.push(r);
+      }
+    }
+    return [...m.values()]
+      .map((e) => ({ name: e.name, count: e.rounds.length, record: record(e.rounds) }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  }
+  function summarize(rounds, sideLabels) {
+    return ['A', 'N'].map((side) => {
+      const all = rounds.filter((r) => r.side === side);
+      if (!all.length) return null;
+      const read = all.filter(reported);
+      return { key: side, side, label: sideLabels[side], total: all.length, read: read.length, record: record(all), own: tally(read, 'own'), final: tally(read, 'final') };
+    }).filter(Boolean);
   }
 
   function ensureStyle() {
@@ -533,31 +571,48 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         const split = el('div', { class: 'du-split' }, [list, pane]);
         d.body.remove();
         if (d.dialog.insertBefore) d.dialog.insertBefore(split, d.foot); else d.dialog.append(split);
+        if (spec.round) {
+          // Scouting from a Tabroom pairing: the round, and a paradigm link per judge.
+          const text = (t) => el('span', { textContent: t });
+          const line = el('p', { class: 'du-round', data: { field: 'round' } }, [text(spec.round.text)]);
+          if (spec.round.judges.length) {
+            line.append(text(` · Judge${spec.round.judges.length > 1 ? 's' : ''}: `));
+            spec.round.judges.forEach((j, i) => {
+              if (i) line.append(text(', '));
+              line.append(spec.onParadigm
+                ? el('button', { type: 'button', class: 'du-link', textContent: j, title: `Open ${j}'s paradigm on Tabroom`, onclick: () => spec.onParadigm(j) })
+                : text(j));
+            });
+          }
+          d.head.append(line);
+        }
         d.head.append(tabs);
-        let tab = 'rounds';
-        const sel = { rounds: 0, cites: 0 };
+        const sideLabels = { A: 'Aff', N: 'Neg', ...(spec.sideLabels || {}) };
+        const TABS = [...(spec.rounds.some(reported) ? [['summary', 'Summary']] : []), ['rounds', 'Rounds'], ['cites', 'Cites']];
+        let tab = TABS[0][0];
+        const sel = { summary: 0, rounds: 0, cites: 0 };
         // Filters apply to both tabs.
         const filter = { tournament: '', side: '' };
         const matches = (it) => (!filter.tournament || it.tournament === filter.tournament) && (!filter.side || it.side === filter.side);
         const filtering = () => !!(filter.tournament || filter.side);
-        const items = () => spec[tab].filter(matches);
+        const items = () => (tab === 'summary' ? summarize(spec.rounds.filter(matches), sideLabels) : spec[tab].filter(matches));
         const tournaments = [...new Set([...spec.rounds, ...spec.cites].map((it) => it.tournament).filter(Boolean))];
         const tournSel = el('select', { class: 'du-input', data: { field: 'filter-tournament' }, attrs: { 'aria-label': 'Filter by tournament' } });
         tournSel.append(new Option('All tournaments', ''));
         for (const t of tournaments) tournSel.append(new Option(t, t));
-        tournSel.addEventListener('change', () => { filter.tournament = tournSel.value; sel.rounds = 0; sel.cites = 0; render(); });
+        tournSel.addEventListener('change', () => { filter.tournament = tournSel.value; sel.rounds = 0; sel.cites = 0; sel.summary = 0; render(); });
         const sideSeg = el('div', { class: 'du-seg', data: { field: 'filter-side' }, attrs: { role: 'group', 'aria-label': 'Filter by side' } });
         const sideBtns = [['', 'All'], ['A', (spec.sideLabels || {}).A || 'Aff'], ['N', (spec.sideLabels || {}).N || 'Neg']].map(([v, text]) => {
           const b = el('button', { type: 'button', textContent: text, data: { value: v } });
-          b.addEventListener('click', () => { filter.side = v; sel.rounds = 0; sel.cites = 0; render(); });
+          b.addEventListener('click', () => { filter.side = v; sel.rounds = 0; sel.cites = 0; sel.summary = 0; render(); });
           sideSeg.append(b);
           return b;
         });
         const filters = el('div', { class: 'du-filters' }, [tournSel, sideSeg]);
         d.head.append(filters);
         const current = () => items()[sel[tab]];
-        const tabBtns = [['rounds', 'Rounds'], ['cites', 'Cites']].map(([key, text]) => {
-          const b = el('button', { type: 'button', textContent: `${text} (${spec[key].length})`, data: { value: key }, attrs: { role: 'tab' } });
+        const tabBtns = TABS.map(([key, text]) => {
+          const b = el('button', { type: 'button', textContent: text, data: { value: key }, attrs: { role: 'tab' } });
           b.addEventListener('click', () => { tab = key; render(); });
           tabs.append(b);
           return b;
@@ -567,7 +622,22 @@ textarea.du-input{resize:vertical;min-height:3.4em}
           pane.textContent = '';
           const it = current();
           if (!it) {
-            pane.append(el('div', { class: 'du-empty', textContent: tab === 'rounds' ? 'No rounds disclosed yet.' : 'No cite entries yet.' }));
+            pane.append(el('div', { class: 'du-empty', textContent: tab === 'cites' ? 'No cite entries yet.' : 'No rounds disclosed yet.' }));
+            return;
+          }
+          if (tab === 'summary') {
+            const speech = (n, kind) => `${n}${it.side === 'A' ? 'A' : 'N'}${kind}`;
+            const list = (entries, none) => (entries.length
+              ? el('div', { class: 'du-tally' }, entries.flatMap((e) => [
+                el('span', { class: 'du-n', textContent: `${e.count}×` }), el('span', { textContent: e.name }), el('span', { class: 'du-rec', textContent: e.record }),
+              ]))
+              : el('p', { class: 'du-pre du-muted', textContent: none }));
+            pane.append(
+              el('h2', { class: 'du-pane-title', textContent: it.label }),
+              el('p', { class: 'du-pane-meta', textContent: [`${it.read} of ${plural(it.total, 'round')} with a readable report`, it.record && `${it.record} where reported`].filter(Boolean).join(' · ') }),
+              ...section(`Case (${speech(1, 'C')})`, [list(it.own, 'Not named in their reports.')]),
+              ...section(`Last speech (${speech(2, 'R')})`, [list(it.final, 'Not named in their reports.')]),
+            );
             return;
           }
           if (tab === 'rounds') {
@@ -618,16 +688,18 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         const render = () => {
           tabBtns.forEach((b) => {
             const key = b.dataset.value;
-            const shown = spec[key].filter(matches).length;
-            const total = spec[key].length;
-            b.textContent = `${key === 'rounds' ? 'Rounds' : 'Cites'} (${filtering() ? `${shown} of ${total}` : total})`;
+            const shown = key === 'summary' ? 0 : spec[key].filter(matches).length;
+            const total = key === 'summary' ? 0 : spec[key].length;
+            if (key !== 'summary') b.textContent = `${key === 'rounds' ? 'Rounds' : 'Cites'} (${filtering() ? `${shown} of ${total}` : total})`;
             b.setAttribute('aria-selected', key === tab ? 'true' : 'false');
           });
           sideBtns.forEach((b) => b.setAttribute('aria-pressed', b.dataset.value === filter.side ? 'true' : 'false'));
           list.textContent = '';
           rows = items().map((it, i) => {
             // Two lines: what (tournament / cite title) on top, the specifics underneath.
-            const [top, ...rest] = tab === 'rounds' ? it.label.split(' · ') : [it.label, it.detail];
+            const [top, ...rest] = tab === 'rounds' ? it.label.split(' · ')
+              : tab === 'summary' ? [it.label, plural(it.total, 'round'), it.record].filter(Boolean)
+                : [it.label, it.detail];
             const row = el('div', { class: `du-row${tab === 'rounds' && !it.hasFile ? ' du-dim' : ''}`, attrs: { role: 'option' } }, [
               el('span', { class: 'du-row-text' }, [
                 el('span', { class: 'du-row-main', textContent: top, title: it.label }),
@@ -640,8 +712,9 @@ textarea.du-input{resize:vertical;min-height:3.4em}
             return row;
           });
           if (!items().length) {
-            const what = tab === 'rounds' ? 'rounds' : 'cites';
-            list.append(el('div', { class: 'du-empty', textContent: filtering() && spec[tab].length ? `No ${what} match these filters.` : 'Nothing here yet.' }));
+            const what = tab === 'cites' ? 'cites' : 'rounds';
+            const any = spec[tab === 'cites' ? 'cites' : 'rounds'].length;
+            list.append(el('div', { class: 'du-empty', textContent: filtering() && any ? `No ${what} match these filters.` : 'Nothing here yet.' }));
           }
           select(Math.min(sel[tab], Math.max(items().length - 1, 0)));
         };
@@ -656,7 +729,12 @@ textarea.du-input{resize:vertical;min-height:3.4em}
           const n = items().length;
           if (e.key === 'ArrowDown' && n) { e.preventDefault(); select(Math.min(sel[tab] + 1, n - 1)); }
           else if (e.key === 'ArrowUp' && n) { e.preventDefault(); select(Math.max(sel[tab] - 1, 0)); }
-          else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); tab = e.key === 'ArrowRight' ? 'cites' : 'rounds'; render(); }
+          else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+            e.preventDefault();
+            const i = TABS.findIndex(([k]) => k === tab) + (e.key === 'ArrowRight' ? 1 : -1);
+            tab = TABS[Math.max(0, Math.min(TABS.length - 1, i))][0];
+            render();
+          }
           // Enter opens only when the dialog itself has focus; on a focused button it presses that button.
           else if (e.key === 'Enter' && tab === 'rounds' && e.target === d.dialog) { e.preventDefault(); const it = current(); if (it && it.hasFile) spec.onOpen(it.key); }
         });
@@ -691,6 +769,12 @@ textarea.du-input{resize:vertical;min-height:3.4em}
   };
 
   const ui = () => window.__debateUploaderUI || domUI;
+
+  // Tabroom gives judges as last names ("Habib,Patel,Sortland"). Paradigms need a
+  // Tabroom login, so they open in the browser, where the user is signed in.
+  const openExternal = () => window.electronAPI && window.electronAPI.openExternal;
+  const judgeNames = (judge) => String(judge ?? '').split(',').map((j) => j.trim()).filter(Boolean);
+  const paradigmUrl = (name) => `https://www.tabroom.com/index/paradigm.mhtml?search_first=&search_last=${encodeURIComponent(name)}`;
 
   const openedToast = (r) => (r.app === 'finder'
     ? `Saved "${r.name}" and showed it in Finder (not opened: unusual file type).`
@@ -851,8 +935,10 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     try {
       const { current, rounds } = await runJob(api, '/tabroom/rounds', {}, u.sleep);
       if (!rounds.length) return api.showToast('No rounds. Is your Tabroom account linked to your student record?');
+      const open = openExternal();
       const items = rounds.map((r, i) => ({
         key: r.id ?? i,
+        judges: judgeNames(r.judge),
         label: `${r.tournament} · ${r.round}`,
         detail: [
           r.side && `${r.side} vs ${r.opponent || 'TBA'}`,
@@ -860,7 +946,9 @@ textarea.du-input{resize:vertical;min-height:3.4em}
           r.start_time ? formatTime(Date.parse(r.start_time)) : '',
         ].filter(Boolean).join(' · '),
       }));
-      const view = u.showList(current ? 'Tabroom: current rounds' : 'Tabroom: recent rounds', items, () => {}, { hint: 'Esc to close', stacked: true });
+      const onPick = (it) => { if (open) for (const j of it.judges) open(paradigmUrl(j)); };
+      const hint = open ? 'Enter or click opens the judge\'s paradigm · Esc to close' : 'Esc to close';
+      const view = u.showList(current ? 'Tabroom: current rounds' : 'Tabroom: recent rounds', items, onPick, { hint, stacked: true });
       await view.closed;
     } catch (err) {
       api.showToast(message(err.message, { tabroom: true }));
@@ -1021,7 +1109,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     return cl;
   }
 
-  async function openTeamPage(api, u, cl, team, ctx) {
+  async function openTeamPage(api, u, cl, team, ctx, pairing) {
     const data = await runJob(api, '/caselist/team', { caselist: cl.name, school: team.school, team: team.team }, u.sleep);
     const sl = sideLabelsFor(cl);
     const citesByRound = new Map();
@@ -1045,21 +1133,28 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         cites: citesByRound.get(r.id) || [],
         tournament: displayTournament(r.tournament),
         side: r.side,
+        parsed: r.parsed || null,
       };
     });
     const cites = data.cites.map((c) => ({
       key: c.id, label: c.title || 'Untitled', text: c.cites, tournament: displayTournament(c.tournament), side: c.side,
       detail: [displayTournament(c.tournament), roundName(c.round)].filter(Boolean).join(' · '),
     }));
-    const openExternal = window.electronAPI && window.electronAPI.openExternal;
+    const open = openExternal();
+    const ourSide = pairing && sideNorm(pairing.side);
     await u.teamPage({
       title: team.label,
       subtitle: `${cl.label} · ${plural(rounds.length, 'round')} · ${cites.length} cite ${cites.length === 1 ? 'entry' : 'entries'}`,
       rounds,
       cites,
       sideLabels: sl,
+      round: pairing ? {
+        text: [pairing.tournament, roundName(pairing.round), ourSide && `you're ${sl[ourSide]}`, pairing.start_time && formatTime(Date.parse(pairing.start_time))].filter(Boolean).join(' · '),
+        judges: judgeNames(pairing.judge),
+      } : null,
+      onParadigm: open ? (name) => open(paradigmUrl(name)) : null,
       pageUrl: `https://opencaselist.com/${cl.name}/${team.school}/${team.team}`,
-      onViewOnline: openExternal ? (url) => openExternal(url) : null,
+      onViewOnline: open ? (url) => open(url) : null,
       onOpen: async (key) => {
         const r = data.rounds.find((x) => x.id === key);
         if (!r || !r.opensource) return;
@@ -1111,7 +1206,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         if (i == null) return;
         team = found.candidates[i];
       }
-      await openTeamPage(api, u, cl, team, ctx);
+      await openTeamPage(api, u, cl, team, ctx, round);
     } catch (err) {
       api.showToast(message(err.message, ctx));
     }

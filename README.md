@@ -56,7 +56,9 @@ Uploads are never retried automatically. If a toast says to check the room, look
 - **Log in to Tabroom…**: email, then password (hidden). The helper trades them for a session token and keeps
   only the token in macOS Keychain (service `debate-uploader`). The password is never saved or logged.
 - **Show my Tabroom rounds**: current rounds (or your last 10 if no tournament is live): tournament, round,
-  side, opponent, judge, start time.
+  side, opponent, judge, start time. **Enter** (or click) on a round opens each judge's paradigm search on
+  tabroom.com in your browser. Tabroom only shows paradigms when you're logged in there, and it only gives
+  judges' last names, so pick the right person from the search.
 - **Log out of Tabroom**: deletes the stored token.
 
 If the list is always empty, link your Tabroom account to your student record on tabroom.com.
@@ -81,7 +83,14 @@ before uploading again. Requires **Log in to Tabroom…** first.
   the one closer to Tabroom's school name wins; if it's still unclear you pick (debater names shown).
 - **Search the caselist…**: pick a caselist (yours first), then a school and a team from type-to-filter lists.
 
-The team page lists their **Rounds** (newest first; rounds with only cites are greyed) and **Cites**. Selecting a
+The team page opens on **Summary** ("what they run") when their round reports can be read: for each side, the
+arguments in their first constructive (1AC / 1NC) and what they went for in their last speech (2AR / 2NR), with how
+many rounds each appeared in and the record in those rounds. It follows the tournament and side filters, so pick a
+tournament to see what they ran there. It's built from free-text reports, so it says how many rounds had a
+readable one; teams that write "All" or nothing show less. Scouting from Tabroom also shows your pairing above the
+tabs (round, your side, time) with each judge's name linking to their paradigm.
+
+The team page also lists their **Rounds** (newest first; rounds with only cites are greyed) and **Cites**. Selecting a
 round shows its tournament, round, side, opponent, judge, upload date, file, the full round report and that round's
 cites. Filter by **tournament** (dropdown) and **side** (All / Pro / Con) above the list; both tabs follow the filters
 and show "x of y" counts. **Enter** or **Open doc** downloads the doc to `~/Downloads/Caselist/<caselist>/<school>-<team>/` and opens it

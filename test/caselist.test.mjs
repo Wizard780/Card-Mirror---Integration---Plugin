@@ -139,13 +139,13 @@ test('getTeam returns rounds newest first and cites, shaped', async () => {
   const f = fake({
     '/caselists/hspf26/schools/Lexington/teams/AlHu/rounds': { body: [
       { round_id: 1, side: 'A', tournament: '01---Yale', round: '2', opponent: 'X', judge: 'J', report: 'r1', opensource: null, video: null, updated_at: '2026-09-20 10:00:00' },
-      { round_id: 2, side: 'N', tournament: '03---Glenbrooks', round: '3', opponent: 'Y', judge: 'K', report: 'r2', opensource: 'hspf26/Lexington/AlHu/a.docx', video: null, updated_at: '2026-10-04 10:00:00' },
+      { round_id: 2, side: 'N', tournament: '03---Glenbrooks', round: '3', opponent: 'Y', judge: 'K', report: '1NC - Econ, Midterms\n2NR - Econ\n[W]', opensource: 'hspf26/Lexington/AlHu/a.docx', video: null, updated_at: '2026-10-04 10:00:00' },
     ] },
     '/caselists/hspf26/schools/Lexington/teams/AlHu/cites': { body: [{ cite_id: 7, round_id: 2, title: '1NC', cites: 'Smith 24', side: 'N', tournament: '03---Glenbrooks', round: '3' }] },
   });
   const t = await getTeam('TOK', 'hspf26', 'Lexington', 'AlHu', f.opts);
   assert.deepEqual(t.rounds.map((r) => r.id), [2, 1]);
-  assert.deepEqual(t.rounds[0], { id: 2, side: 'N', tournament: '03---Glenbrooks', round: '3', opponent: 'Y', judge: 'K', report: 'r2', opensource: 'hspf26/Lexington/AlHu/a.docx', video: null, updated: '2026-10-04 10:00:00' });
+  assert.deepEqual(t.rounds[0], { id: 2, side: 'N', tournament: '03---Glenbrooks', round: '3', opponent: 'Y', judge: 'K', report: '1NC - Econ, Midterms\n2NR - Econ\n[W]', opensource: 'hspf26/Lexington/AlHu/a.docx', video: null, updated: '2026-10-04 10:00:00', parsed: { own: ['Econ', 'Midterms'], final: ['Econ'], result: 'W' } });
   assert.deepEqual(t.cites, [{ id: 7, roundId: 2, title: '1NC', cites: 'Smith 24', side: 'N', tournament: '03---Glenbrooks', round: '3' }]);
 });
 

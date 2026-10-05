@@ -937,3 +937,80 @@ test('speed: no sleep before the first status check; the helper answers when the
   assert.equal(slept, 0, 'no fixed 1 s sleep any more');
   assert.equal(h.toasts.at(-1), 'Uploaded "a.docx" to SpeechDrop room abc12');
 });
+
+// ---------------------------------------------------------------- What they run + paradigms
+const withExternal = async (fn) => {
+  const opened = [];
+  const saved = window.electronAPI;
+  window.electronAPI = { openExternal: (url) => { opened.push(url); } };
+  try { await fn(opened); } finally { window.electronAPI = saved; }
+};
+
+test('tabroom rounds: Enter on a round opens each judge\'s paradigm search in the browser', async () => {
+  await withExternal(async (opened) => {
+    const h = harness({ responses: [ok({ ok: true, job: 'j' }), ok({ state: 'done', result: { current: true, rounds: [
+      { id: 9, tournament: 'Glenbrooks', round: 'Octas', side: 'Neg', opponent: 'Lexington AB', judge: 'Habib,Patel, Sortland', start_time: null },
+    ] } })] });
+    let shown;
+    window.__debateUploaderUI.showList = (title, items, onPick, opts) => { shown = { items, onPick, opts }; return { closed: Promise.resolve(), update() {} }; };
+    await cmd('tabroomRounds').run(h.api);
+    assert.match(shown.opts.hint, /paradigm/);
+    shown.onPick(shown.items[0]);
+    assert.deepEqual(opened, ['Habib', 'Patel', 'Sortland'].map((j) => `https://www.tabroom.com/index/paradigm.mhtml?search_first=&search_last=${j}`));
+  });
+});
+
+test('scout: the team page shows your pairing, and each judge links to their paradigm', async () => {
+  await withExternal(async (opened) => {
+    const pairing = { current: true, rounds: [{ ...ONE_ROUND.rounds[0], judge: 'Lee,Van Dyke' }] };
+    const h = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': pairing, '/caselist/scout': SCOUT_HIT, '/caselist/team': TEAM } });
+    await cmd('caselistScout').run(h.api);
+    const p = h.pages[0];
+    assert.deepEqual(p.round, { text: "Glenbrooks · Round 4 · you're Pro", judges: ['Lee', 'Van Dyke'] });
+    p.onParadigm('Van Dyke');
+    assert.deepEqual(opened, ['https://www.tabroom.com/index/paradigm.mhtml?search_first=&search_last=Van%20Dyke']);
+  });
+  const search = scoutHarness({ choose: [0, 0], results: { '/caselist/caselists': LISTS['/caselist/caselists'], '/caselist/schools': [{ name: 'Lexington', label: 'Lexington' }], '/caselist/teams': [{ name: 'AlHu', label: 'Lexington AlHu' }], '/caselist/team': TEAM } });
+  await cmd('caselistSearch').run(search.api);
+  assert.equal(search.pages[0].round, null, 'searching has no pairing');
+});
+
+test('DOM team page summary: tallies their case and last speech per side, respects filters, opens first', async () => {
+  const dom = fakeDom();
+  const saved = { document: globalThis.document, Option: globalThis.Option, ui: window.__debateUploaderUI };
+  globalThis.document = dom.doc; globalThis.Option = dom.Option;
+  const R = (id, tournament, side, own, final, result) => ({ ...TEAM.rounds[0], id, tournament, side, round: String(id), parsed: { own, final, result } });
+  const team = { rounds: [
+    R(41, '03 -- Yale', 'A', ['Efficiency'], ['Efficiency'], 'W'),
+    R(42, '03 -- Yale', 'N', ['Econ', 'Midterms'], ['Midterms'], 'L'),
+    R(43, '02 -- Opener', 'N', ['econ', 'Econ'], ['Econ'], 'W'),
+    R(44, '02 -- Opener', 'N', [], [], null),
+  ], cites: [] };
+  const h = scoutHarness({ storage: { caselistTarget: TARGET }, results: { '/tabroom/rounds': ONE_ROUND, '/caselist/scout': SCOUT_HIT, '/caselist/team': team } });
+  delete window.__debateUploaderUI;
+  try {
+    const running = cmd('caselistScout').run(h.api);
+    for (let i = 0; i < 300 && !dom.all(dom.doc.body).some((n) => n.dataset.field === 'pane'); i++) await new Promise((r) => setTimeout(r, 20));
+    const dialog = dom.all(dom.doc.body).find((n) => typeof n.className === 'string' && n.className.startsWith('du-dialog'));
+    const tabs = () => dom.byField('tabs').children;
+    const rows = () => dom.byField('list').children.filter((n) => n.className.startsWith('du-row'));
+    const pane = () => dom.all(dom.byField('pane')).map((n) => n.textContent).filter(Boolean).join('|');
+    assert.deepEqual(tabs().map((b) => b.textContent), ['Summary', 'Rounds (4)', 'Cites (0)']);
+    assert.equal(tabs()[0].getAttribute('aria-selected'), 'true', 'summary opens first');
+    assert.match(dom.all(dom.byField('round')).map((n) => n.textContent).join(''), /Round 4 · you're Pro · Judge: Lee/);
+    assert.equal(rows().length, 2);
+    assert.match(pane(), /^Pro\|1 of 1 round with a readable report · 1-0 where reported\|Case \(1AC\)\|1×\|Efficiency\|1-0\|Last speech \(2AR\)/);
+    dialog.dispatch('keydown', { key: 'ArrowDown' });
+    assert.match(pane(), /Con\|2 of 3 rounds with a readable report · 1-1 where reported\|Case \(1NC\)\|2×\|Econ\|1-1\|1×\|Midterms\|0-1\|Last speech \(2NR\)\|1×\|Econ\|1-0\|1×\|Midterms\|0-1/);
+    const tourn = dom.byField('filter-tournament');
+    tourn.value = 'Opener'; tourn.dispatch('change');
+    assert.equal(rows().length, 1, 'no Pro rounds at the Opener');
+    assert.match(pane(), /Con\|1 of 2 rounds .*\|1×\|Econ\|1-0/);
+    dialog.dispatch('keydown', { key: 'ArrowRight' });
+    assert.equal(tabs()[1].getAttribute('aria-selected'), 'true');
+    dialog.dispatch('keydown', { key: 'Escape' });
+    await running;
+  } finally {
+    globalThis.document = saved.document; globalThis.Option = saved.Option; window.__debateUploaderUI = saved.ui;
+  }
+});
