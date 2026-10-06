@@ -70,12 +70,25 @@
         case 'bad_recipients': return 'Check the To list: one or more addresses look wrong.';
         case 'too_large': return 'The doc is over 20 MB, too big for Gmail.';
         case 'smtp_unreachable':
+        case 'smtp_closed':
         case 'smtp_timeout': return "Couldn't reach Gmail. Nothing was sent; check your connection.";
+        case 'newest_changed': return 'The newest send doc changed after the form opened. Nothing was sent; run Email again to check it.';
         case 'send_unknown':
         case 'upload_unknown':
         case 'start_unknown':
+        case 'still_running':
         case 'unknown_job': return "Gmail didn't confirm. Check your Sent folder before sending again.";
         case 'keychain_failed': return "Couldn't use Keychain. Is it locked?";
+        default: break;
+      }
+    }
+    if (ctx.cardcheck) {
+      switch (code) {
+        case 'start_unknown':
+        case 'upload_unknown':
+        case 'unknown_job':
+        case 'still_running': return "Card Check stopped answering. Results so far are shown; run it again for the rest.";
+        case 'too_large': return 'This document is too big to check in one go.';
         default: break;
       }
     }
@@ -293,7 +306,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
 .du-st{flex:none;width:1.2em;text-align:center;font-weight:700}
 .du-st-matches{color:var(--pmd-c-success)}
 .du-st-differences{color:var(--pmd-c-warning)}
-.du-st-unverified,.du-st-unreachable,.du-st-no_link,.du-st-pending{color:var(--pmd-c-text-muted)}
+.du-st-unverified,.du-st-unreachable,.du-st-no_link,.du-st-pending,.du-st-skipped{color:var(--pmd-c-text-muted)}
 .du-issues{margin:0;padding-left:1.1em}
 .du-issues li+li{margin-top:6px}
 .du-btn:disabled{opacity:.5;cursor:default}
@@ -490,8 +503,13 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         let seq = 0;
         let timer = null;
         let closed = false;
+        let shownQuery = null; // the query the current items answer
+        let pending = null; // a debounced query not sent yet
         const done = () => { if (closed) return; closed = true; clearTimeout(timer); d.close(); resolve(); };
-        const pick = (how) => {
+        const pick = async (how) => {
+          // Enter right after typing: answer the new text first, never open a stale row.
+          if (pending !== null || shownQuery !== input.value) await run();
+          if (closed) return;
           const it = items[sel];
           if (!it) return;
           done();
@@ -528,16 +546,22 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         };
         const run = async () => {
           clearTimeout(timer);
+          pending = null;
           const mine = ++seq;
-          const r = await spec.onQuery(input.value);
+          const q = input.value;
+          const r = await spec.onQuery(q);
           if (closed || mine !== seq) return; // a newer query is on its way
+          // A refresh of the same query (still indexing) keeps the highlighted row.
+          const keep = q === shownQuery && items[sel] ? items[sel].key : undefined;
           items = r.items;
-          sel = 0;
+          const at = keep === undefined ? -1 : items.findIndex((it) => it.key === keep);
+          sel = at === -1 ? 0 : at;
+          shownQuery = q;
           status.set(r.status || '');
           render(r.empty);
           if (r.again) timer = setTimeout(run, 1500); // still indexing: refresh as it grows
         };
-        input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 120); });
+        input.addEventListener('input', () => { clearTimeout(timer); pending = input.value; timer = setTimeout(run, 120); });
         input.addEventListener('keydown', (e) => {
           if (e.key === 'ArrowDown' && items.length) { e.preventDefault(); sel = Math.min(sel + 1, items.length - 1); paint(); }
           else if (e.key === 'ArrowUp' && items.length) { e.preventDefault(); sel = Math.max(sel - 1, 0); paint(); }
@@ -730,8 +754,10 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         replySel.append(new Option('New email', ''));
         replies.forEach((r, i) => replySel.append(new Option(r.label, String(i))));
         const fresh = { to: to.value, subject: subject.value };
+        // "New email" has value '' (Number('') is 0, so it must never index the list).
+        const chosen = () => (replySel.value === '' ? null : replies[Number(replySel.value)] || null);
         replySel.addEventListener('change', () => {
-          const r = replies[Number(replySel.value)];
+          const r = chosen();
           to.value = r ? r.to.join(', ') : fresh.to;
           subject.value = r ? r.subject : fresh.subject;
         });
@@ -752,7 +778,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
           const bad = list.filter((x) => !/^[^\s@<>(),;:"]+@[^\s@<>(),;:"]+\.[A-Za-z]{2,}$/.test(x));
           if (!list.length) { err.textContent = 'Add at least one address.'; return; }
           if (bad.length) { err.textContent = `Not an email address: ${bad.join(', ')}`; return; }
-          const r = replies[Number(replySel.value)];
+          const r = chosen();
           done({ to: list, subject: subject.value.trim(), body: body.value, replyTo: r ? r.replyTo : null });
         };
         subject.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
@@ -853,6 +879,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         paintFiles();
 
         fill.addEventListener('change', () => {
+          if (fill.value === '') return; // "Enter manually" keeps what's typed (Number('') would be round 0)
           const c = spec.choices[Number(fill.value)];
           if (!c) return;
           tournament.value = c.fields.tournament;
@@ -1177,9 +1204,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
       }
       return ok(views.get(dom));
     }
-    // The view already recorded for an editor element (no caret nudge): for paste handling.
-    const peek = (dom) => { const v = dom && views.get(dom); return v && v.docView ? v : null; };
-    return { install, view, peek };
+    return { install, view };
   })();
 
   // ---------------------------------------------------------------- Copy into Google Docs / Word
@@ -1189,17 +1214,19 @@ textarea.du-input{resize:vertical;min-height:3.4em}
   const BOLD_TAG = 'data-du-bold';
   // The tag keeps the original style ("-" = none) so the paste back is byte-for-byte CardMirror's.
   function boldCopiedHTML(html) {
-    return String(html).replace(/<span\b([^>]*\bclass="[^"]*\bpmd-(?:emphasis|cite)\b[^"]*"[^>]*)>/g, (all, attrs) => {
+    // Exactly the class pmd-emphasis or pmd-cite (not pmd-cite-author). Function replacers
+    // throughout: "$&" in page CSS must stay literal.
+    return String(html).replace(/<span\b([^>]*\bclass="(?:[^"]*\s)?pmd-(?:emphasis|cite)(?:\s[^"]*)?"[^>]*)>/g, (all, attrs) => {
       if (attrs.includes(BOLD_TAG)) return all;
       const m = /\sstyle="([^"]*)"/.exec(attrs);
       if (!m) return `<span${attrs} style="font-weight: 700;" ${BOLD_TAG}="-">`;
       const css = m[1];
-      return `<span${attrs.replace(m[0], ` style="${css}${css && !/;\s*$/.test(css) ? ';' : ''} font-weight: 700;"`)} ${BOLD_TAG}="${css}">`;
+      return `<span${attrs.replace(m[0], () => ` style="${css}${css && !/;\s*$/.test(css) ? ';' : ''} font-weight: 700;"`)} ${BOLD_TAG}="${css}">`;
     });
   }
   function unboldCopiedHTML(html) {
     return String(html).replace(/<span\b([^>]*?)\sdata-du-bold="([^"]*)"([^>]*)>/g, (all, a, orig, b) => {
-      const attrs = `${a}${b}`.replace(/\sstyle="[^"]*"/, orig === '-' ? '' : ` style="${orig}"`);
+      const attrs = `${a}${b}`.replace(/\sstyle="[^"]*"/, () => (orig === '-' ? '' : ` style="${orig}"`));
       return `<span${attrs}>`;
     });
   }
@@ -1215,16 +1242,23 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     };
     document.addEventListener('copy', onCopy);
     document.addEventListener('cut', onCopy);
+    // Pasting our own copy back: swap in the original HTML and let the paste continue as a
+    // normal one, so ProseMirror still does its own checks (read-only docs, Paste and Match
+    // Style, node views) and nothing depends on reaching the editor's internals.
     document.addEventListener('paste', (e) => {
       const dt = e.clipboardData;
       const html = dt && dt.getData('text/html');
-      if (!html || !html.includes(BOLD_TAG)) return;
-      const dom = e.target && e.target.closest && e.target.closest('.ProseMirror');
-      const view = editor.peek(dom);
-      if (!view || typeof view.pasteHTML !== 'function') return; // falls back to CardMirror's own paste
+      if (!html || !html.includes(BOLD_TAG) || typeof DataTransfer !== 'function' || typeof ClipboardEvent !== 'function') return;
+      const target = e.target;
+      if (!target || !target.closest || !target.closest('.ProseMirror')) return;
+      let clean;
+      try {
+        clean = new DataTransfer();
+        for (const type of dt.types) if (type !== 'Files') clean.setData(type, type === 'text/html' ? unboldCopiedHTML(html) : dt.getData(type));
+      } catch { return; } // leave the paste alone
       e.preventDefault();
-      e.stopPropagation();
-      view.pasteHTML(unboldCopiedHTML(html), e);
+      e.stopImmediatePropagation();
+      target.dispatchEvent(new ClipboardEvent('paste', { clipboardData: clean, bubbles: true, cancelable: true }));
     }, true);
   }
 
@@ -1256,7 +1290,11 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     const folder = String(raw).trim();
     if (!folder) return;
     remember(api, 'sendDocFolder', folder);
-    api.showToast(`Send doc folder set to ${folder}`);
+    // The plugin's settings gear wins when it has a value (plugins can't change it).
+    const gear = String(api.settings.get('sendDocFolder') || '').trim();
+    api.showToast(gear && gear !== folder
+      ? `Saved, but the plugin settings gear says ${gear}, and that one is used. Change or clear it there.`
+      : `Send doc folder set to ${folder}`);
   }
 
   let busy = false;
@@ -1494,7 +1532,8 @@ textarea.du-input{resize:vertical;min-height:3.4em}
       // Login problems stop here (the upload would fail too); anything else falls back to manual entry.
       if (['not_logged_in', 'login_expired', 'keychain_failed'].includes(err.message)) throw err;
     }
-    const draft = await drafting;
+    // The draft is a bonus: open the form after at most 3 s more, with or without it.
+    const draft = await Promise.race([drafting, u.sleep(3000).then(() => null)]);
     // Name the actual newest send doc in the form, so a public upload is never a surprise.
     let newest = null;
     let newestErr = 'no_folder';
@@ -1618,7 +1657,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         judges: judgeNames(pairing.judge),
       } : null,
       onParadigm: open ? (name) => open(paradigmUrl(name)) : null,
-      pageUrl: `https://opencaselist.com/${cl.name}/${team.school}/${team.team}`,
+      pageUrl: `https://opencaselist.com/${[cl.name, team.school, team.team].map(encodeURIComponent).join('/')}`,
       onViewOnline: open ? (url) => open(url) : null,
       onOpen: async (key) => {
         const r = data.rounds.find((x) => x.id === key);
@@ -1761,6 +1800,14 @@ textarea.du-input{resize:vertical;min-height:3.4em}
   }
 
   async function markCards(api) {
+    try {
+      await markCardsFlow(api);
+    } catch {
+      api.showToast("Couldn't mark the cards. Click into your document and try again.");
+    }
+  }
+
+  async function markCardsFlow(api) {
     const u = ui();
     const view = u.editorView ? await u.editorView() : await editor.view(u.sleep);
     if (!view || !view.state.schema.marks.font_color) return api.showToast("Couldn't reach the editor. Click into your document, then run Mark cards again.");
@@ -1770,7 +1817,8 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     const wanted = await u.pickCards({
       title: 'Mark cards',
       subtitle: `${info && info.docTitle ? `${info.docTitle} · ` : ''}checked cards turn red`,
-      cards: cards.map((c) => ({ label: c.tag, sub: c.cite, group: c.group, checked: c.marked, partial: c.partial })),
+      // Checked = has red. A partly red card starts checked; unchecking it clears the red.
+      cards: cards.map((c) => ({ label: c.tag, sub: c.cite, group: c.group, checked: c.marked || c.partial, partial: c.partial })),
     });
     if (!wanted) return;
     // Positions may have moved if the doc changed meanwhile; the cards must still line up.
@@ -1778,7 +1826,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     if (now.length !== cards.length || now.some((c, i) => c.tag !== cards[i].tag)) {
       return api.showToast('The cards changed while the list was open. Run Mark cards again.');
     }
-    const r = applyMarks(view, now.map((c, i) => ({ ...c, marked: cards[i].marked })), wanted);
+    const r = applyMarks(view, now.map((c, i) => ({ ...c, marked: cards[i].marked || cards[i].partial })), wanted);
     const parts = [r.marked && `marked ${plural(r.marked, 'card')}`, r.unmarked && `unmarked ${plural(r.unmarked, 'card')}`].filter(Boolean);
     if (parts.length) {
       const text = parts.join(', ');
@@ -1828,8 +1876,8 @@ textarea.du-input{resize:vertical;min-height:3.4em}
   // "Glenbrooks · Round 3 · University AS vs Cranbrook FZ", from the current Tabroom pairing.
   async function chainSubject(api, u) {
     try {
-      const { rounds } = await runJob(api, '/tabroom/rounds', {}, u.sleep);
-      const r = rounds.find((x) => x.opponent) || null;
+      const { current, rounds } = await runJob(api, '/tabroom/rounds', {}, u.sleep);
+      const r = current ? rounds.find((x) => x.opponent) || null : null; // between tournaments: no stale round
       if (!r) return '';
       const us = (api.storage.get('caselistTarget') || {}).teamLabel;
       return [r.tournament, roundName(r.round), us ? `${us} vs ${r.opponent}` : `vs ${r.opponent}`].filter(Boolean).join(' · ');
@@ -1842,6 +1890,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     if (busy) return api.showToast('An upload is already in progress.');
     const u = ui();
     const ctx = { email: true };
+    let sending = false;
     try {
       let from = (await call(api, '/gmail/status', {})).email;
       if (!from) {
@@ -1874,14 +1923,16 @@ textarea.du-input{resize:vertical;min-height:3.4em}
       if (!values) return;
       remember(api, 'emailChain', { to: values.to, subject: values.subject });
       remember(api, 'emailBody', values.body);
+      if (busy) return api.showToast('An upload is already in progress. Send again when it finishes.');
       busy = true;
+      sending = true;
       api.showToast(`Sending "${newest.name}"…`);
-      const r = await runJob(api, '/gmail/send', { to: values.to, subject: values.subject, text: values.body, replyTo: values.replyTo, folder }, u.sleep);
+      const r = await runJob(api, '/gmail/send', { to: values.to, subject: values.subject, text: values.body, replyTo: values.replyTo, folder, expectName: newest.name }, u.sleep);
       api.showToast(`Sent "${r.name}" to ${r.recipients} ${r.recipients === 1 ? 'person' : 'people'}${r.reply ? ' (same thread)' : ''}.`);
     } catch (err) {
       api.showToast(message(err.message, ctx));
     } finally {
-      busy = false;
+      if (sending) busy = false; // only release the lock this command took
     }
   }
 
@@ -1893,7 +1944,9 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     unverified: ['?', "Couldn't verify (paywall, other version, or wrong link)"],
     unreachable: ['×', "Couldn't reach the source"],
     no_link: ['–', 'No link in cite'],
+    skipped: ['–', 'Not checked (only the first 400 cards are checked)'],
   };
+  const CHECK_LIMIT = 400; // the helper's cap per run
   let lastCheck = null; // { title, items } for "Show last Card Check results"
 
   // Each card's cite links and its body as runs, h = highlighted (read aloud).
@@ -1941,11 +1994,12 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     const text = CHECK[status][1] + (r && r.reason && status === 'unreachable' ? ` (${r.reason})` : '') + (notes.length ? ' · check highlighting' : '');
     return { key: card.key, label: card.tag, sub: card.cite, status, glyph: CHECK[status][0], statusText: text, issues: r ? r.issues : [], notes, url: r ? r.url : null, archived: !!(r && r.archived) };
   };
-  const checkSummary = (results, total) => {
+  const checkSummary = (results, total, all = total) => {
     const n = (s) => results.filter((r) => r && r.status === s).length;
     const done = results.filter(Boolean).length;
     const parts = [[n('matches'), 'match'], [n('differences'), 'with differences'], [n('unverified') + n('unreachable'), "couldn't check"], [n('no_link'), 'no link']].filter(([k]) => k).map(([k, w]) => `${k} ${w}`);
-    return `${done < total ? `Checked ${done} of ${total} · ` : ''}${parts.join(' · ') || 'Starting…'}`;
+    const over = all > total ? ` · ${all - total} not checked (over ${total})` : '';
+    return `${done < total ? `Checked ${done} of ${total} · ` : ''}${parts.join(' · ') || 'Starting…'}${over}`;
   };
 
   function goToCard(api, view, tag, key) {
@@ -1986,19 +2040,21 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     const info = typeof api.docInfo === 'function' ? api.docInfo() : null;
     const title = `Card Check${info && info.docTitle ? `: ${info.docTitle}` : ''}`;
     let results = [];
-    const items = () => cards.map((c, i) => checkItem(c, results[i]));
+    const checked = cards.slice(0, CHECK_LIMIT);
+    const SKIPPED = { status: 'skipped', issues: [], qualifiers: [] };
+    const items = () => cards.map((c, i) => checkItem(c, i < CHECK_LIMIT ? results[i] : SKIPPED));
     await showResults(api, view, title, items(), async (ctl) => {
       try {
-        const body = { cards: cards.map(({ key, cite, urls, runs }) => ({ key, cite, urls, runs })) };
+        const body = { cards: checked.map(({ key, cite, urls, runs }) => ({ key, cite, urls, runs })) };
         const final = await runJob(api, '/cardcheck/run', body, u.sleep, {
           maxPolls: 900,
-          onProgress: (p) => { results = p.results || []; ctl.update(items(), checkSummary(results, cards.length)); },
+          onProgress: (p) => { results = p.results || []; ctl.update(items(), checkSummary(results, checked.length, cards.length)); },
         });
         results = final.results;
-        lastCheck = { title, subtitle: checkSummary(results, cards.length), items: items(), view };
+        lastCheck = { title, subtitle: checkSummary(results, checked.length, cards.length), items: items(), view };
         ctl.update(lastCheck.items, lastCheck.subtitle);
       } catch (err) {
-        ctl.update(items(), message(err.message, { evidence: true }));
+        ctl.update(items(), message(err.message, { cardcheck: true }));
       }
     });
   }
@@ -2040,12 +2096,16 @@ textarea.du-input{resize:vertical;min-height:3.4em}
 
   // Best effort: once CardMirror shows the opened file, scroll to the card's tag.
   // Needs the doc's id, which only the active doc in this window exposes.
-  async function jumpToCard(api, name, quote, approxPos) {
+  // `before` is docInfo() from before the open: a same-named doc that was already active
+  // isn't the new one, so wait (a while) for the active doc to change first.
+  async function jumpToCard(api, name, quote, approxPos, before) {
     if (typeof api.jumpToSource !== 'function' || typeof api.docInfo !== 'function' || !quote) return false;
     const titles = [name, name.replace(/\.docx$/i, '')];
+    const wasActive = before && before.docId && titles.includes(before.docTitle);
     for (let i = 0; i < 20; i++) {
       const info = api.docInfo();
-      if (info && info.docId && titles.includes(info.docTitle)) {
+      const changed = !before || !info || info.docId !== before.docId;
+      if (info && info.docId && titles.includes(info.docTitle) && (changed || (wasActive && i >= 10))) {
         const source = `cmsrc1.${b64url(JSON.stringify({ docId: info.docId, docTitle: info.docTitle, headingId: null, anchor: { quote, prefix: '', suffix: '', approxPos } }))}`;
         try { return !!(await api.jumpToSource(source)).ok; } catch { return false; }
       }
@@ -2056,9 +2116,10 @@ textarea.du-input{resize:vertical;min-height:3.4em}
 
   async function openEvidence(api, card) {
     try {
+      const before = typeof api.docInfo === 'function' ? api.docInfo() : null;
       const r = await call(api, '/evidence/open', { path: card.path, ordinal: card.ordinal });
       if (r.opened === false) return api.showToast(`Couldn't open "${r.name}".`);
-      const jumped = await jumpToCard(api, r.name, r.quote, r.approxPos);
+      const jumped = await jumpToCard(api, r.name, r.quote, r.approxPos, before);
       api.showToast(jumped ? `Opened "${r.name}" at "${short(card.tag)}"` : `Opened "${r.name}". The card: "${short(card.tag)}"`);
     } catch (err) {
       api.showToast(message(err.message, { evidence: true }));
@@ -2092,6 +2153,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
             const r = await call(api, '/evidence/search', { query: q, limit: 60 });
             return {
               items: r.results.map((c) => ({
+                key: `${c.path}#${c.ordinal}`,
                 card: c,
                 label: c.tag,
                 sub: c.cite || 'Analytic',
@@ -2116,7 +2178,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
 
   try { editor.install(); } catch { /* marking just reports it can't reach the editor */ }
   try { installClipboardFix(); } catch { /* copies stay as CardMirror makes them */ }
-  window.__debateUploaderClipboard = { boldCopiedHTML, unboldCopiedHTML }; // for tests
+  if (window.__debateUploaderTest) window.__debateUploaderClipboard = { boldCopiedHTML, unboldCopiedHTML }; // only when tests ask
 
   window.__registerCardMirrorPlugin && window.__registerCardMirrorPlugin({
     id: ID,

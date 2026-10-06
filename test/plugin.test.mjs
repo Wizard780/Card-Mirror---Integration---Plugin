@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 let def;
 before(async () => {
-  globalThis.window = { __registerCardMirrorPlugin: (d) => { def = d; } };
+  globalThis.window = { __debateUploaderTest: true, __registerCardMirrorPlugin: (d) => { def = d; } };
   await import('../plugin/plugin.js');
 });
 
@@ -1121,6 +1121,37 @@ test('DOM search: typing queries the helper, arrows move, Enter opens, ⌘Enter 
   }
 });
 
+test('DOM search: an indexing refresh keeps the highlighted row; Enter right after typing opens a row of the new text', async () => {
+  const dom = fakeDom();
+  const saved = { document: globalThis.document, Option: globalThis.Option, ui: window.__debateUploaderUI };
+  globalThis.document = dom.doc; globalThis.Option = dom.Option;
+  let scans = 2; // still indexing for the first answers, so the dialog re-queries
+  const h = evidenceHarness({ search: (b) => ({ results: b.query ? [{ ...CARD, ordinal: 1, tag: `A ${b.query}` }, { ...CARD, ordinal: 2, tag: `B ${b.query}` }] : [], ...IDLE, scanning: b.query ? scans-- > 0 : false }) });
+  delete window.__debateUploaderUI;
+  try {
+    const running = cmd('evidenceSearch').run(h.api);
+    for (let i = 0; i < 300 && !dom.byField('query'); i++) await new Promise((r) => setTimeout(r, 20));
+    const input = dom.byField('query');
+    const rows = () => dom.byField('list').children.filter((n) => n.className.startsWith('du-row'));
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    input.value = 'grid'; input.dispatch('input');
+    await wait(400);
+    input.dispatch('keydown', { key: 'ArrowDown' });
+    assert.equal(rows()[1].getAttribute('aria-selected'), 'true');
+    await wait(1800); // one refresh lands
+    assert.equal(rows()[1].getAttribute('aria-selected'), 'true', 'refresh kept the selection');
+    input.value = 'econ'; input.dispatch('input');
+    input.dispatch('keydown', { key: 'Enter' }); // before the 120 ms debounce fires
+    await wait(400);
+    await running;
+    const opened = h.calls.find((c) => c.route === '/evidence/open');
+    assert.deepEqual(opened.body, { path: '/ev/Grid.docx', ordinal: 1 }, 'the first row of the "econ" results');
+    assert.ok(h.calls.some((c) => c.route === '/evidence/search' && c.body.query === 'econ'));
+  } finally {
+    globalThis.document = saved.document; globalThis.Option = saved.Option; window.__debateUploaderUI = saved.ui;
+  }
+});
+
 // ---------------------------------------------------------------- Mark cards
 // A ProseMirror-shaped fake: positions, descendants, nodesBetween, marks, transactions.
 function pm(name, kids = [], text = null, marks = []) {
@@ -1180,7 +1211,7 @@ function markHarness(view, pick) {
   return h;
 }
 
-test('mark cards: lists every card under its block, checked when already all red, partly red noted', async () => {
+test('mark cards: lists every card under its block, checked when it has any red, partly red noted', async () => {
   const view = fakeView(MARK_DOC());
   const h = markHarness(view, () => null);
   await cmd('markCards').run(h.api);
@@ -1188,8 +1219,8 @@ test('mark cards: lists every card under its block, checked when already all red
   assert.equal(spec.title, 'Mark cards');
   assert.equal(spec.subtitle, 'Grid Aff · checked cards turn red');
   assert.deepEqual(spec.cards.map((c) => [c.label, c.sub, c.group, c.checked, c.partial]), [
-    ['Grid is resilient', 'Avila 12', 'AT: Grid', false, true],
-    ['Grid collapses', 'Chen 25', 'AT: Grid', false, true],
+    ['Grid is resilient', 'Avila 12', 'AT: Grid', true, true],
+    ['Grid collapses', 'Chen 25', 'AT: Grid', true, true],
     ['Blackouts are rare', 'Niiler 19', 'AT: Grid', false, false],
     ['Recession causes war', 'Royal 10', 'Econ', false, false],
   ]);
@@ -1207,8 +1238,8 @@ test('mark cards: checked cards turn wholly red, unchecked ones lose only marker
   const fixed = pm('doc', doc.kids);
   const view = fakeView(fixed);
   const h = markHarness(view, (spec) => {
-    assert.deepEqual(spec.cards.map((c) => c.checked), [true, false, false]);
-    return [false, true, false];
+    assert.deepEqual(spec.cards.map((c) => c.checked), [true, false, true], 'C is partly red: checked');
+    return [false, true, true]; // C left as is keeps its partial red
   });
   await cmd('markCards').run(h.api);
   assert.equal(view.dispatched.length, 1);
@@ -1386,7 +1417,7 @@ test('email chain: subject from the Tabroom pairing, last chain prefilled, sends
   const spec = h.mailForms[0];
   assert.deepEqual([spec.from, spec.to, spec.subject], ['me@gmail.com', 'old@x.org', "Glenbrooks · Round 3 · St. Mark's AB vs Cranbrook FZ"]);
   assert.match(spec.attached, /^Send 1AC\.docx \(newest send doc/);
-  assert.deepEqual(h.calls.find((c) => c.route === '/gmail/send').body, { to: ['j@s.edu', 'o@x.org'], subject: "Glenbrooks · Round 3 · St. Mark's AB vs Cranbrook FZ", text: 'Speech doc attached.', replyTo: null, folder: '/send' });
+  assert.deepEqual(h.calls.find((c) => c.route === '/gmail/send').body, { to: ['j@s.edu', 'o@x.org'], subject: "Glenbrooks · Round 3 · St. Mark's AB vs Cranbrook FZ", text: 'Speech doc attached.', replyTo: null, folder: '/send', expectName: 'Send 1AC.docx' });
   assert.deepEqual(h.store.get('emailChain'), { to: ['j@s.edu', 'o@x.org'], subject: "Glenbrooks · Round 3 · St. Mark's AB vs Cranbrook FZ" });
   assert.equal(h.toasts.at(-1), 'Sent "Send 1AC.docx" to 2 people.');
 });
@@ -1426,7 +1457,7 @@ test('email chain: reply all to a recent email (everyone but me, its thread); th
   assert.equal(spec.replies.length, 1, 'emails with nobody else on them are not reply targets');
   assert.match(spec.replies[0].label, /^Re: Glenbrooks R3 chain · Opp One · /);
   assert.deepEqual(spec.replies[0].to, ['opp1@x.org', 'lee@school.edu', 'opp2@x.org']);
-  assert.deepEqual(h.calls.find((c) => c.route === '/gmail/send').body, { to: ['opp1@x.org', 'lee@school.edu', 'opp2@x.org'], subject: 'Re: Glenbrooks R3 chain', text: 'Here is the 1AC.', replyTo: { messageId: '<c2@x.org>', references: ['<c1@school.edu>'] }, folder: '/send' });
+  assert.deepEqual(h.calls.find((c) => c.route === '/gmail/send').body, { to: ['opp1@x.org', 'lee@school.edu', 'opp2@x.org'], subject: 'Re: Glenbrooks R3 chain', text: 'Here is the 1AC.', replyTo: { messageId: '<c2@x.org>', references: ['<c1@school.edu>'] }, folder: '/send', expectName: 'Send 1AC.docx' });
   assert.equal(h.store.get('emailBody'), 'Here is the 1AC.');
 
   const noInbox = mailHarness({ recent: new Error('imap_unreachable') });
@@ -1434,6 +1465,139 @@ test('email chain: reply all to a recent email (everyone but me, its thread); th
   assert.deepEqual(noInbox.mailForms[0].replies, []);
   assert.match(noInbox.mailForms[0].replyNote, /^Couldn't read your recent emails/);
   assert.ok(noInbox.calls.some((c) => c.route === '/gmail/send'), 'a new email still works');
+});
+
+test('mark cards: unchecking a partly red card clears its red', async () => {
+  const doc = pm('doc', [card(txt('C'), 'cite c', txt('blue', BLUE), txt('red', RED))]);
+  const view = fakeView(doc);
+  const h = markHarness(view, () => [false]);
+  await cmd('markCards').run(h.api);
+  assert.ok(view.calls.some((c) => c[0] === 'remove' && c[3] === 'ff0000'));
+  assert.equal(h.toasts.at(-1), 'Unmarked 1 card (⌘Z to undo)');
+});
+
+test('email chain: a send-doc change, a lost connection and a slow helper each say what happened', async () => {
+  for (const [code, want] of [['newest_changed', /changed after the form opened\. Nothing was sent/], ['smtp_closed', /^Couldn't reach Gmail/], ['still_running', /Check your Sent folder/]]) {
+    const h = mailHarness({ send: new Error(code) });
+    await cmd('emailChain').run(h.api);
+    assert.match(h.toasts.at(-1), want, code);
+  }
+});
+
+test('DOM email form: "New email" is a new thread even with recent emails; switching back restores the fields', async () => {
+  const dom = fakeDom();
+  const saved = { document: globalThis.document, Option: globalThis.Option, ui: window.__debateUploaderUI };
+  const recent = { me: 'me@gmail.com', messages: [{ messageId: '<c2@x.org>', subject: 'Re: R3 chain', from: 'opp1@x.org', fromName: 'Opp', to: ['lee@s.edu'], cc: [], date: 1, references: [] }] };
+  const h = mailHarness({ recent, storage: { emailChain: { to: ['old@x.org'], subject: 'Old' } } });
+  globalThis.document = dom.doc; globalThis.Option = dom.Option;
+  delete window.__debateUploaderUI; // drive the real DOM email form
+  try {
+    const running = cmd('emailChain').run(h.api);
+    for (let i = 0; i < 150 && !dom.doc.body.children.length; i++) await new Promise((r) => setTimeout(r, 20));
+    const reply = dom.byField('reply');
+    assert.equal(reply.value, '', 'starts on New email');
+    reply.value = '0'; reply.dispatch('change');
+    assert.equal(dom.byField('to').value, 'opp1@x.org, lee@s.edu');
+    reply.value = ''; reply.dispatch('change');
+    assert.equal(dom.byField('to').value, 'old@x.org', 'back to New email restores the prefilled To');
+    dom.button('Send').dispatch('click');
+    await running;
+    const sent = h.calls.find((c) => c.route === '/gmail/send').body;
+    assert.equal(sent.replyTo, null, 'New email never replies to the latest message');
+    assert.deepEqual(sent.to, ['old@x.org']);
+  } finally {
+    for (const n of dom.doc.body.children) n.remove();
+    globalThis.document = saved.document; globalThis.Option = saved.Option; window.__debateUploaderUI = saved.ui;
+  }
+});
+
+test('DOM form: going back to "Enter manually" keeps what was typed', async () => {
+  await withDom(async (dom) => {
+    const fill = dom.byField('fill');
+    fill.value = '0'; fill.dispatch('change');
+    dom.byField('opponent').value = 'Typed Opp';
+    fill.value = ''; fill.dispatch('change');
+    assert.equal(dom.byField('opponent').value, 'Typed Opp');
+  });
+});
+
+test('copy: only the exact pmd-cite / pmd-emphasis classes are bolded; "$&" in CSS survives the round trip', () => {
+  const { boldCopiedHTML, unboldCopiedHTML } = window.__debateUploaderClipboard;
+  const other = '<span class="pmd-cite-author">x</span><span class="a pmd-emphasis-like">y</span>';
+  assert.equal(boldCopiedHTML(other), other);
+  const html = '<span class="x pmd-cite" style="font-family: a$&b$\'c">z</span>';
+  const out = boldCopiedHTML(html);
+  assert.match(out, /style="font-family: a\$&b\$'c; font-weight: 700;"/);
+  assert.equal(unboldCopiedHTML(out), html);
+});
+
+test('search my files: a same-named doc that was already open is not the new one; the jump waits for the switch', async () => {
+  let n = 0;
+  const jumps = [];
+  // Before the open, a different "Grid" (d0) is active; the opened one (d1) shows up a bit later.
+  const h = evidenceHarness({ docInfo: () => (++n < 4 ? { docId: 'd0', docTitle: 'Grid' } : { docId: 'd1', docTitle: 'Grid' }), jump: async (src) => { jumps.push(src); return { ok: true }; } });
+  await cmd('evidenceSearch').run(h.api);
+  await h.searches[0].onOpen({ card: CARD });
+  const decoded = JSON.parse(Buffer.from(jumps[0].slice(7).replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+  assert.equal(decoded.docId, 'd1');
+});
+
+test('card check: only the first 400 cards are sent; the rest say "not checked"', async () => {
+  const many = pm('doc', Array.from({ length: 402 }, (_, i) => card(txt(`Tag ${i}`), `Cite ${i} https://x.org/${i}`, txt('Body text here.'))));
+  const view = fakeView(many);
+  const h = harness();
+  let sent;
+  h.api.flowPost = async (app, route, body) => {
+    const pr = h.prefsReply(route, body); if (pr) return pr;
+    if (route === '/cardcheck/run') { sent = body.cards; return ok({ ok: true, job: 'cc' }); }
+    if (route === '/job') return ok({ state: 'done', result: { results: sent.map((c) => ({ key: c.key, status: 'matches', issues: [], qualifiers: [] })) } });
+    return ok({ ok: true });
+  };
+  let last;
+  window.__debateUploaderUI.editorView = async () => view;
+  window.__debateUploaderUI.sleep = async () => {};
+  window.__debateUploaderUI.checkResults = () => ({ closed: Promise.resolve(), update: (items, sub) => { last = [items, sub]; } });
+  await cmd('cardCheck').run(h.api);
+  assert.equal(sent.length, 400);
+  assert.equal(last[0][399].status, 'matches');
+  assert.equal(last[0][400].status, 'skipped');
+  assert.match(last[1], /400 match · 2 not checked \(over 400\)$/);
+});
+
+test('email chain: between tournaments the subject is not a stale past round', async () => {
+  const h = mailHarness({ rounds: { current: false, rounds: [{ id: 1, tournament: 'Old Tourney', round: '6', side: 'A', opponent: 'X AB' }] }, storage: { emailChain: { to: ['a@b.org'], subject: 'Last chain' } } });
+  await cmd('emailChain').run(h.api);
+  assert.equal(h.mailForms[0].subject, 'Last chain');
+});
+
+test('caselist form: a report draft that never finishes does not hold the form', async () => {
+  const h = caselistHarness({ storage: { caselistTarget: TARGET, lastRoom: 'abc12', sendDocFolder: '/send' },
+    results: { '/tabroom/rounds': { current: false, rounds: [] } },
+    direct: { '/caselist/newest': { name: 'Send.docx', size: 5, mtime: 1 } } });
+  const plain = h.api.flowPost;
+  h.api.flowPost = async (app, route, body) => {
+    if (route === '/caselist/report-draft') return ok({ ok: true, job: 'slow' });
+    if (route === '/job' && body.id === 'slow') return new Promise(() => {}); // the helper never answers
+    return plain(app, route, body);
+  };
+  await cmd('caselistUpload').run(h.api);
+  assert.equal(h.forms.length, 1);
+  assert.equal(h.forms[0].fields.report, '');
+});
+
+test('team page link encodes the caselist, school and team', async () => {
+  const h = caselistHarness({ storage: { caselistTarget: TARGET }, results: { ...LISTS, '/caselist/schools': [{ name: "St Mark's", label: "St. Mark's" }], '/caselist/teams': [{ name: 'A#B', label: 'AB' }], '/caselist/team': { rounds: [], cites: [] } } });
+  let spec;
+  window.__debateUploaderUI.teamPage = async (x) => { spec = x; };
+  window.__debateUploaderUI.choose = async () => 0;
+  await cmd('caselistSearch').run(h.api);
+  assert.equal(spec.pageUrl, "https://opencaselist.com/hspf26/St%20Mark's/A%23B");
+});
+
+test('set send doc folder: when the settings gear has a different folder, the toast says the gear wins', async () => {
+  const h = harness({ settings: { sendDocFolder: '/gear' }, folderAnswer: '/typed' });
+  await cmd('setFolder').run(h.api);
+  assert.match(h.toasts.at(-1), /gear says \/gear, and that one is used/);
 });
 
 // ---------------------------------------------------------------- Copy into Google Docs / Word
