@@ -44,6 +44,12 @@ async function openSafely(path) {
     return { app, opened: false }; // saved, but the open step failed
   }
 }
+// Files from strangers get the "downloaded from the internet" flag, so Word, Pages and
+// Preview open them in their protected modes, like a browser download.
+async function quarantine(path) {
+  const hex = Math.floor(Date.now() / 1000).toString(16);
+  try { await run('/usr/bin/xattr', ['-w', 'com.apple.quarantine', `0081;${hex};Debate Uploader;`, path]); } catch { /* best effort */ }
+}
 // Evidence search: loaded on first use (≈0.5 GB for 250k cards), rescanned in the background.
 const evidence = createEvidenceIndex({ file: process.env.DEBATE_UPLOADER_EVIDENCE_FILE || join(homedir(), 'Library', 'Application Support', 'debate-uploader', 'evidence-index.json') });
 const cardsDir = process.env.DEBATE_UPLOADER_CARDS_DIR || join(homedir(), 'Downloads', 'Cards');
@@ -207,6 +213,7 @@ const routes = {
         if (!entry) throw new Error('removed');
         const bytes = await downloadFile({ room, index: entry.index, name: entry.name }, { mediaBase: sdMedia });
         const path = await saveUnique(join(downloadDir, room), entry.name, bytes);
+        await quarantine(path);
         const how = await openSafely(path);
         log('speechdrop open', room, entry.name, how.app, how.opened === false ? '(open failed)' : '');
         return { name: entry.name, path, ...how };
@@ -437,7 +444,7 @@ const routes = {
   }),
   // One email to the chain with the doc attached. replyTo = reply-all into that email's thread;
   // otherwise the same subject continues our own thread (In-Reply-To).
-  '/gmail/send': ({ to, subject, folder, file, text, replyTo }) => ({
+  '/gmail/send': ({ to, subject, folder, file, text, replyTo, expectName }) => ({
     ok: true,
     job: jobs.start(async () => {
       const g = await gmail.get();
@@ -445,6 +452,8 @@ const routes = {
       const list = [...new Set((Array.isArray(to) ? to : []).map((x) => String(x).trim()).filter(Boolean))];
       if (!list.length || list.length > 30 || !list.every(isEmail)) throw new Error('bad_recipients');
       const doc = await outgoing(file, folder);
+      // Send only the doc the form named; a newer save while it was open must not go out instead.
+      if (!file && expectName && doc.name !== expectName) throw new Error('newest_changed');
       if (doc.bytes.length > MAX_MAIL_BYTES) throw new Error('too_large');
       const subj = String(subject ?? '').trim() || doc.name.replace(/\.docx$/i, '');
       const threads = (await prefs.getAll()).emailThreads || {};
@@ -461,7 +470,8 @@ const routes = {
       await sendMail({ ...smtp, user: g.email, pass: g.appPassword }, { from: g.email, to: list, raw });
       log('gmail send', doc.name, `${list.length} recipients`, prior.length ? 'reply' : 'new thread');
       const keep = Object.fromEntries(Object.entries({ ...threads, [key]: [...prior, messageId].slice(-20) }).slice(-30));
-      await prefs.set('emailThreads', keep);
+      // The email is already out: a failed save must not report the send as failed.
+      try { await prefs.set('emailThreads', keep); } catch (err) { log('gmail thread save failed', err.message); }
       return { name: doc.name, recipients: list.length, reply: prior.length > 0 };
     }),
   }),
@@ -484,6 +494,7 @@ const routes = {
     if (!path || !rounds.some((r) => r.opensource === path)) throw new Error('removed');
     const { filename, bytes } = await downloadOpenSource(t, path, clOpts);
     const where = await saveUnique(join(caselistDir, dirSeg(caselist), `${dirSeg(school)}-${dirSeg(team)}`), filename, bytes);
+    await quarantine(where);
     const how = await openSafely(where);
     log('caselist open', caselist, school, team, filename, how.app, how.opened === false ? '(open failed)' : '');
     return { name: filename, path: where, ...how };
@@ -499,7 +510,7 @@ server.listen(0, '127.0.0.1', async () => {
 
 async function shutdown() {
   watcher.close();
-  await removeSession(bridgeDir);
+  await removeSession(bridgeDir, process.pid);
   process.exit(0);
 }
 process.on('SIGTERM', shutdown);

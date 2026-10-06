@@ -105,3 +105,37 @@ test('getSource falls back to the archived copy when the page is blocked', async
   const gone = await getSource('https://news.test/b', { fetchImpl: async () => ({ status: 404, type: 'text/html', body: Buffer.from('') }) });
   assert.equal(gone.error, 'http_404');
 });
+
+test('isPublicAddress sees IPv4 hidden in IPv6 (mapped hex, compatible, NAT64, 6to4) and the other local IPv6 ranges', () => {
+  for (const ip of ['::ffff:7f00:1', '::ffff:a9fe:a9fe', '::127.0.0.1', '::7f00:1', '64:ff9b::7f00:1', '64:ff9b:1::1', '2002:7f00:1::', '2002:c0a8:101::1', 'fec0::1', '2001::1', '2001:db8::1', '100::1', '1::2::3']) {
+    assert.equal(isPublicAddress(ip), false, ip);
+  }
+  for (const ip of ['::ffff:8.8.8.8', '64:ff9b::808:808', '2002:808:808::1', '2a00:1450:4001:81c::200e']) assert.equal(isPublicAddress(ip), true, ip);
+  assert.equal(new URL('http://[::ffff:127.0.0.1]/').hostname, '[::ffff:7f00:1]', 'the form a cite link arrives in');
+});
+
+test('htmlToText is linear on unclosed tags and still drops scripts, comments and svg', () => {
+  const t0 = Date.now();
+  htmlToText('<svg '.repeat(400000));
+  htmlToText('<!--'.repeat(400000));
+  assert.ok(Date.now() - t0 < 1000, 'hostile page parsed quickly');
+  assert.equal(htmlToText('a<script>x</script>b<!-- c -->d<SVG><path/></svg>e').replace(/\s+/g, ' ').trim(), 'a b d e');
+});
+
+test('verdict: a card with nothing to compare is unverified, never "matches"; the author check reads decoded text', () => {
+  assert.equal(verdict({ result: compare('', SOURCE), source: { textLower: 'x' }, cite: '' }).status, 'unverified');
+  const r = compare('Demand is growing seventeen times faster than the rest of the economy.', SOURCE);
+  assert.equal(verdict({ result: r, source: { textLower: "by sean o'brien" }, cite: 'O’Brien ’24 [Sean]' }).issues.some((i) => /isn't named/.test(i)), false);
+});
+
+test('safeFetch refuses a gzip bomb instead of inflating it', async () => {
+  const { gzipSync } = await import('node:zlib');
+  const bomb = gzipSync(Buffer.alloc(64 * 1024 * 1024));
+  const srv = createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'text/html', 'Content-Encoding': 'gzip' }); res.end(bomb); });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  try {
+    await assert.rejects(safeFetch(`http://127.0.0.1:${srv.address().port}/`, { allowPrivate: true, maxBytes: 1024 * 1024 }), /too_large/);
+  } finally {
+    srv.close();
+  }
+});

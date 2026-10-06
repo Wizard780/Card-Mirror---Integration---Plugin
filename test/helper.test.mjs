@@ -1,6 +1,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { createServer } from 'node:http';
 import net from 'node:net';
 import { mkdtemp, readFile, writeFile, access, chmod, mkdir, readdir } from 'node:fs/promises';
@@ -141,7 +142,7 @@ before(async () => {
   });
   await new Promise((r) => fakeCL.listen(0, '127.0.0.1', r));
 
-  // Fake `security`: stores the -w value in a file so tests can inspect it.
+  // Fake `security`: stores the value written with `-i … -X <hex>` in a file so tests can inspect it.
   keyStore = join(downloadDir, 'keychain.txt');
   const security = join(downloadDir, 'fake-security.sh');
   // One file per account, like separate Keychain items: caselist_token → keyStore, gmail → keyStore.gmail
@@ -151,7 +152,8 @@ A=caselist_token
 for arg in "$@"; do [ "$prev" = "-a" ] && A="$arg"; prev="$arg"; done
 [ "$A" != caselist_token ] && F="$F.$A"
 case "$1" in
-  add-generic-password) while [ $# -gt 0 ]; do [ "$1" = "-w" ] && printf '%s' "$2" > "$F"; shift; done ;;
+  -i) read -r line; A=$(printf '%s' "$line" | sed -n 's/.* -a \\([^ ]*\\).*/\\1/p'); F='${keyStore}'; [ "$A" != caselist_token ] && F="$F.$A"
+      printf '%s' "$line" | sed -n 's/.* -X \\([0-9a-f]*\\).*/\\1/p' | xxd -r -p > "$F" ;;
   find-generic-password) [ -f "$F" ] && cat "$F" && echo || exit 44 ;;
   delete-generic-password) rm -f "$F" ;;
 esac
@@ -308,6 +310,8 @@ test('open: .docx downloads to <dir>/<room>/ and opens in CardMirror; .txt opens
   assert.equal(txt.result.app, 'default');
   const lines = (await readFile(openLog, 'utf8')).trim().split('\n');
   assert.deepEqual(lines, [`-b|com.cardmirror.app|${docxPath}|`, `${join(downloadDir, 'room1', 'pick.txt')}|`]);
+  const { stdout } = await promisify(execFile)('/usr/bin/xattr', ['-p', 'com.apple.quarantine', docxPath]);
+  assert.match(stdout, /^0081;[0-9a-f]+;Debate Uploader;/, 'files from a room are marked as downloaded');
 });
 
 test('open: same file again reuses the path; a name not in the room is "removed"', async () => {
@@ -611,6 +615,10 @@ test('gmail: a wrong app password is never saved; the right one is; sends attach
   assert.match(r, /Subject: Re: Glenbrooks R3 chain\r\n/);
   assert.match(r, /In-Reply-To: <chain-1@school\.edu>\r\nReferences: <chain-1@school\.edu>\r\n/);
   assert.match(Buffer.from(r.split('Content-Transfer-Encoding: base64\r\n\r\n')[1].split('\r\n--')[0].replace(/\r\n/g, ''), 'base64').toString(), /^Our 1AC\.$/);
+
+  const mailsBefore = mail.length;
+  const changed = await waitJob((await call('/gmail/send', { to: ['a@b.org'], subject: 'x', folder: sendDir, expectName: 'Older 1AC.docx' })).body.job);
+  assert.deepEqual([changed.state, changed.message, mail.length], ['error', 'newest_changed', mailsBefore], 'only the doc the form named is sent');
 
   const badTo = await waitJob((await call('/gmail/send', { to: ['not an email'], subject: 'x', folder: sendDir })).body.job);
   assert.equal(badTo.message, 'bad_recipients');

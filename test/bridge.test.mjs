@@ -28,6 +28,15 @@ test('removeSession deletes only the session file and is idempotent', async () =
   assert.deepEqual((await readdir(dir)).sort(), [`${APP_ID}.json`]);
 });
 
+test('removeSession with a pid leaves a session another helper wrote', async () => {
+  const dir = await tmp();
+  await writeBridgeFiles(dir, { port: 1, token: 't', pid: 222, appVersion: '0.1.0' });
+  await removeSession(dir, 111);
+  assert.ok((await readdir(dir)).includes(`${APP_ID}.session.json`));
+  await removeSession(dir, 222);
+  assert.ok(!(await readdir(dir)).includes(`${APP_ID}.session.json`));
+});
+
 test('tokenMatches compares exactly and rejects non-strings', () => {
   assert.equal(tokenMatches('abc', 'abc'), true);
   assert.equal(tokenMatches('abd', 'abc'), false);

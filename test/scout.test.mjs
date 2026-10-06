@@ -46,3 +46,12 @@ test('pickTeam: one initials match wins; two schools → the better Tabroom scho
   assert.equal(none.match, null);
   assert.deepEqual(none.candidates.map((t) => t.team), ['AlBe', 'FoZh', 'FiZa'], 'no match: best-school teams first');
 });
+
+test('pickTeam: initials plus one shared word ("Lake") is a candidate, not a match; blank debater names do not crash', () => {
+  const lf = { school: 'LF', schoolLabel: 'Lake Forest', team: 'LFHM', label: 'Lake Forest HM', debaters: ['Hall', 'Moss'] };
+  const r = pickTeam('Lake Highland HM', [lf]);
+  assert.equal(r.match, null);
+  assert.deepEqual(r.candidates, [lf]);
+  assert.equal(pickTeam('Lake Forest HM', [lf]).match, lf);
+  assert.equal(pickTeam('X AB', [{ school: 's', schoolLabel: 'X', team: 't', debaters: [' ', 'B'] }]).match, null);
+});

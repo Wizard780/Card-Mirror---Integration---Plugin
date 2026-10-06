@@ -195,3 +195,19 @@ test('getTeam orders like openCaselist: newest tournament first, latest round fi
   const t = await getTeam('TOK', 'hspf26', 'S', 'T', f.opts);
   assert.deepEqual(t.rounds.map((r) => r.id), [4, 6, 3, 8, 2, 7, 1, 5]);
 });
+
+test('createRound: any 2xx is success; a redirect is "check the page" (never followed as a GET)', async () => {
+  const seen = [];
+  const reply = (status) => ({ fetchImpl: async (url, init) => { seen.push(init.redirect); return new Response(null, { status }); }, base: 'https://cl.test' });
+  assert.deepEqual(await createRound('TOK', TARGET, ROUND, reply(204)), { filename: '1NC.docx' });
+  await assert.rejects(createRound('TOK', TARGET, ROUND, reply(302)), /^Error: upload_unknown$/);
+  assert.deepEqual(seen, ['manual', 'manual']);
+});
+
+test('getTeam orders full elim names ("Quarterfinals", "Double Octafinals") after prelims', async () => {
+  const base = '/caselists/hspf26/schools/Lexington/teams/AlHu';
+  const rounds = ['Semifinals', '2', 'Double Octafinals', 'Quarterfinals', '1'].map((round, i) => ({ round_id: i, tournament: '03 -- X', side: 'A', round }));
+  const f = fake({ [`${base}/rounds`]: { body: rounds }, [`${base}/cites`]: { body: [] } });
+  const t = await getTeam('TOK', 'hspf26', 'Lexington', 'AlHu', f.opts);
+  assert.deepEqual(t.rounds.map((r) => r.round), ['Semifinals', 'Quarterfinals', 'Double Octafinals', '2', '1']);
+});

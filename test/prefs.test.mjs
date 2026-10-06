@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, stat, readFile } from 'node:fs/promises';
+import { mkdtemp, stat, readFile, chmod } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createPrefs, PREF_KEYS } from '../lib/prefs.mjs';
@@ -29,4 +29,14 @@ test('only known keys are accepted; null removes a key; a corrupt file reads as 
   await writeFile(file, '{not json');
   assert.deepEqual(await createPrefs(file).getAll(), {});
   assert.ok(!(await readFile(file, 'utf8')).includes('password'));
+});
+
+test('a failed write does not poison later writes', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'du-prefs-'));
+  const prefs = createPrefs(join(dir, 'prefs.json'));
+  await chmod(dir, 0o500);
+  await assert.rejects(prefs.set('lastRoom', 'a'));
+  await chmod(dir, 0o700);
+  await prefs.set('lastRoom', 'b');
+  assert.equal((await prefs.getAll()).lastRoom, 'b');
 });

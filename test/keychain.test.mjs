@@ -4,14 +4,15 @@ import { createKeychain } from '../lib/keychain.mjs';
 
 function fakeRun(impl) {
   const calls = [];
-  const run = async (bin, args) => { calls.push([bin, ...args]); return impl(args); };
+  const run = async (bin, args, opts) => { calls.push(opts && opts.input !== undefined ? [bin, ...args, opts.input] : [bin, ...args]); return impl(args); };
   return { run, calls };
 }
 
-test('set writes JSON under service debate-uploader / account caselist_token with -U', async () => {
+test('set writes JSON under service debate-uploader / account caselist_token with -U, via stdin as hex (never argv)', async () => {
   const f = fakeRun(() => ({ stdout: '' }));
   await createKeychain({ bin: '/sec', run: f.run }).set({ token: 'T', expires: '2026-10-11' });
-  assert.deepEqual(f.calls, [['/sec', 'add-generic-password', '-U', '-s', 'debate-uploader', '-a', 'caselist_token', '-w', '{"token":"T","expires":"2026-10-11"}']]);
+  const hex = Buffer.from('{"token":"T","expires":"2026-10-11"}').toString('hex');
+  assert.deepEqual(f.calls, [['/sec', '-i', `add-generic-password -U -s debate-uploader -a caselist_token -X ${hex}\n`]]);
 });
 
 test('get parses the stored JSON; missing, garbage or tokenless values are null', async () => {

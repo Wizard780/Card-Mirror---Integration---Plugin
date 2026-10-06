@@ -59,3 +59,10 @@ test('recentMessages: read-only look at All Mail headers, newest first; wrong pa
     assert.ok(inbox.seen.includes('A3 EXAMINE "INBOX"'));
   } finally { inbox.close(); }
 });
+
+test('decodeWords keeps the space after an encoded word; addresses ignore address-looking display names', () => {
+  assert.equal(decodeWords('=?UTF-8?Q?Caf=C3=A9?= round'), 'Café round');
+  assert.equal(decodeWords('=?UTF-8?Q?a?= =?UTF-8?Q?b?= c'), 'ab c');
+  assert.deepEqual(addresses('"john@gmail.com" <john@school.org>, jim@gmail.com <jim@s.org>, bob@y.org (Bob), "Doe, J" <jd@z.org>'), ['john@school.org', 'jim@s.org', 'bob@y.org', 'jd@z.org']);
+  assert.equal(parseHeaders('From: "john@gmail.com" <John@School.org>\r\nMessage-ID: <x@y>\r\n').from, 'john@school.org');
+});

@@ -105,3 +105,25 @@ test('symlinked folders are not followed; a missing folder just has no files', a
     assert.equal(ix.status().files, 0);
   } finally { await rm(f.root, { recursive: true, force: true }); }
 });
+
+test('a scan for different folders while one runs is queued, not dropped; concurrent load() waits for the saved index', async () => {
+  const f = await fixture();
+  try {
+    const other = join(f.root, 'other');
+    await mkdir(other);
+    await writeFile(join(other, 'K.docx'), docx([['Cap bad', 'Marx 1867']]));
+    const ix = createEvidenceIndex({ file: f.file });
+    const first = ix.scan([f.a]);
+    const second = ix.scan([f.a, other]); // user added a folder mid-scan
+    assert.deepEqual(ix.status().folders, [f.a, other]);
+    await Promise.all([first, second]);
+    assert.deepEqual(ix.status().folders, [f.a, other]);
+    assert.equal(ix.search('marx').length, 1);
+
+    const fresh = createEvidenceIndex({ file: f.file });
+    const [a, b] = await Promise.all([fresh.load().then(() => fresh.status().files), fresh.load().then(() => fresh.status().files)]);
+    assert.ok(a > 0 && a === b);
+  } finally {
+    await rm(f.root, { recursive: true, force: true });
+  }
+});

@@ -37,3 +37,8 @@ test('empty or junk reports parse to nothing', () => {
   assert.deepEqual(parseReport('bubble guppies', 'A'), { own: [], final: [], result: null });
   assert.deepEqual(parseReport('1AC - X', ''), { own: [], final: [], result: null });
 });
+
+test('a line starting "w/" is not a win', () => {
+  assert.equal(parseReport('w/ the perm\n1AC -- X', 'A').result, null);
+  assert.equal(parseReport('l/w?', 'A').result, null);
+});
