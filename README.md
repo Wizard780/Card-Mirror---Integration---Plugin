@@ -115,10 +115,11 @@ CardMirror update changes those, the command says it couldn't reach the editor i
 
 ## Emphasis in other programs
 
-CardMirror saves its **Emphasis** style with bold switched off (underline + box only), so in Word, Google Docs and
-Pages emphasized words look like plain underlining. The plugin fixes this on the way out: every .docx it sends
-(SpeechDrop, caselist, email chain) goes with Emphasis set to bold, keeping its underline and box. Nothing else in
-the file changes, and CardMirror still reads it as emphasis.
+CardMirror saves its **Emphasis** style with bold switched off, forced to Times New Roman, with complex-script
+italics, so in Word, Google Docs and Pages emphasized words look like serif (sometimes italic) underlining. The
+plugin fixes this on the way out: every .docx it sends (SpeechDrop, caselist, email chain) goes with Emphasis set to
+bold, in the document's own font, not italic, keeping its underline and box. Nothing else in the file changes, and
+CardMirror still reads it as emphasis.
 
 - **Make emphasis bold in newest send doc**: fixes the newest send doc in place, for sharing it any other way
   (flash drive, share.tabroom.com in a browser, AirDrop).

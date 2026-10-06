@@ -90,17 +90,29 @@ test('headingsOf lists pocket/hat/block headings in order with their levels', ()
   assert.deepEqual(headingsOf(buf), [{ level: 1, text: 'AFF' }, { level: 2, text: 'Grid' }, { level: 3, text: 'AT: Offshoring' }, { level: 3, text: 'Next block' }]);
 });
 
-test('boldEmphasis turns bold on in CardMirror\'s Emphasis style only; leaves everything else, and non-docx, alone', () => {
-  const CM = `<w:styles><w:style w:type="character" w:styleId="Emphasis"><w:name w:val="Emphasis"/><w:rPr><w:rFonts w:ascii="Times New Roman"/><w:b w:val="0"/><w:i w:val="0"/><w:sz w:val="22"/><w:u w:val="single"/><w:bdr w:val="single" w:sz="8" w:space="0" w:color="auto"/></w:rPr></w:style><w:style w:type="character" w:styleId="StyleUnderline"><w:rPr><w:b w:val="0"/><w:u w:val="single"/></w:rPr></w:style></w:styles>`;
+test('boldEmphasis: CardMirror\'s Emphasis becomes bold in the document\'s font with no italics; nothing else changes', () => {
+  const CM = `<w:styles><w:style w:type="character" w:styleId="Emphasis"><w:name w:val="Emphasis"/><w:rPr>
+      <w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman"/>
+      <w:b w:val="0"/>
+      <w:i w:val="0"/>
+      <w:iCs/>
+      <w:sz w:val="22"/>
+      <w:u w:val="single"/>
+      <w:bdr w:val="single" w:sz="8" w:space="0" w:color="auto"/>
+    </w:rPr></w:style><w:style w:type="character" w:styleId="StyleUnderline"><w:rPr><w:rFonts w:ascii="Times New Roman"/><w:b w:val="0"/><w:u w:val="single"/></w:rPr></w:style></w:styles>`;
   const buf = docx({ 'word/document.xml': DOC, 'word/styles.xml': CM });
   const out = boldEmphasis(buf);
   const styles = unzipEntry(readZip(out).get('word/styles.xml')).toString();
-  assert.match(styles, /w:styleId="Emphasis"><w:name w:val="Emphasis"\/><w:rPr><w:rFonts w:ascii="Times New Roman"\/><w:b\/><w:bCs\/><w:i w:val="0"\/><w:sz w:val="22"\/><w:u w:val="single"\/><w:bdr /);
-  assert.match(styles, /w:styleId="StyleUnderline"><w:rPr><w:b w:val="0"\/>/, 'underline style untouched');
+  const emph = /w:styleId="Emphasis">[\s\S]*?<\/w:style>/.exec(styles)[0];
+  assert.match(emph, /<w:b\/><w:bCs\/>/);
+  assert.match(emph, /<w:i w:val="0"\/>/);
+  assert.match(emph, /<w:u w:val="single"\/>[\s\S]*<w:bdr /, 'underline and box kept');
+  assert.doesNotMatch(emph, /rFonts|iCs|Times New Roman/, 'no forced font, no complex-script italics');
+  assert.match(styles, /w:styleId="StyleUnderline"><w:rPr><w:rFonts w:ascii="Times New Roman"\/><w:b w:val="0"\/>/, 'other styles untouched');
   assert.equal(unzipEntry(readZip(out).get('word/document.xml')).toString(), DOC);
-  assert.equal(boldEmphasis(out), out, 'already bold: unchanged');
+  assert.equal(boldEmphasis(out), out, 'already fixed: unchanged');
   const noRpr = docx({ 'word/document.xml': DOC, 'word/styles.xml': '<w:styles><w:style w:type="character" w:styleId="Emphasis"><w:name w:val="Emphasis"/></w:style></w:styles>' });
-  assert.match(unzipEntry(readZip(boldEmphasis(noRpr)).get('word/styles.xml')).toString(), /<w:rPr><w:b\/><w:bCs\/><\/w:rPr><\/w:style>/);
+  assert.match(unzipEntry(readZip(boldEmphasis(noRpr)).get('word/styles.xml')).toString(), /<w:rPr><w:b\/><w:bCs\/><w:i w:val="0"\/><\/w:rPr><\/w:style>/);
   const plain = docx({ 'word/document.xml': DOC, 'word/styles.xml': STYLES });
   assert.equal(boldEmphasis(plain), plain, 'no Emphasis style: unchanged');
   const notZip = Buffer.from('docx-bytes');

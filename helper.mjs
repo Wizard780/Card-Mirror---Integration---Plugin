@@ -21,7 +21,7 @@ import { buildMessage, newMessageId, sendMail, verifyLogin, isEmail } from './li
 import { recentMessages } from './lib/imap.mjs';
 import { readFile, stat, writeFile, rename } from 'node:fs/promises';
 
-const VERSION = '0.1.10';
+const VERSION = '0.1.11';
 const bridgeDir = process.env.DEBATE_UPLOADER_BRIDGE_DIR || defaultBridgeDir();
 const sdBase = process.env.DEBATE_UPLOADER_SD_BASE || SD_BASE;
 const sdMedia = process.env.DEBATE_UPLOADER_SD_MEDIA || SD_MEDIA;

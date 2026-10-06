@@ -628,7 +628,7 @@ test('bold emphasis: sent docs and the in-place fix turn CardMirror\'s Emphasis 
   const first = await call('/docx/bold-emphasis', { folder: dir });
   assert.deepEqual([first.body.name, first.body.changed], ['Send 2AC.docx', true]);
   const fixed = unzipEntry(readZip(await readFile(join(dir, 'Send 2AC.docx'))).get('word/styles.xml')).toString();
-  assert.match(fixed, /<w:b\/><w:bCs\/><w:u w:val="single"\/>/);
+  assert.match(fixed, /<w:b\/><w:bCs\/><w:i w:val="0"\/><w:u w:val="single"\/>/);
   assert.equal((await call('/docx/bold-emphasis', { folder: dir })).body.changed, false);
 });
 
