@@ -197,3 +197,12 @@ Tabroom email; never passwords) and the plugin restores it before each command.
 - "Uploader helper isn't running" → `launchctl kickstart gui/$(id -u)/debate-uploader`
 - Uninstall the helper: `launchctl bootout gui/$(id -u)/debate-uploader && rm ~/Library/LaunchAgents/com.debate-uploader.plist`
 - Run the tests: `node --test`
+
+## For the maintainer: how many people use it
+
+```bash
+npm run stats
+```
+
+Shows how many times each release's `plugin.js` was downloaded. CardMirror downloads it on every install and
+update, so this counts installs + updates, not people. The plugin and helper send nothing anywhere to be counted.
