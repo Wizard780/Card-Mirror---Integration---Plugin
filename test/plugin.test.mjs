@@ -1435,3 +1435,17 @@ test('email chain: reply all to a recent email (everyone but me, its thread); th
   assert.match(noInbox.mailForms[0].replyNote, /^Couldn't read your recent emails/);
   assert.ok(noInbox.calls.some((c) => c.route === '/gmail/send'), 'a new email still works');
 });
+
+// ---------------------------------------------------------------- Copy into Google Docs / Word
+test('copy: cite and emphasis get bold (tagged) for other apps; pasting back into CardMirror removes exactly that', () => {
+  const { boldCopiedHTML, unboldCopiedHTML } = window.__debateUploaderClipboard;
+  const html = '<p class="pmd-cite-para" style="font-size: 11pt"><span class="pmd-cite" style="font-size: 13pt">Galka Reczko ’9-17</span> [Aleksandra]</p>'
+    + '<p class="pmd-card-body"><span class="pmd-underline" style="font-size: 11pt; text-decoration: underline">Prime Minister</span> said <span class="pmd-emphasis" style="font-size: 11pt; text-decoration: underline; border: 1pt solid #333">most probable</span> <span class="pmd-emphasis">x</span></p>';
+  const out = boldCopiedHTML(html);
+  assert.match(out, /<span class="pmd-cite" style="font-size: 13pt; font-weight: 700;" data-du-bold="font-size: 13pt">Galka/);
+  assert.match(out, /<span class="pmd-emphasis" style="font-size: 11pt; text-decoration: underline; border: 1pt solid #333; font-weight: 700;" data-du-bold="font-size: 11pt; text-decoration: underline; border: 1pt solid #333">most probable/);
+  assert.match(out, /<span class="pmd-emphasis" style="font-weight: 700;" data-du-bold="-">x/);
+  assert.match(out, /<span class="pmd-underline" style="font-size: 11pt; text-decoration: underline">Prime/, 'underline is not bolded');
+  assert.equal(boldCopiedHTML(out), out, 'idempotent');
+  assert.equal(unboldCopiedHTML(out), html, 'pasting back restores CardMirror\'s own HTML exactly');
+});

@@ -123,6 +123,9 @@ CardMirror still reads it as emphasis.
 
 - **Make emphasis bold in newest send doc**: fixes the newest send doc in place, for sharing it any other way
   (flash drive, share.tabroom.com in a browser, AirDrop).
+- **Copy and paste**: copying from CardMirror into Google Docs or Word keeps cites and emphasis bold. The plugin adds
+  bold to those two in what you copy; when you paste the same text back into CardMirror it takes that bold out again,
+  so cards pasted within CardMirror are exactly as before. No command needed.
 
 ## Email chain (Gmail)
 

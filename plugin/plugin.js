@@ -1177,8 +1177,56 @@ textarea.du-input{resize:vertical;min-height:3.4em}
       }
       return ok(views.get(dom));
     }
-    return { install, view };
+    // The view already recorded for an editor element (no caret nudge): for paste handling.
+    const peek = (dom) => { const v = dom && views.get(dom); return v && v.docView ? v : null; };
+    return { install, view, peek };
   })();
+
+  // ---------------------------------------------------------------- Copy into Google Docs / Word
+  // CardMirror's clipboard HTML styles cite and emphasis with size/underline/box but no
+  // bold, so Google Docs and Word paste them unbolded. Add bold on copy (tagged), and take
+  // it back out when the same HTML is pasted into CardMirror, so nothing changes there.
+  const BOLD_TAG = 'data-du-bold';
+  // The tag keeps the original style ("-" = none) so the paste back is byte-for-byte CardMirror's.
+  function boldCopiedHTML(html) {
+    return String(html).replace(/<span\b([^>]*\bclass="[^"]*\bpmd-(?:emphasis|cite)\b[^"]*"[^>]*)>/g, (all, attrs) => {
+      if (attrs.includes(BOLD_TAG)) return all;
+      const m = /\sstyle="([^"]*)"/.exec(attrs);
+      if (!m) return `<span${attrs} style="font-weight: 700;" ${BOLD_TAG}="-">`;
+      const css = m[1];
+      return `<span${attrs.replace(m[0], ` style="${css}${css && !/;\s*$/.test(css) ? ';' : ''} font-weight: 700;"`)} ${BOLD_TAG}="${css}">`;
+    });
+  }
+  function unboldCopiedHTML(html) {
+    return String(html).replace(/<span\b([^>]*?)\sdata-du-bold="([^"]*)"([^>]*)>/g, (all, a, orig, b) => {
+      const attrs = `${a}${b}`.replace(/\sstyle="[^"]*"/, orig === '-' ? '' : ` style="${orig}"`);
+      return `<span${attrs}>`;
+    });
+  }
+  function installClipboardFix() {
+    if (typeof document === 'undefined' || !document.addEventListener) return;
+    const onCopy = (e) => {
+      // Runs after ProseMirror (it handles copy on the editor; this listens on the document).
+      const dt = e.clipboardData;
+      if (!dt || !e.target || !e.target.closest || !e.target.closest('.ProseMirror')) return;
+      const html = dt.getData('text/html');
+      if (!html || !/pmd-(emphasis|cite)/.test(html)) return;
+      try { dt.setData('text/html', boldCopiedHTML(html)); } catch { /* leave CardMirror's copy as is */ }
+    };
+    document.addEventListener('copy', onCopy);
+    document.addEventListener('cut', onCopy);
+    document.addEventListener('paste', (e) => {
+      const dt = e.clipboardData;
+      const html = dt && dt.getData('text/html');
+      if (!html || !html.includes(BOLD_TAG)) return;
+      const dom = e.target && e.target.closest && e.target.closest('.ProseMirror');
+      const view = editor.peek(dom);
+      if (!view || typeof view.pasteHTML !== 'function') return; // falls back to CardMirror's own paste
+      e.preventDefault();
+      e.stopPropagation();
+      view.pasteHTML(unboldCopiedHTML(html), e);
+    }, true);
+  }
 
   // Tabroom gives judges as last names ("Habib,Patel,Sortland"). Paradigms need a
   // Tabroom login, so they open in the browser, where the user is signed in.
@@ -2067,6 +2115,8 @@ textarea.du-input{resize:vertical;min-height:3.4em}
   }
 
   try { editor.install(); } catch { /* marking just reports it can't reach the editor */ }
+  try { installClipboardFix(); } catch { /* copies stay as CardMirror makes them */ }
+  window.__debateUploaderClipboard = { boldCopiedHTML, unboldCopiedHTML }; // for tests
 
   window.__registerCardMirrorPlugin && window.__registerCardMirrorPlugin({
     id: ID,
