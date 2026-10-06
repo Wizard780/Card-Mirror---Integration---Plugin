@@ -509,7 +509,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         const pick = async (how) => {
           // Enter right after typing: answer the new text first, never open a stale row.
           if (pending !== null || shownQuery !== input.value) await run();
-          if (closed) return;
+          if (closed || shownQuery !== input.value) return; // still not the typed text (a second Enter took over)
           const it = items[sel];
           if (!it) return;
           done();
@@ -1251,10 +1251,12 @@ textarea.du-input{resize:vertical;min-height:3.4em}
       if (!html || !html.includes(BOLD_TAG) || typeof DataTransfer !== 'function' || typeof ClipboardEvent !== 'function') return;
       const target = e.target;
       if (!target || !target.closest || !target.closest('.ProseMirror')) return;
+      const restored = unboldCopiedHTML(html);
+      if (restored === html) return; // nothing of ours to undo (also stops any re-dispatch loop)
       let clean;
       try {
         clean = new DataTransfer();
-        for (const type of dt.types) if (type !== 'Files') clean.setData(type, type === 'text/html' ? unboldCopiedHTML(html) : dt.getData(type));
+        for (const type of dt.types) if (type !== 'Files') clean.setData(type, type === 'text/html' ? restored : dt.getData(type));
       } catch { return; } // leave the paste alone
       e.preventDefault();
       e.stopImmediatePropagation();
