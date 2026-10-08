@@ -507,37 +507,37 @@ const routes = {
 
   '/caselist/search': ({ caselist, q }) => authedJob('caselist search', async (t) => { await searchSlot(); return searchTeams(t, caselist, q, clOpts); }),
 
-  // Card search across caselists, in the order given (newest first). Results stream out
-  // through the job's progress; ~15 s per caselist after the first four (the rate limit).
+  // Card search across caselists. All of them start at once and each waits for a rate-limit
+  // slot, so up to four come back in about a second; hits stay in the order given (newest first).
+  // A plain query is searched as a phrase ("Starr 15", not every doc with a 15 in it).
   '/caselist/card-search': ({ q, caselists }) => {
     const gen = ++cardSearchGen;
     return authedJob('caselist card search', async (t, report) => {
       const query = String(q ?? '').trim();
       if (!query) throw new Error('no_query');
+      const phrase = /["*]|\b(AND|OR|NOT)\b/.test(query) ? query : `"${query}"`;
       const list = (Array.isArray(caselists) ? caselists : []).map(String).filter(Boolean).slice(0, 100);
-      const hits = [];
+      const found = list.map(() => null);
       const failed = [];
       let done = 0;
-      const live = () => gen === cardSearchGen && hits.length < MAX_CARD_HITS;
-      for (const c of list) {
-        if (!live()) break;
+      const snapshot = () => ({ done, total: list.length, hits: found.flatMap((h) => h || []).slice(0, MAX_CARD_HITS), failed });
+      await Promise.all(list.map(async (c, i) => {
         for (let tries = 0; ; tries++) {
-          if (!(await searchSlot(() => gen !== cardSearchGen))) break;
+          if (!(await searchSlot(() => gen !== cardSearchGen))) return;
           try {
-            hits.push(...(await searchCards(t, c, query, clOpts)));
+            found[i] = await searchCards(t, c, phrase, clOpts);
             break;
           } catch (err) {
-            if (err.message === 'login_expired') throw err;
+            if (err.message === 'login_expired') { cardSearchGen++; throw err; } // stop the rest too
             if (err.message === 'http_429' && tries < 2) { searchFull(); continue; }
             failed.push(c);
             break;
           }
         }
-        if (gen !== cardSearchGen) break;
         done++;
-        report({ done, total: list.length, hits: hits.slice(0, MAX_CARD_HITS), failed });
-      }
-      const out = { done, total: list.length, hits: hits.slice(0, MAX_CARD_HITS), failed, capped: hits.length >= MAX_CARD_HITS, stopped: gen !== cardSearchGen };
+        report(snapshot());
+      }));
+      const out = { ...snapshot(), stopped: gen !== cardSearchGen };
       log('caselist card search', `${done}/${list.length} caselists`, out.hits.length, 'hits', out.stopped ? '(stopped)' : '');
       return out;
     });

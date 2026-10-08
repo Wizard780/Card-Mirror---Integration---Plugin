@@ -83,13 +83,13 @@ test('listCaselists archived: past years too, open first then newest year; old-s
 
 test('searchCards keeps file and cite hits, strips <b> marks, and encodes the query', async () => {
   const f = fake({ '/search?q=nuclear%20winter&shard=hspf24': { body: [
-    { type: 'file', caselist: 'hspf24', caselist_display_name: 'HS PF 2024-25', school: 'Hawken', team: 'JoMi', team_display_name: 'Hawken JoMi', download_path: 'hspf24/Hawken/JoMi/a.docx', title: 'a.docx', snippet: 'a <b>nuclear winter</b>\n would' },
+    { type: 'file', caselist: 'hspf24', caselist_display_name: 'HS PF 2024-25', school: 'Hawken', team: 'JoMi', team_display_name: 'Hawken JoMi', download_path: 'hspf24/Hawken/JoMi/a.docx', title: 'a.docx', snippet: '[bookmark: _x1]a <b>nuclear winter</b>\n would' },
     { type: 'cite', caselist: 'hspf24', school: 'Interlake', team: 'WuZh', title: '5 - Feb - DA', snippet: '(\\*Matt **Starr 15**', path: 'hspf24/Interlake/WuZh#591912' },
     { type: 'team', school: 'X', team: 'Y' },
   ] } });
   assert.deepEqual(await searchCards('TOK', 'hspf24', 'nuclear winter', f.opts), [
     { type: 'file', caselist: 'hspf24', caselistLabel: 'HS PF 2024-25', school: 'Hawken', team: 'JoMi', teamLabel: 'Hawken JoMi', title: 'a.docx', snippet: 'a nuclear winter would', path: 'hspf24/Hawken/JoMi/a.docx' },
-    { type: 'cite', caselist: 'hspf24', caselistLabel: 'hspf24', school: 'Interlake', team: 'WuZh', teamLabel: 'Interlake WuZh', title: '5 - Feb - DA', snippet: '(*Matt Starr 15', path: null },
+    { type: 'cite', caselist: 'hspf24', caselistLabel: 'hspf24', school: 'Interlake', team: 'WuZh', teamLabel: 'Interlake WuZh', title: '5 - Feb - DA', snippet: '(Matt Starr 15', path: null },
   ]);
   await assert.rejects(searchCards('TOK', 'hspf24', 'x', fake({ '/search?q=x&shard=hspf24': { status: 429, body: {} } }).opts), /^Error: http_429$/);
 });
