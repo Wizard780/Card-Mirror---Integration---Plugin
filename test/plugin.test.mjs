@@ -816,6 +816,7 @@ test('card search: query → scope (your event, each of its years, this year, ot
   await l.onPick(l.items[2]);
   assert.deepEqual(h.calls.filter((c) => c.route === '/caselist/card-search').at(-1).body, { q: 'Starr 15', caselists: ['hspf23'] }, 'retry searches only the failed caselist');
   assert.deepEqual(l.items.map((it) => it.label), ['Nuclear war causes extinction. Starr 15', 'Starr 15 cite', 'Older Starr 15 card'], 'retried hits append; no retry row left');
+  assert.match(l.statuses.at(-1), /^3 cards · 4 of 4 caselists searched · /, 'a retried caselist is counted once');
   close();
   await new Promise((r) => setImmediate(r));
   assert.ok(h.calls.some((c) => c.route === '/caselist/card-search/stop'), 'closing the list stops the helper search');

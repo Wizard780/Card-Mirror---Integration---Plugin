@@ -1818,7 +1818,8 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         // (a helper older than 0.3.1 sends no `searched`: trust its count).
         const unfinished = (p) => { const ok = new Set(p.searched || batch.slice(0, p.done).map((c) => c.name)); rest = batch.filter((c) => !ok.has(c.name)); };
         const before = hits;
-        const status = (p, finished) => `${plural(cardRows(hits, byName).length, 'card')} · ${searched + p.done} of ${plural(searched + batch.length, 'caselist')} searched${finished ? '' : '…'}${p.failed.length ? ` · ${p.failed.length} failed` : ''} · Enter opens the doc`;
+        const fin = (p) => (p.searched ? p.searched.length : p.done - p.failed.length); // failed ones aren't searched
+        const status = (p, finished) => `${plural(cardRows(hits, byName).length, 'card')} · ${searched + fin(p)} of ${plural(scope.list.length, 'caselist')} searched${finished ? '' : '…'}${p.failed.length ? ` · ${p.failed.length} failed` : ''} · Enter opens the doc`;
         let last = { done: 0, failed: [], searched: [] };
         try {
           const done = await runJob(api, '/caselist/card-search', { q, caselists: batch.map((c) => c.name) }, u.sleep, {
@@ -1827,12 +1828,12 @@ textarea.du-input{resize:vertical;min-height:3.4em}
           });
           hits = before.concat(done.hits);
           const text = done.stopped ? `${status(done, true)} · stopped` : status(done, true);
-          searched += done.done;
+          searched += fin(done);
           unfinished(done);
           render(text);
         } catch (err) {
           call(api, '/caselist/card-search/stop', {}).catch(() => {}); // never leave it spending the rate limit
-          searched += last.done;
+          searched += fin(last);
           unfinished(last);
           if (closed) return api.showToast(message(err.message, ctx));
           render(`Search stopped: ${message(err.message, ctx)}`);
