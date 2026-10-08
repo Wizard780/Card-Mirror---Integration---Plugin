@@ -1745,51 +1745,95 @@ textarea.du-input{resize:vertical;min-height:3.4em}
 
 
   // Full-text search of open source docs and cites across caselists. openCaselist allows
-  // 4 searches a minute, so a scope of N caselists takes ~N/4 minutes; hits stream in.
-  const minutesFor = (n) => (n <= 4 ? 'seconds' : `~${Math.ceil((n - 4) / 4)} min`);
+  // 4 searches a minute, so the first pass is your event's 4 newest years (about a second);
+  // a last row searches the older years (~15 s each).
+  const FIRST_PASS = 4;
   // "NDT/CEDA College 2024-25" and "NDT/CEDA 2019-20" are one event: openCaselist renamed it in 2022.
-  const yearless = (label) => String(label).replace(/\s*\d{4}-\d{2}\s*$/, '').replace(/\s+College\b/, '').trim();
+  const yearless = (label) => String(label).replace(/\s*\d{4}(-\d{2})?\s*$/, '').replace(/\s+College\b/, '').trim();
+
+  // The same card read in many rounds comes back once per doc: one row each, newest first.
+  function cardRows(hits, byName) {
+    const rows = new Map();
+    for (const h of hits) {
+      const text = h.snippet.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 160);
+      const key = `${h.type}:${text || `${h.caselist}/${h.school}/${h.team}/${h.path || h.title}`}`;
+      const r = rows.get(key);
+      if (r) { r.more++; continue; }
+      rows.set(key, { hit: h, more: 0 });
+    }
+    return [...rows.values()].map(({ hit: h, more }, i) => ({
+      key: String(i),
+      hit: h,
+      label: h.snippet || h.title || '(no text)',
+      detail: [h.type === 'cite' ? `cites: ${h.title}` : '', h.teamLabel, byName.get(h.caselist)?.label || h.caselistLabel, more ? `+${more} more` : ''].filter(Boolean).join(' · '),
+    }));
+  }
 
   async function caselistCardSearch(api) {
     const u = ui();
     const ctx = { caselist: true, scouting: true };
     try {
-      const q = String((await u.prompt('Search every caselist for…', api.storage.get('cardSearchQuery') || '')) ?? '').trim();
+      const q = String((await u.prompt('Search the caselist for cards', api.storage.get('cardSearchQuery') || '')) ?? '').trim();
       if (!q) return;
       api.storage.set('cardSearchQuery', q); // session only: not worth a mirrored pref
       const all = await runJob(api, '/caselist/caselists', { all: true }, u.sleep);
       if (!all.length) return api.showToast('No caselists found.');
-      // Scopes: each event across every year (yours first), this year's caselists, everything.
-      const mine = ownCaselist(api) || api.storage.get('scoutCaselist');
-      const myGroup = mine ? yearless(mine.label) : '';
-      const groups = new Map();
-      for (const c of all) {
-        const g = yearless(c.label);
-        if (!groups.has(g)) groups.set(g, []);
-        groups.get(g).push(c);
-      }
-      const scopes = [...groups].sort((a, b) => (b[0] === myGroup) - (a[0] === myGroup))
-        .map(([g, list]) => ({ label: `${g}, every year`, list }));
-      const open = all.filter((c) => !c.archived);
-      if (open.length) scopes.push({ label: 'This year, every event', list: open });
-      scopes.push({ label: 'Every caselist', list: all });
-      const si = await u.choose(`Search for "${q}" in…`, scopes.map((s) => `${s.label} (${s.list.length} · ${minutesFor(s.list.length)})`));
-      if (si == null) return;
-      const scope = scopes[si].list.slice().sort((a, b) => a.archived - b.archived || (b.year || 0) - (a.year || 0));
       const byName = new Map(all.map((c) => [c.name, c]));
-      const toItems = (hits) => hits.map((h, i) => ({
-        key: String(i),
-        hit: h,
-        label: h.snippet || h.title || '(no text)',
-        detail: [h.type === 'cite' ? `cites: ${h.title}` : '', h.teamLabel, byName.get(h.caselist)?.label || h.caselistLabel].filter(Boolean).join(' · '),
-      }));
-      const statusOf = (p, finished) => [
-        `${plural(p.hits.length, 'hit')} · ${p.done} of ${plural(p.total, 'caselist')} searched${finished ? '' : '…'}`,
-        p.failed && p.failed.length ? `${p.failed.length} failed` : '',
-        p.capped ? `stopped at ${p.hits.length}, narrow the search` : '',
-        'Enter opens the doc (cites: the team page)',
-      ].filter(Boolean).join(' · ');
+      const groups = [...new Set(all.map((c) => yearless(c.label)))];
+      // Your event: from your caselist team or last scouted caselist, else asked once per session.
+      const mine = ownCaselist(api) || api.storage.get('scoutCaselist');
+      let event = mine ? yearless(mine.label) : api.storage.get('cardSearchEvent');
+      if (!groups.includes(event)) {
+        const i = await u.choose('Search which event?', groups);
+        if (i == null) return;
+        event = groups[i];
+        api.storage.set('cardSearchEvent', event);
+      }
+      const years = all.filter((c) => yearless(c.label) === event).sort((a, b) => a.archived - b.archived || (b.year || 0) - (a.year || 0));
+      let hits = [];
+      let searched = 0;
+      let rest = years;
+      let closed = false;
+      let view = null;
+      const MORE = 'more';
+      const render = (status) => {
+        if (closed) return;
+        const items = cardRows(hits, byName);
+        if (rest.length) items.push({ key: MORE, label: `Search ${plural(rest.length, 'more year')} of ${event} (~${Math.ceil(rest.length / 4)} min, the caselist allows 4 searches a minute)…`, detail: '' });
+        view.update(items, status);
+      };
+      let running = false;
+      const pass = async (batch) => {
+        running = true;
+        rest = rest.slice(batch.length);
+        // Years this pass didn't finish (failed, stopped, error) go back on the "more years" row
+        // (a helper older than 0.3.1 sends no `searched`: trust its count).
+        const unfinished = (p) => { const ok = new Set(p.searched || batch.slice(0, p.done).map((c) => c.name)); rest = batch.filter((c) => !ok.has(c.name)).concat(rest); };
+        const before = hits;
+        const status = (p, finished) => `${plural(cardRows(hits, byName).length, 'card')} · ${searched + p.done} of ${plural(searched + batch.length, 'year')} searched${finished ? '' : '…'}${p.failed.length ? ` · ${p.failed.length} failed` : ''} · Enter opens the doc`;
+        let last = { done: 0, failed: [], searched: [] };
+        try {
+          const done = await runJob(api, '/caselist/card-search', { q, caselists: batch.map((c) => c.name) }, u.sleep, {
+            onProgress: (p) => { last = p; hits = before.concat(p.hits); render(status(p, false)); },
+            maxPolls: batch.length * 90 + 120, // ~16 s per caselist; up to two 61 s 429 back-offs each
+          });
+          hits = before.concat(done.hits);
+          const text = done.stopped ? `${status(done, true)} · stopped` : status(done, true);
+          searched += done.done;
+          unfinished(done);
+          render(text);
+        } catch (err) {
+          call(api, '/caselist/card-search/stop', {}).catch(() => {}); // never leave it spending the rate limit
+          searched += last.done;
+          unfinished(last);
+          if (closed) return api.showToast(message(err.message, ctx));
+          render(`Search stopped: ${message(err.message, ctx)}`);
+        } finally {
+          running = false;
+        }
+      };
       const onPick = async (it) => {
+        if (it.key === MORE) return running ? api.showToast('Still searching. Try again when this pass finishes.') : pass(rest);
         const h = it.hit;
         const cl = byName.get(h.caselist) || { name: h.caselist, label: h.caselistLabel, event: '' };
         const team = { school: h.school, team: h.team, label: h.teamLabel };
@@ -1803,30 +1847,9 @@ textarea.du-input{resize:vertical;min-height:3.4em}
           api.showToast(message(err.message, { ...ctx, name: h.title }));
         }
       };
-      const view = u.showList(`Caselist cards: "${q}"`, [], onPick, { wrap: true, hint: `Searching ${plural(scope.length, 'caselist')} (${minutesFor(scope.length)})…` });
-      let closed = false;
+      view = u.showList(`"${q}" on the ${event} caselist`, [], onPick, { wrap: true, hint: 'Searching…' });
       view.closed.then(() => { closed = true; call(api, '/caselist/card-search/stop', {}).catch(() => {}); });
-      let last = { hits: [], done: 0, total: scope.length, failed: [] };
-      let shownAt = '';
-      const show = (p, finished) => {
-        last = p;
-        const at = `${p.hits.length}/${p.done}/${p.failed.length}/${finished}`;
-        if (closed || at === shownAt) return;
-        shownAt = at;
-        view.update(toItems(p.hits), statusOf(p, finished));
-      };
-      let done;
-      try {
-        done = await runJob(api, '/caselist/card-search', { q, caselists: scope.map((c) => c.name) }, u.sleep, {
-          onProgress: (p) => show(p, false),
-          maxPolls: scope.length * 90 + 120, // ~16 s per caselist; up to two 61 s 429 back-offs each
-        });
-      } catch (err) {
-        call(api, '/caselist/card-search/stop', {}).catch(() => {}); // never leave it spending the rate limit
-        if (closed) return api.showToast(message(err.message, ctx));
-        return view.update(toItems(last.hits), `Search stopped: ${message(err.message, ctx)}`);
-      }
-      if (done.stopped) { if (!closed) view.update(toItems(done.hits), `${statusOf(done, true)} · stopped by a newer search`); } else show(done, true);
+      await pass(years.slice(0, FIRST_PASS));
     } catch (err) {
       api.showToast(message(err.message, ctx));
     }
@@ -2429,7 +2452,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
       },
       {
         id: `${ID}.caselistCardSearch`,
-        label: 'Search all caselists for cards…',
+        label: 'Search the caselist for cards…',
         keywords: ['caselist', 'search', 'cards', 'evidence', 'wiki', 'opencaselist', 'past years', 'archive'],
         defaultKey: null,
         run: (api) => withPrefs(api, () => caselistCardSearch(api)),

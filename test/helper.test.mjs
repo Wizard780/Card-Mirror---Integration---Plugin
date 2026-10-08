@@ -114,7 +114,7 @@ before(async () => {
       { name: 'hspf25', display_name: 'HS PF 2025', event: 'pf', year: 2025, archived: true },
       { name: 'hspf26', display_name: 'HS PF 2026', event: 'pf', year: 2026, archived: false },
     ]);
-    if (req.url.startsWith('/v1/search?q=winter&')) {
+    if (req.url.startsWith('/v1/search?q=%22winter%22&')) {
       const shard = new URL(req.url, 'http://x').searchParams.get('shard');
       if (shard === 'bad') return send(500, { message: 'boom' });
       if (shard === 'hspf25' && upstream[req.url] === 1) return send(429, { message: 'You can only run 4 searches per minute.' });
@@ -394,15 +394,16 @@ async function waitLong(id) {
   throw new Error('job never finished');
 }
 
-test('card search: every caselist in order, paced; a 429 is retried, a failure skipped; hits are file/cite rows only', async () => {
+test('card search: a plain query is a phrase; every caselist, hits in the order given; a 429 is retried, a failure skipped; hits are file/cite rows only', async () => {
   await loginOk();
   const r = await waitLong((await call('/caselist/card-search', { q: 'winter', caselists: ['hspf26', 'hspf25', 'bad', 'x1', 'x2'] })).body.job);
   assert.equal(r.state, 'done');
   assert.equal(r.result.done, 5);
   assert.deepEqual(r.result.failed, ['bad']);
+  assert.deepEqual(r.result.searched, ['hspf26', 'hspf25', 'x1', 'x2'], 'the plugin re-offers the rest');
   assert.deepEqual(r.result.hits.map((h) => h.caselist), ['hspf26', 'hspf25', 'x1', 'x2']);
   assert.deepEqual(r.result.hits[0], { type: 'file', caselist: 'hspf26', caselistLabel: 'hspf26', school: 'Lexington', team: 'AlHu', teamLabel: 'Lexington AlHu', title: 'a.docx', snippet: 'nuclear winter kills', path: 'hspf26/Lexington/AlHu/a.docx' });
-  assert.equal(upstream['/v1/search?q=winter&shard=hspf25'], 2, 'the 429 was retried once');
+  assert.equal(upstream['/v1/search?q=%22winter%22&shard=hspf25'], 2, 'the 429 was retried once');
   assert.deepEqual(await waitJob((await call('/caselist/card-search', { q: '  ', caselists: ['hspf26'] })).body.job), { state: 'error', message: 'no_query' });
 });
 
