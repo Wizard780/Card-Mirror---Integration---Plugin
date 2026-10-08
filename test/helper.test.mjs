@@ -405,6 +405,10 @@ test('card search: a plain query is a phrase; every caselist, hits in the order 
   assert.deepEqual(r.result.hits[0], { type: 'file', caselist: 'hspf26', caselistLabel: 'hspf26', school: 'Lexington', team: 'AlHu', teamLabel: 'Lexington AlHu', title: 'a.docx', snippet: 'nuclear winter kills', path: 'hspf26/Lexington/AlHu/a.docx' });
   assert.equal(upstream['/v1/search?q=%22winter%22&shard=hspf25'], 2, 'the 429 was retried once');
   assert.deepEqual(await waitJob((await call('/caselist/card-search', { q: '  ', caselists: ['hspf26'] })).body.job), { state: 'error', message: 'no_query' });
+  const before = upstream['/v1/search?q=%22winter%22&shard=hspf26'];
+  const again = await waitLong((await call('/caselist/card-search', { q: 'winter', caselists: ['hspf26'] })).body.job);
+  assert.equal(again.result.hits.length, 1);
+  assert.equal(upstream['/v1/search?q=%22winter%22&shard=hspf26'], before, 'a repeat within 30 min spends no search');
 });
 
 test('card search: stop ends a running search at the next caselist', async () => {
