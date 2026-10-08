@@ -1806,16 +1806,27 @@ textarea.du-input{resize:vertical;min-height:3.4em}
       const view = u.showList(`Caselist cards: "${q}"`, [], onPick, { wrap: true, hint: `Searching ${plural(scope.length, 'caselist')} (${minutesFor(scope.length)})…` });
       let closed = false;
       view.closed.then(() => { closed = true; call(api, '/caselist/card-search/stop', {}).catch(() => {}); });
-      let shown = 0;
+      let last = { hits: [], done: 0, total: scope.length, failed: [] };
+      let shownAt = '';
       const show = (p, finished) => {
-        if (closed) return;
-        if (p.hits.length !== shown || finished) { shown = p.hits.length; view.update(toItems(p.hits), statusOf(p, finished)); }
+        last = p;
+        const at = `${p.hits.length}/${p.done}/${p.failed.length}/${finished}`;
+        if (closed || at === shownAt) return;
+        shownAt = at;
+        view.update(toItems(p.hits), statusOf(p, finished));
       };
-      const done = await runJob(api, '/caselist/card-search', { q, caselists: scope.map((c) => c.name) }, u.sleep, {
-        onProgress: (p) => show(p, false),
-        maxPolls: scope.length * 30 + 120, // ~16 s per caselist plus 429 back-off
-      });
-      if (!done.stopped) show(done, true);
+      let done;
+      try {
+        done = await runJob(api, '/caselist/card-search', { q, caselists: scope.map((c) => c.name) }, u.sleep, {
+          onProgress: (p) => show(p, false),
+          maxPolls: scope.length * 90 + 120, // ~16 s per caselist; up to two 61 s 429 back-offs each
+        });
+      } catch (err) {
+        call(api, '/caselist/card-search/stop', {}).catch(() => {}); // never leave it spending the rate limit
+        if (closed) return api.showToast(message(err.message, ctx));
+        return view.update(toItems(last.hits), `Search stopped: ${message(err.message, ctx)}`);
+      }
+      if (done.stopped) { if (!closed) view.update(toItems(done.hits), `${statusOf(done, true)} · stopped by a newer search`); } else show(done, true);
     } catch (err) {
       api.showToast(message(err.message, ctx));
     }

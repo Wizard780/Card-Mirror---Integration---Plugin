@@ -164,11 +164,13 @@ const authedJob = (label, fn) => ({
 // in the sliding window; a 429 (searches from the website count too) fills the window.
 const SEARCH_WINDOW_MS = Number(process.env.DEBATE_UPLOADER_SEARCH_WINDOW_MS) || 61_000;
 let recentSearches = [];
-async function searchSlot() {
+// Resolves false (taking no slot) once `stale()` says the caller no longer wants it.
+async function searchSlot(stale = () => false) {
   for (;;) {
+    if (stale()) return false;
     const now = Date.now();
     recentSearches = recentSearches.filter((at) => now - at < SEARCH_WINDOW_MS);
-    if (recentSearches.length < 4) { recentSearches.push(now); return; }
+    if (recentSearches.length < 4) { recentSearches.push(now); return true; }
     await new Promise((r) => setTimeout(r, recentSearches[0] + SEARCH_WINDOW_MS - now));
   }
 }
@@ -520,8 +522,7 @@ const routes = {
       for (const c of list) {
         if (!live()) break;
         for (let tries = 0; ; tries++) {
-          await searchSlot();
-          if (gen !== cardSearchGen) break;
+          if (!(await searchSlot(() => gen !== cardSearchGen))) break;
           try {
             hits.push(...(await searchCards(t, c, query, clOpts)));
             break;

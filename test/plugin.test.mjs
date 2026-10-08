@@ -810,6 +810,13 @@ test('card search: query → scope (your event first) → streamed hits; a file 
   await new Promise((r) => setImmediate(r));
   assert.ok(h.calls.some((c) => c.route === '/caselist/card-search/stop'), 'closing the list stops the helper search');
 
+  const fail = scoutHarness({ prompt: 'x', choose: [0], results: { '/caselist/caselists': ALL_LISTS, '/caselist/card-search': new Error('login_expired') } });
+  let failStatus = null;
+  window.__debateUploaderUI.showList = () => ({ closed: new Promise(() => {}), close() {}, update: (items, status) => { failStatus = status; } });
+  await cmd('caselistCardSearch').run(fail.api);
+  assert.equal(failStatus, 'Search stopped: Tabroom login expired. Run "Log in to Tabroom…".', 'a failed search never leaves the list saying Searching…');
+  assert.ok(fail.calls.some((c) => c.route === '/caselist/card-search/stop'), 'and the helper search is stopped');
+
   const cancel = scoutHarness({ prompt: '  ', results: {} });
   await cmd('caselistCardSearch').run(cancel.api);
   assert.equal(cancel.calls.length, 0, 'an empty query sends nothing');
