@@ -1745,9 +1745,9 @@ textarea.du-input{resize:vertical;min-height:3.4em}
 
 
   // Full-text search of open source docs and cites across caselists. openCaselist allows
-  // 4 searches a minute, so the first pass is your event's 4 newest years (about a second);
-  // a last row searches the older years (~15 s each).
-  const FIRST_PASS = 4;
+  // 4 searches a minute per account: up to 4 caselists answer in about a second, each one
+  // after that ~15 s (results stream in). The helper remembers results for 30 minutes.
+  const timeFor = (n) => (n <= 4 ? 'seconds' : `~${Math.ceil((n - 4) / 4)} min`);
   // "NDT/CEDA College 2024-25" and "NDT/CEDA 2019-20" are one event: openCaselist renamed it in 2022.
   const yearless = (label) => String(label).replace(/\s*\d{4}(-\d{2})?\s*$/, '').replace(/\s+College\b/, '').trim();
 
@@ -1779,38 +1779,46 @@ textarea.du-input{resize:vertical;min-height:3.4em}
       const all = await runJob(api, '/caselist/caselists', { all: true }, u.sleep);
       if (!all.length) return api.showToast('No caselists found.');
       const byName = new Map(all.map((c) => [c.name, c]));
-      const groups = [...new Set(all.map((c) => yearless(c.label)))];
-      // Your event: from your caselist team or last scouted caselist, else asked once per session.
+      // Scopes: your event across every year, then each of its years, this year's caselists,
+      // the other events across every year, every caselist, then every single caselist.
+      const newest = (list) => list.slice().sort((x, y) => x.archived - y.archived || (y.year || 0) - (x.year || 0));
       const mine = ownCaselist(api) || api.storage.get('scoutCaselist');
-      let event = mine ? yearless(mine.label) : api.storage.get('cardSearchEvent');
-      if (!groups.includes(event)) {
-        const i = await u.choose('Search which event?', groups);
-        if (i == null) return;
-        event = groups[i];
-        api.storage.set('cardSearchEvent', event);
-      }
-      const years = all.filter((c) => yearless(c.label) === event).sort((a, b) => a.archived - b.archived || (b.year || 0) - (a.year || 0));
+      const myEvent = mine ? yearless(mine.label) : '';
+      const groups = [...new Set(all.map((c) => yearless(c.label)))];
+      const eventScope = (g) => ({ label: `${g}, every year`, title: `every ${g} year`, list: newest(all.filter((c) => yearless(c.label) === g)) });
+      const one = (c) => ({ label: c.label, title: c.label, list: [c] });
+      const others = groups.filter((g) => g !== myEvent);
+      const scopes = [
+        ...(myEvent ? [eventScope(myEvent), ...eventScope(myEvent).list.map(one)] : []),
+        { label: 'This year, every event', title: "this year's caselists", list: all.filter((c) => !c.archived) },
+        ...others.map(eventScope),
+        { label: 'Every caselist', title: 'every caselist', list: newest(all) },
+        ...newest(all).filter((c) => yearless(c.label) !== myEvent).map(one),
+      ].filter((x) => x.list.length);
+      const si = await u.choose(`Search for "${q}" in…`, scopes.map((x) => `${x.label} (${x.list.length > 1 ? `${x.list.length} · ` : ''}${timeFor(x.list.length)})`));
+      if (si == null) return;
+      const scope = scopes[si];
       let hits = [];
       let searched = 0;
-      let rest = years;
+      let rest = [];
       let closed = false;
       let view = null;
       const MORE = 'more';
       const render = (status) => {
         if (closed) return;
         const items = cardRows(hits, byName);
-        if (rest.length) items.push({ key: MORE, label: `Search ${plural(rest.length, 'more year')} of ${event} (~${Math.ceil(rest.length / 4)} min, the caselist allows 4 searches a minute)…`, detail: '' });
+        if (rest.length) items.push({ key: MORE, label: `Retry ${plural(rest.length, 'caselist')} that didn't finish (${timeFor(rest.length)})…`, detail: '' });
         view.update(items, status);
       };
       let running = false;
       const pass = async (batch) => {
         running = true;
-        rest = rest.slice(batch.length);
-        // Years this pass didn't finish (failed, stopped, error) go back on the "more years" row
+        rest = [];
+        // Caselists this pass didn't finish (failed, stopped, error) go on a "Retry" row
         // (a helper older than 0.3.1 sends no `searched`: trust its count).
-        const unfinished = (p) => { const ok = new Set(p.searched || batch.slice(0, p.done).map((c) => c.name)); rest = batch.filter((c) => !ok.has(c.name)).concat(rest); };
+        const unfinished = (p) => { const ok = new Set(p.searched || batch.slice(0, p.done).map((c) => c.name)); rest = batch.filter((c) => !ok.has(c.name)); };
         const before = hits;
-        const status = (p, finished) => `${plural(cardRows(hits, byName).length, 'card')} · ${searched + p.done} of ${plural(searched + batch.length, 'year')} searched${finished ? '' : '…'}${p.failed.length ? ` · ${p.failed.length} failed` : ''} · Enter opens the doc`;
+        const status = (p, finished) => `${plural(cardRows(hits, byName).length, 'card')} · ${searched + p.done} of ${plural(searched + batch.length, 'caselist')} searched${finished ? '' : '…'}${p.failed.length ? ` · ${p.failed.length} failed` : ''} · Enter opens the doc`;
         let last = { done: 0, failed: [], searched: [] };
         try {
           const done = await runJob(api, '/caselist/card-search', { q, caselists: batch.map((c) => c.name) }, u.sleep, {
@@ -1847,9 +1855,9 @@ textarea.du-input{resize:vertical;min-height:3.4em}
           api.showToast(message(err.message, { ...ctx, name: h.title }));
         }
       };
-      view = u.showList(`"${q}" on the ${event} caselist`, [], onPick, { wrap: true, hint: 'Searching…' });
+      view = u.showList(`"${q}" on ${scope.title}`, [], onPick, { wrap: true, hint: 'Searching…' });
       view.closed.then(() => { closed = true; call(api, '/caselist/card-search/stop', {}).catch(() => {}); });
-      await pass(years.slice(0, FIRST_PASS));
+      await pass(scope.list);
     } catch (err) {
       api.showToast(message(err.message, ctx));
     }

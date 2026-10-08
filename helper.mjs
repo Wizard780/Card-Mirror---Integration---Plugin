@@ -21,7 +21,7 @@ import { buildMessage, newMessageId, sendMail, verifyLogin, isEmail } from './li
 import { recentMessages } from './lib/imap.mjs';
 import { readFile, stat, writeFile, rename } from 'node:fs/promises';
 
-const VERSION = '0.3.1';
+const VERSION = '0.3.2';
 const bridgeDir = process.env.DEBATE_UPLOADER_BRIDGE_DIR || defaultBridgeDir();
 const sdBase = process.env.DEBATE_UPLOADER_SD_BASE || SD_BASE;
 const sdMedia = process.env.DEBATE_UPLOADER_SD_MEDIA || SD_MEDIA;
@@ -522,10 +522,21 @@ const routes = {
       let done = 0;
       const snapshot = () => ({ done, total: list.length, hits: found.flatMap((h) => h || []).slice(0, MAX_CARD_HITS), failed, searched: list.filter((_, i) => found[i]) });
       await Promise.all(list.map(async (c, i) => {
+        // Same query on the same caselist within 30 min: answered from memory, no search spent.
+        const key = `cards:${c}:${phrase}`;
+        const hit = cache.get(key);
+        if (hit && hit.until > Date.now()) {
+          found[i] = await hit.value;
+          done++;
+          report(snapshot());
+          return;
+        }
         for (let tries = 0; ; tries++) {
           if (!(await searchSlot(() => gen !== cardSearchGen))) return;
           try {
             found[i] = await searchCards(t, c, phrase, clOpts);
+            for (const [k, v] of cache) if (v.until < Date.now()) cache.delete(k); // expired entries never pile up
+            cache.set(key, { until: Date.now() + 30 * 60_000, value: found[i] });
             break;
           } catch (err) {
             if (err.message === 'login_expired') { cardSearchGen++; throw err; } // stop the rest too
