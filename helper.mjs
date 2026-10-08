@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 import { createKeychain } from './lib/keychain.mjs';
 import { createRoomWatcher } from './lib/roomwatch.mjs';
 import { createPrefs } from './lib/prefs.mjs';
-import { login, getRounds, listCaselists, listSchools, listTeams, createRound, searchTeams, searchCards, getTeam, downloadOpenSource, listTeamsDetailed, CASELIST_BASE } from './lib/caselist.mjs';
+import { login, getRounds, listCaselists, listSchools, listTeams, createRound, searchTeams, searchCards, SEARCH_ROWS, getTeam, downloadOpenSource, listTeamsDetailed, CASELIST_BASE } from './lib/caselist.mjs';
 import { parseOpponent, schoolScore, pickTeam } from './lib/scout.mjs';
 import { uploadToSpeechDrop, newestDocx, MAX_BYTES, listRoom, downloadFile, saveUnique, expandHome, SD_BASE, SD_MEDIA } from './lib/speechdrop.mjs';
 import { createEvidenceIndex } from './lib/evidence.mjs';
@@ -21,7 +21,7 @@ import { buildMessage, newMessageId, sendMail, verifyLogin, isEmail } from './li
 import { recentMessages } from './lib/imap.mjs';
 import { readFile, stat, writeFile, rename } from 'node:fs/promises';
 
-const VERSION = '0.3.2';
+const VERSION = '0.4.0';
 const bridgeDir = process.env.DEBATE_UPLOADER_BRIDGE_DIR || defaultBridgeDir();
 const sdBase = process.env.DEBATE_UPLOADER_SD_BASE || SD_BASE;
 const sdMedia = process.env.DEBATE_UPLOADER_SD_MEDIA || SD_MEDIA;
@@ -507,49 +507,76 @@ const routes = {
 
   '/caselist/search': ({ caselist, q }) => authedJob('caselist search', async (t) => { await searchSlot(); return searchTeams(t, caselist, q, clOpts); }),
 
-  // Card search across caselists. All of them start at once and each waits for a rate-limit
-  // slot, so up to four come back in about a second; hits stay in the order given (newest first).
-  // A plain query is searched as a phrase ("Starr 15", not every doc with a 15 in it).
+  // Card search. One search can cover many caselists but returns at most 100 hits, so the
+  // whole scope goes out as one search first: a specific query ("Fang 26") is complete in one
+  // search. A group that comes back full is split: caselists with at least their share of its
+  // hits get a search each, the rest stay together (no clear split: four parts), searched
+  // again as the 4-a-minute budget allows; hits stream in, most relevant
+  // first, each card once. A plain query is searched as a phrase. Results are kept 30 min.
   '/caselist/card-search': ({ q, caselists }) => {
     const gen = ++cardSearchGen;
     return authedJob('caselist card search', async (t, report) => {
       const query = String(q ?? '').trim();
       if (!query) throw new Error('no_query');
       const phrase = /["*]|\b(AND|OR|NOT)\b/.test(query) ? query : `"${query}"`;
-      const list = (Array.isArray(caselists) ? caselists : []).map(String).filter(Boolean).slice(0, 100);
-      const found = list.map(() => null);
+      const list = (Array.isArray(caselists) ? caselists : []).map(String).filter((c) => /^[A-Za-z0-9]+$/.test(c)).slice(0, 100);
+      const hits = new Map();
+      const searched = new Set(); // caselists whose every match (or the 100-hit maximum) is in
+      const capped = []; // single caselists with more than 100 matches
       const failed = [];
+      const queue = list.length ? [list] : [];
       let done = 0;
-      const snapshot = () => ({ done, total: list.length, hits: found.flatMap((h) => h || []).slice(0, MAX_CARD_HITS), failed, searched: list.filter((_, i) => found[i]) });
-      await Promise.all(list.map(async (c, i) => {
-        // Same query on the same caselist within 30 min: answered from memory, no search spent.
-        const key = `cards:${c}:${phrase}`;
-        const hit = cache.get(key);
-        if (hit && hit.until > Date.now()) {
-          found[i] = await hit.value;
-          done++;
-          report(snapshot());
-          return;
-        }
+      let tooMany = false; // stopped at MAX_CARD_HITS: the rest isn't in, so nothing more is "complete"
+      const snapshot = () => ({ done, total: done + queue.length, hits: [...hits.values()], failed, searched: list.filter((c) => searched.has(c)), capped, tooMany });
+      const split = (g, found) => {
+        // Hits that can't be placed in this group say nothing about where the rest are: plain split.
+        const placed = found.every((h) => g.includes(h.caselist));
+        const heavy = !placed ? [] : g.filter((c) => found.filter((h) => h.caselist === c).length >= SEARCH_ROWS / g.length);
+        const light = g.filter((c) => !heavy.includes(c));
+        if (heavy.length && light.length) return [...heavy.map((c) => [c]), light];
+        return g.length <= 4 ? g.map((c) => [c]) : [0, 1, 2, 3].map((k) => g.slice(Math.round((k * g.length) / 4), Math.round(((k + 1) * g.length) / 4)));
+      };
+      const search = async (group) => {
+        const key = `cards:${group.join(',')}:${phrase}`;
+        const kept = cache.get(key);
+        if (kept && kept.until > Date.now()) return kept.value;
         for (let tries = 0; ; tries++) {
-          if (!(await searchSlot(() => gen !== cardSearchGen))) return;
+          if (!(await searchSlot(() => gen !== cardSearchGen))) return 'stopped';
           try {
-            found[i] = await searchCards(t, c, phrase, clOpts);
+            const value = await searchCards(t, group, phrase, clOpts);
             for (const [k, v] of cache) if (v.until < Date.now()) cache.delete(k); // expired entries never pile up
-            cache.set(key, { until: Date.now() + 30 * 60_000, value: found[i] });
-            break;
+            cache.set(key, { until: Date.now() + 30 * 60_000, value });
+            return value;
           } catch (err) {
-            if (err.message === 'login_expired') { cardSearchGen++; throw err; } // stop the rest too
+            if (err.message === 'login_expired') { if (gen === cardSearchGen) cardSearchGen++; throw err; } // stop the rest, never a newer search
             if (err.message === 'http_429' && tries < 2) { searchFull(); continue; }
-            failed.push(c);
-            break;
+            return null;
           }
         }
-        done++;
-        report(snapshot());
-      }));
+      };
+      while (queue.length && gen === cardSearchGen && hits.size < MAX_CARD_HITS) {
+        await Promise.all(queue.splice(0, 4).map(async (group) => {
+          const r = await search(group);
+          if (r === 'stopped') return;
+          done++;
+          if (!r) failed.push(...group);
+          else {
+            let dropped = false;
+            for (const h of r.hits) {
+              if (hits.has(h.id)) continue;
+              if (hits.size >= MAX_CARD_HITS) { dropped = true; continue; }
+              hits.set(h.id, h);
+            }
+            if (dropped) { tooMany = true; report(snapshot()); return; }
+            if (!r.full || group.length === 1) group.forEach((c) => searched.add(c));
+            if (r.full && group.length === 1) capped.push(group[0]);
+            if (r.full && group.length > 1) queue.push(...split(group, r.hits));
+          }
+          report(snapshot());
+        }));
+      }
       const out = { ...snapshot(), stopped: gen !== cardSearchGen };
-      log('caselist card search', `${done}/${list.length} caselists`, out.hits.length, 'hits', out.stopped ? '(stopped)' : '');
+      log('caselist card search', `${done} searches for ${list.length} caselists`, out.hits.length, 'hits', out.stopped ? '(stopped)' : '');
       return out;
     });
   },

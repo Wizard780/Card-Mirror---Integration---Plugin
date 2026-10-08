@@ -1744,10 +1744,9 @@ textarea.du-input{resize:vertical;min-height:3.4em}
   }
 
 
-  // Full-text search of open source docs and cites across caselists. openCaselist allows
-  // 4 searches a minute per account: up to 4 caselists answer in about a second, each one
-  // after that ~15 s (results stream in). The helper remembers results for 30 minutes.
-  const timeFor = (n) => (n <= 4 ? 'seconds' : `~${Math.ceil((n - 4) / 4)} min`);
+  // Full-text search of open source docs and cites across caselists. One search covers the
+  // whole scope (its 100 most relevant hits, in about a second); when there's more, the helper
+  // digs deeper within openCaselist's 4 searches a minute and hits stream in.
   // "NDT/CEDA College 2024-25" and "NDT/CEDA 2019-20" are one event: openCaselist renamed it in 2022.
   const yearless = (label) => String(label).replace(/\s*\d{4}(-\d{2})?\s*$/, '').replace(/\s+College\b/, '').trim();
 
@@ -1795,19 +1794,22 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         { label: 'Every caselist', title: 'every caselist', list: newest(all) },
         ...newest(all).filter((c) => yearless(c.label) !== myEvent).map(one),
       ].filter((x) => x.list.length);
-      const si = await u.choose(`Search for "${q}" in…`, scopes.map((x) => `${x.label} (${x.list.length > 1 ? `${x.list.length} · ` : ''}${timeFor(x.list.length)})`));
+      const si = await u.choose(`Search for "${q}" in…`, scopes.map((x) => (x.list.length > 1 ? `${x.label} (${x.list.length} caselists)` : x.label)));
       if (si == null) return;
       const scope = scopes[si];
       let hits = [];
       let searched = 0;
       let rest = [];
+      const capped = new Set(); // over 100 matches in one caselist, across every pass
+      let tooMany = false;
+      const merge = (a, b) => { const seen = new Set(a.map((h) => h.id)); return a.concat(b.filter((h) => !h.id || !seen.has(h.id))); };
       let closed = false;
       let view = null;
       const MORE = 'more';
       const render = (status) => {
         if (closed) return;
         const items = cardRows(hits, byName);
-        if (rest.length) items.push({ key: MORE, label: `Retry ${plural(rest.length, 'caselist')} that didn't finish (${timeFor(rest.length)})…`, detail: '' });
+        if (rest.length) items.push({ key: MORE, label: `Retry ${plural(rest.length, 'caselist')} that didn't finish…`, detail: '' });
         view.update(items, status);
       };
       let running = false;
@@ -1819,17 +1821,30 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         const unfinished = (p) => { const ok = new Set(p.searched || batch.slice(0, p.done).map((c) => c.name)); rest = batch.filter((c) => !ok.has(c.name)); };
         const before = hits;
         const fin = (p) => (p.searched ? p.searched.length : p.done - p.failed.length); // failed ones aren't searched
-        const status = (p, finished) => `${plural(cardRows(hits, byName).length, 'card')} · ${searched + fin(p)} of ${plural(scope.list.length, 'caselist')} searched${finished ? '' : '…'}${p.failed.length ? ` · ${p.failed.length} failed` : ''} · Enter opens the doc`;
+        const status = (p, finished) => {
+          const complete = searched + fin(p);
+          for (const c of p.capped || []) capped.add(c);
+          if (p.tooMany) tooMany = true;
+          const all = complete === scope.list.length && !capped.size && !tooMany;
+          return [
+            plural(cardRows(hits, byName).length, 'card'),
+            finished ? (all ? 'every match' : `${complete} of ${plural(scope.list.length, 'caselist')} complete`) : `finding more (${complete} of ${scope.list.length} caselists complete)…`,
+            tooMany ? 'showing the first 1,000: add words to narrow it' : capped.size ? `${plural(capped.size, 'caselist')} had over 100 matches: add words to narrow it` : '',
+            p.failed.length ? `${p.failed.length} failed` : '',
+            'Enter opens the doc',
+          ].filter(Boolean).join(' · ');
+        };
         let last = { done: 0, failed: [], searched: [] };
         try {
           const done = await runJob(api, '/caselist/card-search', { q, caselists: batch.map((c) => c.name) }, u.sleep, {
-            onProgress: (p) => { last = p; hits = before.concat(p.hits); render(status(p, false)); },
+            onProgress: (p) => { last = p; hits = merge(before, p.hits); render(status(p, false)); },
             maxPolls: batch.length * 90 + 120, // ~16 s per caselist; up to two 61 s 429 back-offs each
           });
-          hits = before.concat(done.hits);
+          hits = merge(before, done.hits);
           const text = done.stopped ? `${status(done, true)} · stopped` : status(done, true);
           searched += fin(done);
           unfinished(done);
+          if (tooMany) rest = []; // a retry would hit the same limit
           render(text);
         } catch (err) {
           call(api, '/caselist/card-search/stop', {}).catch(() => {}); // never leave it spending the rate limit

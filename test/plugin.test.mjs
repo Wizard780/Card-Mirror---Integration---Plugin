@@ -779,13 +779,13 @@ test('card search: query → scope (your event, each of its years, this year, ot
     { name: 'hspf23', label: 'HS PF 2023-24', event: 'pf', year: 2023, archived: true },
     { name: 'hsld25', label: 'HS LD 2025-26', event: 'ld', year: 2025, archived: true },
   ];
-  const hit = (caselist, snippet, extra = {}) => ({ type: 'file', caselist, caselistLabel: caselist, school: 'Hawken', team: 'JoMi', teamLabel: 'Hawken JoMi', title: 'a.docx', snippet, path: `${caselist}/Hawken/JoMi/a.docx`, ...extra });
+  const hit = (caselist, snippet, extra = {}) => ({ id: `${caselist}/Hawken/JoMi/${snippet}`, type: 'file', caselist, caselistLabel: caselist, school: 'Hawken', team: 'JoMi', teamLabel: 'Hawken JoMi', title: 'a.docx', snippet, path: `${caselist}/Hawken/JoMi/a.docx`, ...extra });
   const h = scoutHarness({ prompt: 'Starr 15', choose: [0], storage: { caselistTarget: TARGET },
     results: {
       '/caselist/caselists': LISTS6,
       '/caselist/card-search': (body) => (body.caselists.length > 1
         ? { done: 3, total: 4, hits: [hit('hspf26', 'Nuclear war causes extinction. Starr 15'), hit('hspf25', 'Nuclear war causes extinction — Starr 15!'), hit('hspf24', 'Starr 15 cite', { type: 'cite', school: 'Interlake', team: 'WuZh', teamLabel: 'Interlake WuZh', title: '1NC', path: null })], failed: ['hspf23'], searched: ['hspf26', 'hspf25', 'hspf24'], stopped: false }
-        : { done: 1, total: 1, hits: [hit('hspf23', 'Older Starr 15 card')], failed: [], searched: ['hspf23'], stopped: false }),
+        : { done: 1, total: 1, hits: [hit('hspf26', 'Nuclear war causes extinction. Starr 15'), hit('hspf23', 'Older Starr 15 card')], failed: [], searched: ['hspf23'], stopped: false }),
       '/caselist/open': { name: 'a.docx', path: '/p', app: 'CardMirror' }, '/caselist/team': TEAM,
     } });
   h.lists = [];
@@ -797,8 +797,8 @@ test('card search: query → scope (your event, each of its years, this year, ot
   };
   await cmd('caselistCardSearch').run(h.api);
   assert.deepEqual(h.chooseTitles[0], ['Search for "Starr 15" in…', [
-    'HS PF, every year (4 · seconds)', 'HS PF 2026-27 (seconds)', 'HS PF 2025-26 (seconds)', 'HS PF 2024-25 (seconds)', 'HS PF 2023-24 (seconds)',
-    'This year, every event (2 · seconds)', 'HS LD, every year (2 · seconds)', 'Every caselist (6 · ~1 min)', 'HS LD 2026-27 (seconds)', 'HS LD 2025-26 (seconds)',
+    'HS PF, every year (4 caselists)', 'HS PF 2026-27', 'HS PF 2025-26', 'HS PF 2024-25', 'HS PF 2023-24',
+    'This year, every event (2 caselists)', 'HS LD, every year (2 caselists)', 'Every caselist (6 caselists)', 'HS LD 2026-27', 'HS LD 2025-26',
   ]]);
   assert.deepEqual(h.calls.find((c) => c.route === '/caselist/card-search').body, { q: 'Starr 15', caselists: ['hspf26', 'hspf25', 'hspf24', 'hspf23'] });
   const l = h.lists[0];
@@ -806,24 +806,26 @@ test('card search: query → scope (your event, each of its years, this year, ot
   assert.deepEqual(l.items.map((it) => [it.label, it.detail]), [
     ['Nuclear war causes extinction. Starr 15', 'Hawken JoMi · HS PF 2026-27 · +1 more'],
     ['Starr 15 cite', 'cites: 1NC · Interlake WuZh · HS PF 2024-25'],
-    ["Retry 1 caselist that didn't finish (seconds)…", ''],
+    ["Retry 1 caselist that didn't finish…", ''],
   ]);
-  assert.match(l.statuses.at(-1), /^2 cards · 3 of 4 caselists searched · 1 failed · /);
+  assert.equal(l.statuses.at(-1), '2 cards · 3 of 4 caselists complete · 1 failed · Enter opens the doc');
   await l.onPick(l.items[0]);
   assert.deepEqual(h.calls.find((c) => c.route === '/caselist/open').body, { caselist: 'hspf26', school: 'Hawken', team: 'JoMi', path: 'hspf26/Hawken/JoMi/a.docx' });
   await l.onPick(l.items[1]);
   assert.equal(h.pages[0].title, 'Interlake WuZh');
   await l.onPick(l.items[2]);
   assert.deepEqual(h.calls.filter((c) => c.route === '/caselist/card-search').at(-1).body, { q: 'Starr 15', caselists: ['hspf23'] }, 'retry searches only the failed caselist');
-  assert.deepEqual(l.items.map((it) => it.label), ['Nuclear war causes extinction. Starr 15', 'Starr 15 cite', 'Older Starr 15 card'], 'retried hits append; no retry row left');
-  assert.match(l.statuses.at(-1), /^3 cards · 4 of 4 caselists searched · /, 'a retried caselist is counted once');
+  assert.deepEqual(l.items.map((it) => [it.label, it.detail.endsWith('+1 more')]), [['Nuclear war causes extinction. Starr 15', true], ['Starr 15 cite', false], ['Older Starr 15 card', false]], 'retried hits append once (a hit seen before is not another copy); no retry row left');
+  assert.equal(l.statuses.at(-1), '3 cards · every match · Enter opens the doc', 'a retried caselist is counted once');
   close();
   await new Promise((r) => setImmediate(r));
   assert.ok(h.calls.some((c) => c.route === '/caselist/card-search/stop'), 'closing the list stops the helper search');
 
-  const single = scoutHarness({ prompt: 'x', choose: [9], storage: { caselistTarget: TARGET }, results: { '/caselist/caselists': LISTS6, '/caselist/card-search': { done: 1, total: 1, hits: [], failed: [], searched: ['hsld25'], stopped: false } } });
-  window.__debateUploaderUI.showList = () => ({ closed: new Promise(() => {}), close() {}, update() {} });
+  const single = scoutHarness({ prompt: 'x', choose: [9], storage: { caselistTarget: TARGET }, results: { '/caselist/caselists': LISTS6, '/caselist/card-search': { done: 1, total: 1, hits: [], failed: [], searched: ['hsld25'], capped: ['hsld25'], stopped: false } } });
+  let singleStatus = null;
+  window.__debateUploaderUI.showList = () => ({ closed: new Promise(() => {}), close() {}, update: (items, status) => { singleStatus = status; } });
   await cmd('caselistCardSearch').run(single.api);
+  assert.equal(singleStatus, '0 cards · 1 of 1 caselist complete · 1 caselist had over 100 matches: add words to narrow it · Enter opens the doc');
   assert.deepEqual(single.calls.find((c) => c.route === '/caselist/card-search').body.caselists, ['hsld25'], 'a single past year of another event');
 
   const fail = scoutHarness({ prompt: 'x', choose: [0], storage: { caselistTarget: TARGET }, results: { '/caselist/caselists': ALL_LISTS, '/caselist/card-search': new Error('login_expired') } });
@@ -833,7 +835,7 @@ test('card search: query → scope (your event, each of its years, this year, ot
   await cmd('caselistCardSearch').run(fail.api);
   assert.equal(failStatus, 'Search stopped: Tabroom login expired. Run "Log in to Tabroom…".', 'a failed search never leaves the list saying Searching…');
   assert.ok(fail.calls.some((c) => c.route === '/caselist/card-search/stop'), 'and the helper search is stopped');
-  assert.equal(failItems.at(-1).label, "Retry 3 caselists that didn't finish (seconds)…", 'unfinished caselists are offered again');
+  assert.equal(failItems.at(-1).label, "Retry 3 caselists that didn't finish…", 'unfinished caselists are offered again');
 
   const cancel = scoutHarness({ prompt: '  ', results: {} });
   await cmd('caselistCardSearch').run(cancel.api);
