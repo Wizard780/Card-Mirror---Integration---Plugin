@@ -784,8 +784,8 @@ test('card search: one prompt → your event’s 4 newest years at once → dedu
     results: {
       '/caselist/caselists': LISTS6,
       '/caselist/card-search': (body) => (body.caselists.includes('hspf26')
-        ? { done: 3, total: 3, hits: [hit('hspf26', 'Nuclear war causes extinction. Starr 15'), hit('hspf25', 'Nuclear war causes extinction — Starr 15!'), hit('hspf24', 'Starr 15 cite', { type: 'cite', school: 'Interlake', team: 'WuZh', teamLabel: 'Interlake WuZh', title: '1NC', path: null })], failed: [], stopped: false }
-        : { done: 2, total: 2, hits: [hit('hspf23', 'Older Starr 15 card')], failed: [], stopped: false }),
+        ? { done: 3, total: 3, hits: [hit('hspf26', 'Nuclear war causes extinction. Starr 15'), hit('hspf25', 'Nuclear war causes extinction — Starr 15!'), hit('hspf24', 'Starr 15 cite', { type: 'cite', school: 'Interlake', team: 'WuZh', teamLabel: 'Interlake WuZh', title: '1NC', path: null })], failed: ['hspf23'], searched: ['hspf26', 'hspf25', 'hspf24'], stopped: false }
+        : { done: 2, total: 2, hits: [hit('hspf23', 'Older Starr 15 card')], failed: [], searched: ['hspf23', 'hspf22'], stopped: false }),
       '/caselist/open': { name: 'a.docx', path: '/p', app: 'CardMirror' }, '/caselist/team': TEAM,
     } });
   h.lists = [];
@@ -803,15 +803,15 @@ test('card search: one prompt → your event’s 4 newest years at once → dedu
   assert.deepEqual(l.items.map((it) => [it.label, it.detail]), [
     ['Nuclear war causes extinction. Starr 15', 'Hawken JoMi · HS PF 2026-27 · +1 more'],
     ['Starr 15 cite', 'cites: 1NC · Interlake WuZh · HS PF 2024-25'],
-    ['Search 1 older year of HS PF (~1 min, the caselist allows 4 searches a minute)…', ''],
+    ['Search 2 more years of HS PF (~1 min, the caselist allows 4 searches a minute)…', ''],
   ]);
-  assert.match(l.statuses.at(-1), /^2 cards · 3 of 4 years searched · /);
+  assert.match(l.statuses.at(-1), /^2 cards · 3 of 4 years searched · 1 failed · /);
   await l.onPick(l.items[0]);
   assert.deepEqual(h.calls.find((c) => c.route === '/caselist/open').body, { caselist: 'hspf26', school: 'Hawken', team: 'JoMi', path: 'hspf26/Hawken/JoMi/a.docx' });
   await l.onPick(l.items[1]);
   assert.equal(h.pages[0].title, 'Interlake WuZh');
   await l.onPick(l.items[2]);
-  assert.deepEqual(h.calls.filter((c) => c.route === '/caselist/card-search').at(-1).body, { q: 'Starr 15', caselists: ['hspf22'] });
+  assert.deepEqual(h.calls.filter((c) => c.route === '/caselist/card-search').at(-1).body, { q: 'Starr 15', caselists: ['hspf23', 'hspf22'] }, 'the failed year is retried with the older ones');
   assert.deepEqual(l.items.map((it) => it.label), ['Nuclear war causes extinction. Starr 15', 'Starr 15 cite', 'Older Starr 15 card'], 'older hits append; no more row');
   close();
   await new Promise((r) => setImmediate(r));
@@ -825,10 +825,12 @@ test('card search: one prompt → your event’s 4 newest years at once → dedu
 
   const fail = scoutHarness({ prompt: 'x', storage: { caselistTarget: TARGET }, results: { '/caselist/caselists': ALL_LISTS, '/caselist/card-search': new Error('login_expired') } });
   let failStatus = null;
-  window.__debateUploaderUI.showList = () => ({ closed: new Promise(() => {}), close() {}, update: (items, status) => { failStatus = status; } });
+  let failItems = [];
+  window.__debateUploaderUI.showList = () => ({ closed: new Promise(() => {}), close() {}, update: (items, status) => { failStatus = status; failItems = items; } });
   await cmd('caselistCardSearch').run(fail.api);
   assert.equal(failStatus, 'Search stopped: Tabroom login expired. Run "Log in to Tabroom…".', 'a failed search never leaves the list saying Searching…');
   assert.ok(fail.calls.some((c) => c.route === '/caselist/card-search/stop'), 'and the helper search is stopped');
+  assert.equal(failItems.at(-1).label, 'Search 3 more years of HS PF (~1 min, the caselist allows 4 searches a minute)…', 'unfinished years are offered again');
 
   const cancel = scoutHarness({ prompt: '  ', results: {} });
   await cmd('caselistCardSearch').run(cancel.api);

@@ -21,7 +21,7 @@ import { buildMessage, newMessageId, sendMail, verifyLogin, isEmail } from './li
 import { recentMessages } from './lib/imap.mjs';
 import { readFile, stat, writeFile, rename } from 'node:fs/promises';
 
-const VERSION = '0.3.0';
+const VERSION = '0.3.1';
 const bridgeDir = process.env.DEBATE_UPLOADER_BRIDGE_DIR || defaultBridgeDir();
 const sdBase = process.env.DEBATE_UPLOADER_SD_BASE || SD_BASE;
 const sdMedia = process.env.DEBATE_UPLOADER_SD_MEDIA || SD_MEDIA;
@@ -171,7 +171,7 @@ async function searchSlot(stale = () => false) {
     const now = Date.now();
     recentSearches = recentSearches.filter((at) => now - at < SEARCH_WINDOW_MS);
     if (recentSearches.length < 4) { recentSearches.push(now); return true; }
-    await new Promise((r) => setTimeout(r, recentSearches[0] + SEARCH_WINDOW_MS - now));
+    await new Promise((r) => setTimeout(r, Math.min(250, recentSearches[0] + SEARCH_WINDOW_MS - now))); // short naps: a stop is seen fast
   }
 }
 const searchFull = () => { recentSearches = Array(4).fill(Date.now()); };
@@ -520,7 +520,7 @@ const routes = {
       const found = list.map(() => null);
       const failed = [];
       let done = 0;
-      const snapshot = () => ({ done, total: list.length, hits: found.flatMap((h) => h || []).slice(0, MAX_CARD_HITS), failed });
+      const snapshot = () => ({ done, total: list.length, hits: found.flatMap((h) => h || []).slice(0, MAX_CARD_HITS), failed, searched: list.filter((_, i) => found[i]) });
       await Promise.all(list.map(async (c, i) => {
         for (let tries = 0; ; tries++) {
           if (!(await searchSlot(() => gen !== cardSearchGen))) return;

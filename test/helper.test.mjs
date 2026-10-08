@@ -400,6 +400,7 @@ test('card search: a plain query is a phrase; every caselist, hits in the order 
   assert.equal(r.state, 'done');
   assert.equal(r.result.done, 5);
   assert.deepEqual(r.result.failed, ['bad']);
+  assert.deepEqual(r.result.searched, ['hspf26', 'hspf25', 'x1', 'x2'], 'the plugin re-offers the rest');
   assert.deepEqual(r.result.hits.map((h) => h.caselist), ['hspf26', 'hspf25', 'x1', 'x2']);
   assert.deepEqual(r.result.hits[0], { type: 'file', caselist: 'hspf26', caselistLabel: 'hspf26', school: 'Lexington', team: 'AlHu', teamLabel: 'Lexington AlHu', title: 'a.docx', snippet: 'nuclear winter kills', path: 'hspf26/Lexington/AlHu/a.docx' });
   assert.equal(upstream['/v1/search?q=%22winter%22&shard=hspf25'], 2, 'the 429 was retried once');

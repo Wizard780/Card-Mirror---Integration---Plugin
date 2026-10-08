@@ -1755,7 +1755,8 @@ textarea.du-input{resize:vertical;min-height:3.4em}
   function cardRows(hits, byName) {
     const rows = new Map();
     for (const h of hits) {
-      const key = h.snippet.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 160) || `${h.caselist}/${h.path || h.title}`;
+      const text = h.snippet.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 160);
+      const key = `${h.type}:${text || `${h.caselist}/${h.school}/${h.team}/${h.path || h.title}`}`;
       const r = rows.get(key);
       if (r) { r.more++; continue; }
       rows.set(key, { hit: h, more: 0 });
@@ -1798,16 +1799,19 @@ textarea.du-input{resize:vertical;min-height:3.4em}
       const render = (status) => {
         if (closed) return;
         const items = cardRows(hits, byName);
-        if (rest.length) items.push({ key: MORE, label: `Search ${plural(rest.length, 'older year')} of ${event} (~${Math.ceil(rest.length / 4)} min, the caselist allows 4 searches a minute)…`, detail: '' });
+        if (rest.length) items.push({ key: MORE, label: `Search ${plural(rest.length, 'more year')} of ${event} (~${Math.ceil(rest.length / 4)} min, the caselist allows 4 searches a minute)…`, detail: '' });
         view.update(items, status);
       };
       let running = false;
       const pass = async (batch) => {
         running = true;
         rest = rest.slice(batch.length);
+        // Years this pass didn't finish (failed, stopped, error) go back on the "more years" row
+        // (a helper older than 0.3.1 sends no `searched`: trust its count).
+        const unfinished = (p) => { const ok = new Set(p.searched || batch.slice(0, p.done).map((c) => c.name)); rest = batch.filter((c) => !ok.has(c.name)).concat(rest); };
         const before = hits;
         const status = (p, finished) => `${plural(cardRows(hits, byName).length, 'card')} · ${searched + p.done} of ${plural(searched + batch.length, 'year')} searched${finished ? '' : '…'}${p.failed.length ? ` · ${p.failed.length} failed` : ''} · Enter opens the doc`;
-        let last = { done: 0, failed: [] };
+        let last = { done: 0, failed: [], searched: [] };
         try {
           const done = await runJob(api, '/caselist/card-search', { q, caselists: batch.map((c) => c.name) }, u.sleep, {
             onProgress: (p) => { last = p; hits = before.concat(p.hits); render(status(p, false)); },
@@ -1816,10 +1820,12 @@ textarea.du-input{resize:vertical;min-height:3.4em}
           hits = before.concat(done.hits);
           const text = done.stopped ? `${status(done, true)} · stopped` : status(done, true);
           searched += done.done;
+          unfinished(done);
           render(text);
         } catch (err) {
           call(api, '/caselist/card-search/stop', {}).catch(() => {}); // never leave it spending the rate limit
           searched += last.done;
+          unfinished(last);
           if (closed) return api.showToast(message(err.message, ctx));
           render(`Search stopped: ${message(err.message, ctx)}`);
         } finally {
