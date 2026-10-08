@@ -87,7 +87,12 @@ before uploading again. Requires **Log in to Tabroom…** first.
   the **debater pair**, with no event picker (your caselist if known, otherwise every open caselist is tried): Tabroom's "Cranbrook FZ" matches the Cranbrook team whose debaters' last names
   start with F and Z, in either order, even when school names differ a little. If two schools have a matching pair,
   the one closer to Tabroom's school name wins; if it's still unclear you pick (debater names shown).
-- **Search the caselist…**: pick a caselist (yours first), then a school and a team from type-to-filter lists.
+- **Search the caselist…**: pick a caselist (yours first; past years back to 2014 follow the open ones), then a school and a team from type-to-filter lists.
+- **Search all caselists for cards…**: type words from a card (author, tag, a line of text), then pick where to look:
+  one event across every year (yours first), this year's caselists, or every caselist. openCaselist allows 4 searches
+  a minute, so each caselist after the first four adds ~15 s (every caselist ≈ 14 min); hits stream in newest year
+  first, up to 100 per caselist and 1,000 total. **Enter** on a doc hit downloads and opens that round's doc; a cite
+  hit opens the team page. Closing the list stops the search.
 
 The team page opens on **Summary** ("what they run") when their round reports can be read: for each side, the
 arguments in their first constructive (1AC / 1NC) and what they went for in their last speech (2AR / 2NR), with how
