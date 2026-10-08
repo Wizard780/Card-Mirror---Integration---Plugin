@@ -1800,6 +1800,9 @@ textarea.du-input{resize:vertical;min-height:3.4em}
       let hits = [];
       let searched = 0;
       let rest = [];
+      const capped = new Set(); // over 100 matches in one caselist, across every pass
+      let tooMany = false;
+      const merge = (a, b) => { const seen = new Set(a.map((h) => h.id)); return a.concat(b.filter((h) => !h.id || !seen.has(h.id))); };
       let closed = false;
       let view = null;
       const MORE = 'more';
@@ -1820,11 +1823,13 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         const fin = (p) => (p.searched ? p.searched.length : p.done - p.failed.length); // failed ones aren't searched
         const status = (p, finished) => {
           const complete = searched + fin(p);
-          const all = complete === scope.list.length && !(p.capped && p.capped.length);
+          for (const c of p.capped || []) capped.add(c);
+          if (p.tooMany) tooMany = true;
+          const all = complete === scope.list.length && !capped.size && !tooMany;
           return [
             plural(cardRows(hits, byName).length, 'card'),
             finished ? (all ? 'every match' : `${complete} of ${plural(scope.list.length, 'caselist')} complete`) : `finding more (${complete} of ${scope.list.length} caselists complete)…`,
-            p.capped && p.capped.length ? `${plural(p.capped.length, 'caselist')} had over 100 matches: add words to narrow it` : '',
+            tooMany ? 'showing the first 1,000: add words to narrow it' : capped.size ? `${plural(capped.size, 'caselist')} had over 100 matches: add words to narrow it` : '',
             p.failed.length ? `${p.failed.length} failed` : '',
             'Enter opens the doc',
           ].filter(Boolean).join(' · ');
@@ -1832,13 +1837,14 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         let last = { done: 0, failed: [], searched: [] };
         try {
           const done = await runJob(api, '/caselist/card-search', { q, caselists: batch.map((c) => c.name) }, u.sleep, {
-            onProgress: (p) => { last = p; hits = before.concat(p.hits); render(status(p, false)); },
+            onProgress: (p) => { last = p; hits = merge(before, p.hits); render(status(p, false)); },
             maxPolls: batch.length * 90 + 120, // ~16 s per caselist; up to two 61 s 429 back-offs each
           });
-          hits = before.concat(done.hits);
+          hits = merge(before, done.hits);
           const text = done.stopped ? `${status(done, true)} · stopped` : status(done, true);
           searched += fin(done);
           unfinished(done);
+          if (tooMany) rest = []; // a retry would hit the same limit
           render(text);
         } catch (err) {
           call(api, '/caselist/card-search/stop', {}).catch(() => {}); // never leave it spending the rate limit

@@ -424,6 +424,15 @@ test('card search: a full group (100 hits) is split and searched again; every ca
   assert.deepEqual([one.result.capped, one.result.searched], [['slowA'], ['slowA']], 'over 100 in one caselist: the most openCaselist gives');
 });
 
+test('card search: stops at 1,000 cards and says so; nothing past the limit counts as complete', async () => {
+  await loginOk();
+  const many = Array.from({ length: 18 }, (_, i) => `busy${i + 10}`);
+  const r = await waitLong((await call('/caselist/card-search', { q: 'winter', caselists: many })).body.job);
+  assert.equal(r.result.tooMany, true);
+  assert.ok(r.result.hits.length <= 1000, `${r.result.hits.length} hits`);
+  assert.ok(r.result.searched.length < many.length);
+});
+
 test('card search: a 429 is retried; a failed search is reported, not retried', async () => {
   await loginOk();
   const r = await waitLong((await call('/caselist/card-search', { q: 'winter', caselists: ['hspf25'] })).body.job);

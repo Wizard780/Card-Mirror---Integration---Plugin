@@ -526,9 +526,12 @@ const routes = {
       const failed = [];
       const queue = list.length ? [list] : [];
       let done = 0;
-      const snapshot = () => ({ done, total: done + queue.length, hits: [...hits.values()].slice(0, MAX_CARD_HITS), failed, searched: list.filter((c) => searched.has(c)), capped });
+      let tooMany = false; // stopped at MAX_CARD_HITS: the rest isn't in, so nothing more is "complete"
+      const snapshot = () => ({ done, total: done + queue.length, hits: [...hits.values()], failed, searched: list.filter((c) => searched.has(c)), capped, tooMany });
       const split = (g, found) => {
-        const heavy = g.filter((c) => found.filter((h) => h.caselist === c).length >= SEARCH_ROWS / g.length);
+        // Hits that can't be placed in this group say nothing about where the rest are: plain split.
+        const placed = found.every((h) => g.includes(h.caselist));
+        const heavy = !placed ? [] : g.filter((c) => found.filter((h) => h.caselist === c).length >= SEARCH_ROWS / g.length);
         const light = g.filter((c) => !heavy.includes(c));
         if (heavy.length && light.length) return [...heavy.map((c) => [c]), light];
         return g.length <= 4 ? g.map((c) => [c]) : [0, 1, 2, 3].map((k) => g.slice(Math.round((k * g.length) / 4), Math.round(((k + 1) * g.length) / 4)));
@@ -545,7 +548,7 @@ const routes = {
             cache.set(key, { until: Date.now() + 30 * 60_000, value });
             return value;
           } catch (err) {
-            if (err.message === 'login_expired') { cardSearchGen++; throw err; } // stop the rest too
+            if (err.message === 'login_expired') { if (gen === cardSearchGen) cardSearchGen++; throw err; } // stop the rest, never a newer search
             if (err.message === 'http_429' && tries < 2) { searchFull(); continue; }
             return null;
           }
@@ -558,7 +561,13 @@ const routes = {
           done++;
           if (!r) failed.push(...group);
           else {
-            for (const h of r.hits) if (!hits.has(h.id)) hits.set(h.id, h);
+            let dropped = false;
+            for (const h of r.hits) {
+              if (hits.has(h.id)) continue;
+              if (hits.size >= MAX_CARD_HITS) { dropped = true; continue; }
+              hits.set(h.id, h);
+            }
+            if (dropped) { tooMany = true; report(snapshot()); return; }
             if (!r.full || group.length === 1) group.forEach((c) => searched.add(c));
             if (r.full && group.length === 1) capped.push(group[0]);
             if (r.full && group.length > 1) queue.push(...split(group, r.hits));

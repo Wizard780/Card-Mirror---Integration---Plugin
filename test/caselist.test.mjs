@@ -96,6 +96,14 @@ test('searchCards: one caselist or an OR group in one search; full at 100 hits; 
   const r = await searchCards('TOK', ['hspf26', 'hspf25'], 'x', g.opts);
   assert.equal(r.full, true, '100 hits: there may be more');
   assert.equal(r.hits.length, 100);
+  const bare = fake({ '/search?q=x&shard=(hspf26%20OR%20hspf25)': { body: [
+    { type: 'file', school: 'S', team: 'T', download_path: 'hspf25/S/T/a.docx', title: 'a.docx', snippet: 'x' },
+    { type: 'cite', school: 'S', team: 'T', title: '1NC', snippet: 'y' },
+    { type: 'cite', school: 'S', team: 'T', title: '2NR', snippet: 'z' },
+  ] } });
+  const b = await searchCards('TOK', ['hspf26', 'hspf25'], 'x', bare.opts);
+  assert.deepEqual(b.hits.map((h) => h.caselist), ['hspf25', '', ''], 'caselist from the path, never guessed in a group');
+  assert.equal(new Set(b.hits.map((h) => h.id)).size, 3, 'rows without a path still get distinct ids');
   await assert.rejects(searchCards('TOK', ['hspf26', 'x) OR (y'], 'x', g.opts), /^Error: bad_caselist$/, 'only plain caselist names go into the filter');
   await assert.rejects(searchCards('TOK', 'hspf24', 'x', fake({ '/search?q=x&shard=hspf24': { status: 429, body: {} } }).opts), /^Error: http_429$/);
 });
