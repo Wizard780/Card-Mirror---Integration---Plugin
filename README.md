@@ -91,11 +91,14 @@ before uploading again. Requires **Log in to Tabroom…** first.
 - **Search the caselist for cards…**: type an author, tag or line of card text, then pick where to look (type to
   filter, e.g. `2024`): your event across every year, any single year, this year's caselists, another event across
   every year, or every caselist. It's searched as an exact phrase; put your own quotes in to search words separately
-  (`"Starr" nuclear`). openCaselist allows 4 searches a minute per account, so up to 4 caselists answer in a second or
-  two and each one after that adds ~15 s (every PF year ≈ 2 min) while hits stream in. Results are remembered for
-  30 minutes: the same search again, or a wider one, only spends searches on caselists not yet searched. The same card
-  read in many rounds is one row (+N more). **Enter** on a doc hit downloads and opens that round's doc; a cite hit
-  opens the team page. Caselists that failed get a Retry row. Closing the list stops the search.
+  (`"Starr" nuclear`). One search covers the whole scope and returns its 100 most relevant hits in about a second, so a
+  specific search ("Fang 26" across all 60 caselists) is complete right away. When there are more than 100 matches, the
+  plugin splits the scope by where the hits came from and searches again; openCaselist allows 4 searches a minute per
+  account, so a very common card takes about a minute more (all 580 "Starr 15" cards across every PF year: 62 s, most
+  within 2 s). A year with over 100 matches of its own shows the 100 most relevant (openCaselist's maximum). Results are
+  remembered for 30 minutes. The same card read in many rounds is one row (+N more). **Enter** on a doc hit downloads
+  and opens that round's doc; a cite hit opens the team page. Caselists that failed get a Retry row. Closing the list
+  stops the search.
 
 The team page opens on **Summary** ("what they run") when their round reports can be read: for each side, the
 arguments in their first constructive (1AC / 1NC) and what they went for in their last speech (2AR / 2NR), with how

@@ -114,15 +114,17 @@ before(async () => {
       { name: 'hspf25', display_name: 'HS PF 2025', event: 'pf', year: 2025, archived: true },
       { name: 'hspf26', display_name: 'HS PF 2026', event: 'pf', year: 2026, archived: false },
     ]);
+    // Card search: `shard` is one caselist or "(a OR b)". busy* caselists have 60 matches, slow*
+    // 100 (after 150 ms), the rest 1; like Solr, a search returns at most 100.
     if (req.url.startsWith('/v1/search?q=%22winter%22&')) {
       const shard = new URL(req.url, 'http://x').searchParams.get('shard');
-      if (shard === 'bad') return send(500, { message: 'boom' });
+      const group = shard.replace(/^\(|\)$/g, '').split(' OR ');
+      if (group.includes('bad')) return send(500, { message: 'boom' });
       if (shard === 'hspf25' && upstream[req.url] === 1) return send(429, { message: 'You can only run 4 searches per minute.' });
-      if (shard.startsWith('slow')) await new Promise((r) => setTimeout(r, 150));
-      return send(200, [
-        { type: 'file', caselist: shard, caselist_display_name: shard, school: 'Lexington', team: 'AlHu', team_display_name: 'Lexington AlHu', download_path: `${shard}/Lexington/AlHu/a.docx`, title: 'a.docx', snippet: 'nuclear <b>winter</b>\n kills' },
-        { type: 'team', school: 'Lexington', team: 'AlHu' },
-      ]);
+      if (group.some((c) => c.startsWith('slow'))) await new Promise((r) => setTimeout(r, 150));
+      const rows = group.flatMap((c) => Array.from({ length: c.startsWith('busy') ? 60 : c.startsWith('slow') ? 100 : 1 }, (_, n) => (
+        { type: 'file', caselist: c, caselist_display_name: c, school: 'Lexington', team: 'AlHu', team_display_name: 'Lexington AlHu', download_path: `${c}/Lexington/AlHu/${n}.docx`, title: `${n}.docx`, snippet: 'nuclear <b>winter</b>\n kills' })));
+      return send(200, [{ type: 'team', school: 'Lexington', team: 'AlHu' }, ...rows.slice(0, 100)]);
     }
     if (req.url.startsWith('/v1/search?')) return send(200, [
       { type: 'team', school: 'Lexington', team: 'AlHu', team_display_name: 'Lexington AlHu', school_display_name: 'Lexington' },
@@ -394,21 +396,41 @@ async function waitLong(id) {
   throw new Error('job never finished');
 }
 
-test('card search: a plain query is a phrase; every caselist, hits in the order given; a 429 is retried, a failure skipped; hits are file/cite rows only', async () => {
+const winterUrl = (group) => `/v1/search?q=%22winter%22&shard=${encodeURIComponent(group.length === 1 ? group[0] : `(${group.join(' OR ')})`)}`;
+
+test('card search: the whole scope is one search, as a phrase; a rare query is complete in it; repeats come from memory', async () => {
   await loginOk();
-  const r = await waitLong((await call('/caselist/card-search', { q: 'winter', caselists: ['hspf26', 'hspf25', 'bad', 'x1', 'x2'] })).body.job);
+  const r = await waitLong((await call('/caselist/card-search', { q: 'winter', caselists: ['hspf26', 'hspf24', 'x1'] })).body.job);
   assert.equal(r.state, 'done');
-  assert.equal(r.result.done, 5);
-  assert.deepEqual(r.result.failed, ['bad']);
-  assert.deepEqual(r.result.searched, ['hspf26', 'hspf25', 'x1', 'x2'], 'the plugin re-offers the rest');
-  assert.deepEqual(r.result.hits.map((h) => h.caselist), ['hspf26', 'hspf25', 'x1', 'x2']);
-  assert.deepEqual(r.result.hits[0], { type: 'file', caselist: 'hspf26', caselistLabel: 'hspf26', school: 'Lexington', team: 'AlHu', teamLabel: 'Lexington AlHu', title: 'a.docx', snippet: 'nuclear winter kills', path: 'hspf26/Lexington/AlHu/a.docx' });
-  assert.equal(upstream['/v1/search?q=%22winter%22&shard=hspf25'], 2, 'the 429 was retried once');
+  assert.equal(upstream[winterUrl(['hspf26', 'hspf24', 'x1'])], 1, 'one search for three caselists');
+  assert.equal(r.result.done, 1);
+  assert.deepEqual(r.result.searched, ['hspf26', 'hspf24', 'x1']);
+  assert.deepEqual(r.result.hits.map((h) => h.id), ['hspf26/Lexington/AlHu/0.docx', 'hspf24/Lexington/AlHu/0.docx', 'x1/Lexington/AlHu/0.docx']);
+  assert.equal(r.result.hits[0].snippet, 'nuclear winter kills');
+  const again = await waitLong((await call('/caselist/card-search', { q: 'winter', caselists: ['hspf26', 'hspf24', 'x1'] })).body.job);
+  assert.equal(again.result.hits.length, 3);
+  assert.equal(upstream[winterUrl(['hspf26', 'hspf24', 'x1'])], 1, 'a repeat within 30 min spends no search');
   assert.deepEqual(await waitJob((await call('/caselist/card-search', { q: '  ', caselists: ['hspf26'] })).body.job), { state: 'error', message: 'no_query' });
-  const before = upstream['/v1/search?q=%22winter%22&shard=hspf26'];
-  const again = await waitLong((await call('/caselist/card-search', { q: 'winter', caselists: ['hspf26'] })).body.job);
-  assert.equal(again.result.hits.length, 1);
-  assert.equal(upstream['/v1/search?q=%22winter%22&shard=hspf26'], before, 'a repeat within 30 min spends no search');
+});
+
+test('card search: a full group (100 hits) is split and searched again; every card once; a caselist over 100 is reported', async () => {
+  await loginOk();
+  const r = await waitLong((await call('/caselist/card-search', { q: 'winter', caselists: ['busy1', 'busy2', 'hspf27'] })).body.job);
+  assert.equal(r.result.done, 4, 'the group, then each caselist');
+  assert.equal(r.result.hits.length, 121, '60 + 60 + 1, none twice');
+  assert.deepEqual(r.result.searched, ['busy1', 'busy2', 'hspf27']);
+  assert.deepEqual(r.result.capped, []);
+  const one = await waitLong((await call('/caselist/card-search', { q: 'winter', caselists: ['slowA'] })).body.job);
+  assert.deepEqual([one.result.capped, one.result.searched], [['slowA'], ['slowA']], 'over 100 in one caselist: the most openCaselist gives');
+});
+
+test('card search: a 429 is retried; a failed search is reported, not retried', async () => {
+  await loginOk();
+  const r = await waitLong((await call('/caselist/card-search', { q: 'winter', caselists: ['hspf25'] })).body.job);
+  assert.equal(upstream[winterUrl(['hspf25'])], 2, 'the 429 was retried once');
+  assert.deepEqual(r.result.searched, ['hspf25']);
+  const bad = await waitLong((await call('/caselist/card-search', { q: 'winter', caselists: ['bad'] })).body.job);
+  assert.deepEqual([bad.result.failed, bad.result.searched], [['bad'], []]);
 });
 
 test('card search: stop ends a running search at the next caselist', async () => {

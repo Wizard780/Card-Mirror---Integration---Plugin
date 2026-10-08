@@ -81,16 +81,22 @@ test('listCaselists archived: past years too, open first then newest year; old-s
   assert.deepEqual((await listCaselists('TOK', f.opts, { archived: true })).map((c) => [c.name, c.year, c.archived]), [['hspf26', 2026, false], ['hspf25', 2025, true], ['hspf24', 2024, true]]);
 });
 
-test('searchCards keeps file and cite hits, strips <b> marks, and encodes the query', async () => {
+test('searchCards: one caselist or an OR group in one search; full at 100 hits; file and cite hits with ids, cleaned text', async () => {
   const f = fake({ '/search?q=nuclear%20winter&shard=hspf24': { body: [
     { type: 'file', caselist: 'hspf24', caselist_display_name: 'HS PF 2024-25', school: 'Hawken', team: 'JoMi', team_display_name: 'Hawken JoMi', download_path: 'hspf24/Hawken/JoMi/a.docx', title: 'a.docx', snippet: '[bookmark: _x1]a <b>nuclear winter</b>\n would' },
     { type: 'cite', caselist: 'hspf24', school: 'Interlake', team: 'WuZh', title: '5 - Feb - DA', snippet: '(\\*Matt **Starr 15**', path: 'hspf24/Interlake/WuZh#591912' },
     { type: 'team', school: 'X', team: 'Y' },
   ] } });
-  assert.deepEqual(await searchCards('TOK', 'hspf24', 'nuclear winter', f.opts), [
-    { type: 'file', caselist: 'hspf24', caselistLabel: 'HS PF 2024-25', school: 'Hawken', team: 'JoMi', teamLabel: 'Hawken JoMi', title: 'a.docx', snippet: 'a nuclear winter would', path: 'hspf24/Hawken/JoMi/a.docx' },
-    { type: 'cite', caselist: 'hspf24', caselistLabel: 'hspf24', school: 'Interlake', team: 'WuZh', teamLabel: 'Interlake WuZh', title: '5 - Feb - DA', snippet: '(Matt Starr 15', path: null },
-  ]);
+  assert.deepEqual(await searchCards('TOK', 'hspf24', 'nuclear winter', f.opts), { full: false, hits: [
+    { id: 'hspf24/Hawken/JoMi/a.docx', type: 'file', caselist: 'hspf24', caselistLabel: 'HS PF 2024-25', school: 'Hawken', team: 'JoMi', teamLabel: 'Hawken JoMi', title: 'a.docx', snippet: 'a nuclear winter would', path: 'hspf24/Hawken/JoMi/a.docx' },
+    { id: 'hspf24/Interlake/WuZh#591912', type: 'cite', caselist: 'hspf24', caselistLabel: 'hspf24', school: 'Interlake', team: 'WuZh', teamLabel: 'Interlake WuZh', title: '5 - Feb - DA', snippet: '(Matt Starr 15', path: null },
+  ] });
+  const many = Array.from({ length: 100 }, (_, i) => ({ type: 'file', caselist: 'hspf25', school: 'S', team: 'T', download_path: `hspf25/S/T/${i}.docx`, title: `${i}.docx`, snippet: 'x' }));
+  const g = fake({ '/search?q=x&shard=(hspf26%20OR%20hspf25)': { body: many } });
+  const r = await searchCards('TOK', ['hspf26', 'hspf25'], 'x', g.opts);
+  assert.equal(r.full, true, '100 hits: there may be more');
+  assert.equal(r.hits.length, 100);
+  await assert.rejects(searchCards('TOK', ['hspf26', 'x) OR (y'], 'x', g.opts), /^Error: bad_caselist$/, 'only plain caselist names go into the filter');
   await assert.rejects(searchCards('TOK', 'hspf24', 'x', fake({ '/search?q=x&shard=hspf24': { status: 429, body: {} } }).opts), /^Error: http_429$/);
 });
 
