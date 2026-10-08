@@ -257,6 +257,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
 .du-row-detail{flex:none;color:var(--pmd-c-text-muted);font-size:.82rem;white-space:nowrap;font-variant-numeric:tabular-nums}
 .du-stacked .du-row{flex-direction:column;align-items:stretch;gap:2px}
 .du-stacked .du-row-detail{white-space:normal}
+.du-wrap .du-row-main{white-space:normal;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
 .du-new{margin-left:8px;font-size:.72rem;font-weight:600;letter-spacing:.02em;color:var(--pmd-c-success)}
 .du-empty{padding:22px 12px;text-align:center;font-size:.88rem;color:var(--pmd-c-text-muted)}
 .du-tabs{margin-top:12px;width:max-content}
@@ -429,7 +430,8 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     // `key`, so the selection follows its file across refreshes.
     showList(title, initialItems, onPick, opts = {}) {
       const HINT = '↑↓ + Enter or click to open · Esc to close';
-      const d = openDialog({ title, stacked: opts.stacked, width: '560px' });
+      const d = openDialog({ title, stacked: opts.stacked || opts.wrap, width: opts.wrap ? '760px' : '560px' });
+      if (opts.wrap) d.dialog.className += ' du-wrap'; // long rows (card text) get up to three lines
       let resolveClosed;
       const closed = new Promise((r) => { resolveClosed = r; });
       const list = el('div', { class: 'du-list', attrs: { role: 'listbox', 'aria-label': title } });
@@ -1602,8 +1604,9 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     return t ? { name: t.caselist, label: t.caselistLabel, event: t.event || '' } : null;
   };
 
+  // Open caselists first, then every past year back to 2014, newest first.
   async function pickCaselist(api, u) {
-    const all = await runJob(api, '/caselist/caselists', {}, u.sleep);
+    const all = await runJob(api, '/caselist/caselists', { all: true }, u.sleep);
     if (!all.length) { api.showToast('No caselists are open right now.'); return null; }
     const prefer = [ownCaselist(api)?.name, api.storage.get('scoutCaselist')?.name].filter(Boolean);
     const rank = (c) => { const i = prefer.indexOf(c.name); return i === -1 ? prefer.length : i; };
@@ -1611,7 +1614,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     const i = await u.choose('Pick a caselist', ordered.map((c) => c.label));
     if (i == null) return null;
     const cl = { name: ordered[i].name, label: ordered[i].label, event: ordered[i].event || '' };
-    remember(api, 'scoutCaselist', cl);
+    if (!ordered[i].archived) remember(api, 'scoutCaselist', cl); // a past year must never become Scout's default
     return cl;
   }
 
@@ -1740,6 +1743,83 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     }
   }
 
+
+  // Full-text search of open source docs and cites across caselists. openCaselist allows
+  // 4 searches a minute, so a scope of N caselists takes ~N/4 minutes; hits stream in.
+  const minutesFor = (n) => (n <= 4 ? 'seconds' : `~${Math.ceil((n - 4) / 4)} min`);
+  // "NDT/CEDA College 2024-25" and "NDT/CEDA 2019-20" are one event: openCaselist renamed it in 2022.
+  const yearless = (label) => String(label).replace(/\s*\d{4}-\d{2}\s*$/, '').replace(/\s+College\b/, '').trim();
+
+  async function caselistCardSearch(api) {
+    const u = ui();
+    const ctx = { caselist: true, scouting: true };
+    try {
+      const q = String((await u.prompt('Search every caselist for…', api.storage.get('cardSearchQuery') || '')) ?? '').trim();
+      if (!q) return;
+      api.storage.set('cardSearchQuery', q); // session only: not worth a mirrored pref
+      const all = await runJob(api, '/caselist/caselists', { all: true }, u.sleep);
+      if (!all.length) return api.showToast('No caselists found.');
+      // Scopes: each event across every year (yours first), this year's caselists, everything.
+      const mine = ownCaselist(api) || api.storage.get('scoutCaselist');
+      const myGroup = mine ? yearless(mine.label) : '';
+      const groups = new Map();
+      for (const c of all) {
+        const g = yearless(c.label);
+        if (!groups.has(g)) groups.set(g, []);
+        groups.get(g).push(c);
+      }
+      const scopes = [...groups].sort((a, b) => (b[0] === myGroup) - (a[0] === myGroup))
+        .map(([g, list]) => ({ label: `${g}, every year`, list }));
+      const open = all.filter((c) => !c.archived);
+      if (open.length) scopes.push({ label: 'This year, every event', list: open });
+      scopes.push({ label: 'Every caselist', list: all });
+      const si = await u.choose(`Search for "${q}" in…`, scopes.map((s) => `${s.label} (${s.list.length} · ${minutesFor(s.list.length)})`));
+      if (si == null) return;
+      const scope = scopes[si].list.slice().sort((a, b) => a.archived - b.archived || (b.year || 0) - (a.year || 0));
+      const byName = new Map(all.map((c) => [c.name, c]));
+      const toItems = (hits) => hits.map((h, i) => ({
+        key: String(i),
+        hit: h,
+        label: h.snippet || h.title || '(no text)',
+        detail: [h.type === 'cite' ? `cites: ${h.title}` : '', h.teamLabel, byName.get(h.caselist)?.label || h.caselistLabel].filter(Boolean).join(' · '),
+      }));
+      const statusOf = (p, finished) => [
+        `${plural(p.hits.length, 'hit')} · ${p.done} of ${plural(p.total, 'caselist')} searched${finished ? '' : '…'}`,
+        p.failed && p.failed.length ? `${p.failed.length} failed` : '',
+        p.capped ? `stopped at ${p.hits.length}, narrow the search` : '',
+        'Enter opens the doc (cites: the team page)',
+      ].filter(Boolean).join(' · ');
+      const onPick = async (it) => {
+        const h = it.hit;
+        const cl = byName.get(h.caselist) || { name: h.caselist, label: h.caselistLabel, event: '' };
+        const team = { school: h.school, team: h.team, label: h.teamLabel };
+        try {
+          if (h.type === 'cite') return await openTeamPage(api, u, { name: cl.name, label: cl.label, event: cl.event || '' }, team, ctx);
+          const name = h.path.split('/').pop();
+          api.showToast(`Opening "${name}"…`);
+          const res = await runJob(api, '/caselist/open', { caselist: cl.name, school: h.school, team: h.team, path: h.path }, u.sleep);
+          api.showToast(openedToast(res));
+        } catch (err) {
+          api.showToast(message(err.message, { ...ctx, name: h.title }));
+        }
+      };
+      const view = u.showList(`Caselist cards: "${q}"`, [], onPick, { wrap: true, hint: `Searching ${plural(scope.length, 'caselist')} (${minutesFor(scope.length)})…` });
+      let closed = false;
+      view.closed.then(() => { closed = true; call(api, '/caselist/card-search/stop', {}).catch(() => {}); });
+      let shown = 0;
+      const show = (p, finished) => {
+        if (closed) return;
+        if (p.hits.length !== shown || finished) { shown = p.hits.length; view.update(toItems(p.hits), statusOf(p, finished)); }
+      };
+      const done = await runJob(api, '/caselist/card-search', { q, caselists: scope.map((c) => c.name) }, u.sleep, {
+        onProgress: (p) => show(p, false),
+        maxPolls: scope.length * 30 + 120, // ~16 s per caselist plus 429 back-off
+      });
+      if (!done.stopped) show(done, true);
+    } catch (err) {
+      api.showToast(message(err.message, ctx));
+    }
+  }
 
   // ---------------------------------------------------------------- Mark cards
   // "Marked" in CardMirror = red text (FF0000): its reading marker and "marked cards"
@@ -2335,6 +2415,13 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         keywords: ['caselist', 'search', 'team', 'school', 'opencaselist'],
         defaultKey: null,
         run: (api) => withPrefs(api, () => caselistSearch(api)),
+      },
+      {
+        id: `${ID}.caselistCardSearch`,
+        label: 'Search all caselists for cards…',
+        keywords: ['caselist', 'search', 'cards', 'evidence', 'wiki', 'opencaselist', 'past years', 'archive'],
+        defaultKey: null,
+        run: (api) => withPrefs(api, () => caselistCardSearch(api)),
       },
     ],
   });

@@ -109,6 +109,21 @@ before(async () => {
       { name: 'AnHa', display_name: 'Lexington Catholic AnHa', debater1_first: 'Ava', debater1_last: 'Ang', debater2_first: 'Hal', debater2_last: 'Hart' },
     ]);
     if (req.url === '/v1/caselists/hspf26/schools/StMarks/teams') return send(200, [{ name: 'StMarksAB', display_name: "St. Mark's AB" }]);
+    if (req.url === '/v1/caselists?archived=true') return send(200, [
+      { name: 'hspolicy13', display_name: 'HS Policy 2013-14', event: 'cx', year: 2013, archived: true, archive_url: 'https://hspolicy13.paperlessdebate.com' },
+      { name: 'hspf25', display_name: 'HS PF 2025', event: 'pf', year: 2025, archived: true },
+      { name: 'hspf26', display_name: 'HS PF 2026', event: 'pf', year: 2026, archived: false },
+    ]);
+    if (req.url.startsWith('/v1/search?q=winter&')) {
+      const shard = new URL(req.url, 'http://x').searchParams.get('shard');
+      if (shard === 'bad') return send(500, { message: 'boom' });
+      if (shard === 'hspf25' && upstream[req.url] === 1) return send(429, { message: 'You can only run 4 searches per minute.' });
+      if (shard.startsWith('slow')) await new Promise((r) => setTimeout(r, 150));
+      return send(200, [
+        { type: 'file', caselist: shard, caselist_display_name: shard, school: 'Lexington', team: 'AlHu', team_display_name: 'Lexington AlHu', download_path: `${shard}/Lexington/AlHu/a.docx`, title: 'a.docx', snippet: 'nuclear <b>winter</b>\n kills' },
+        { type: 'team', school: 'Lexington', team: 'AlHu' },
+      ]);
+    }
     if (req.url.startsWith('/v1/search?')) return send(200, [
       { type: 'team', school: 'Lexington', team: 'AlHu', team_display_name: 'Lexington AlHu', school_display_name: 'Lexington' },
       { type: 'cite', school: 'Lexington', team: 'KaRo' },
@@ -219,7 +234,7 @@ esac
       DEBATE_UPLOADER_IMAP: `127.0.0.1:${imapServer.address().port}:plain`,
       DEBATE_UPLOADER_EVIDENCE_FILE: join(downloadDir, 'prefs', 'evidence-index.json'), DEBATE_UPLOADER_CARDS_DIR: join(downloadDir, 'cards'),
       DEBATE_UPLOADER_SD_WS: `ws://127.0.0.1:${fakeSD.address().port}/sock/websocket`,
-      DEBATE_UPLOADER_CASELIST_BASE: `http://127.0.0.1:${fakeCL.address().port}/v1`, DEBATE_UPLOADER_SECURITY_BIN: security },
+      DEBATE_UPLOADER_SEARCH_WINDOW_MS: '200', DEBATE_UPLOADER_CASELIST_BASE: `http://127.0.0.1:${fakeCL.address().port}/v1`, DEBATE_UPLOADER_SECURITY_BIN: security },
     stdio: ['ignore', openSync(helperLog, 'w'), openSync(helperLog, 'a')],
   });
   const sessionPath = join(bridgeDir, 'debate-uploader.session.json');
@@ -362,6 +377,49 @@ test('tabroom: a 401 later deletes the stored token (login_expired); logout also
 
 const loginOk = () => call('/tabroom/login', { username: 'me@x.com', password: 'right-pw-123' }).then((r) => waitJob(r.body.job));
 const ROUND_IN = { tournament: 'Glenbrooks', side: 'Con', round: '3', opponent: 'Lexington AB', judge: 'Smith', report: 'Read the AI DA' };
+
+test('caselist: all:true lists past years newest first, minus the old-site ones', async () => {
+  await loginOk();
+  assert.deepEqual((await waitJob((await call('/caselist/caselists', { all: true })).body.job)).result, [
+    { name: 'hspf26', label: 'HS PF 2026', event: 'pf', year: 2026, archived: false },
+    { name: 'hspf25', label: 'HS PF 2025', event: 'pf', year: 2025, archived: true },
+  ]);
+});
+
+async function waitLong(id) {
+  for (let i = 0; i < 200; i++) {
+    const { body } = await call('/job', { id, waitMs: 500 });
+    if (body.state !== 'running') return body;
+  }
+  throw new Error('job never finished');
+}
+
+test('card search: every caselist in order, paced; a 429 is retried, a failure skipped; hits are file/cite rows only', async () => {
+  await loginOk();
+  const r = await waitLong((await call('/caselist/card-search', { q: 'winter', caselists: ['hspf26', 'hspf25', 'bad', 'x1', 'x2'] })).body.job);
+  assert.equal(r.state, 'done');
+  assert.equal(r.result.done, 5);
+  assert.deepEqual(r.result.failed, ['bad']);
+  assert.deepEqual(r.result.hits.map((h) => h.caselist), ['hspf26', 'hspf25', 'x1', 'x2']);
+  assert.deepEqual(r.result.hits[0], { type: 'file', caselist: 'hspf26', caselistLabel: 'hspf26', school: 'Lexington', team: 'AlHu', teamLabel: 'Lexington AlHu', title: 'a.docx', snippet: 'nuclear winter kills', path: 'hspf26/Lexington/AlHu/a.docx' });
+  assert.equal(upstream['/v1/search?q=winter&shard=hspf25'], 2, 'the 429 was retried once');
+  assert.deepEqual(await waitJob((await call('/caselist/card-search', { q: '  ', caselists: ['hspf26'] })).body.job), { state: 'error', message: 'no_query' });
+});
+
+test('card search: stop ends a running search at the next caselist', async () => {
+  await loginOk();
+  const shards = Array.from({ length: 30 }, (_, i) => `slow${i}`);
+  const { job } = (await call('/caselist/card-search', { q: 'winter', caselists: shards })).body;
+  for (let i = 0; i < 100; i++) {
+    const { body } = await call('/job', { id: job });
+    if (body.progress && body.progress.done >= 1) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.deepEqual((await call('/caselist/card-search/stop', {})).body, { ok: true });
+  const r = await waitLong(job);
+  assert.equal(r.result.stopped, true);
+  assert.ok(r.result.done < 30, `stopped after ${r.result.done}`);
+});
 
 test('caselist: not logged in → not_logged_in for lists and upload', async () => {
   await call('/tabroom/logout', {});

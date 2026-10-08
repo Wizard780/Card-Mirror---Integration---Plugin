@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 import { createKeychain } from './lib/keychain.mjs';
 import { createRoomWatcher } from './lib/roomwatch.mjs';
 import { createPrefs } from './lib/prefs.mjs';
-import { login, getRounds, listCaselists, listSchools, listTeams, createRound, searchTeams, getTeam, downloadOpenSource, listTeamsDetailed, CASELIST_BASE } from './lib/caselist.mjs';
+import { login, getRounds, listCaselists, listSchools, listTeams, createRound, searchTeams, searchCards, getTeam, downloadOpenSource, listTeamsDetailed, CASELIST_BASE } from './lib/caselist.mjs';
 import { parseOpponent, schoolScore, pickTeam } from './lib/scout.mjs';
 import { uploadToSpeechDrop, newestDocx, MAX_BYTES, listRoom, downloadFile, saveUnique, expandHome, SD_BASE, SD_MEDIA } from './lib/speechdrop.mjs';
 import { createEvidenceIndex } from './lib/evidence.mjs';
@@ -21,7 +21,7 @@ import { buildMessage, newMessageId, sendMail, verifyLogin, isEmail } from './li
 import { recentMessages } from './lib/imap.mjs';
 import { readFile, stat, writeFile, rename } from 'node:fs/promises';
 
-const VERSION = '0.2.2';
+const VERSION = '0.3.0';
 const bridgeDir = process.env.DEBATE_UPLOADER_BRIDGE_DIR || defaultBridgeDir();
 const sdBase = process.env.DEBATE_UPLOADER_SD_BASE || SD_BASE;
 const sdMedia = process.env.DEBATE_UPLOADER_SD_MEDIA || SD_MEDIA;
@@ -118,6 +118,8 @@ async function cached(key, ttlMs, fn) {
 const TEN_MIN = 10 * 60_000;
 const cl = {
   caselists: (t) => cached('caselists', TEN_MIN, () => listCaselists(t, clOpts)),
+  // Open plus every past year. Only browsing uses it: upload and scout stay on open caselists.
+  caselistsAll: (t) => cached('caselistsAll', TEN_MIN, () => listCaselists(t, clOpts, { archived: true })),
   schools: (t, c) => cached(`schools:${c}`, TEN_MIN, () => listSchools(t, c, clOpts)),
   teams: (t, c, s) => cached(`teams:${c}:${s}`, TEN_MIN, () => listTeams(t, c, s, clOpts)),
   teamsDetailed: (t, c, s) => cached(`teamsDetailed:${c}:${s}`, TEN_MIN, () => listTeamsDetailed(t, c, s, clOpts)),
@@ -148,15 +150,31 @@ async function withSession(fn) {
 
 const authedJob = (label, fn) => ({
   ok: true,
-  job: jobs.start(async () => {
+  job: jobs.start(async (report) => {
     try {
-      return await withSession(fn);
+      return await withSession((t) => fn(t, report));
     } catch (err) {
       log(`${label} failed`, err.message);
       throw err;
     }
   }),
 });
+
+// openCaselist allows 4 searches a minute per user. Every /search call waits for a slot
+// in the sliding window; a 429 (searches from the website count too) fills the window.
+const SEARCH_WINDOW_MS = Number(process.env.DEBATE_UPLOADER_SEARCH_WINDOW_MS) || 61_000;
+let recentSearches = [];
+async function searchSlot() {
+  for (;;) {
+    const now = Date.now();
+    recentSearches = recentSearches.filter((at) => now - at < SEARCH_WINDOW_MS);
+    if (recentSearches.length < 4) { recentSearches.push(now); return; }
+    await new Promise((r) => setTimeout(r, recentSearches[0] + SEARCH_WINDOW_MS - now));
+  }
+}
+const searchFull = () => { recentSearches = Array(4).fill(Date.now()); };
+const MAX_CARD_HITS = 1000;
+let cardSearchGen = 0; // bumped by stop or a newer search: the running one ends at its next caselist
 
 async function scoutIn(t, caselist, opponent) {
   const { school } = parseOpponent(opponent);
@@ -255,7 +273,7 @@ const routes = {
     return out;
   }),
 
-  '/caselist/caselists': () => authedJob('caselist list', (t) => cl.caselists(t)),
+  '/caselist/caselists': ({ all }) => authedJob('caselist list', (t) => (all ? cl.caselistsAll(t) : cl.caselists(t))),
   '/caselist/schools': ({ caselist }) => authedJob('caselist schools', (t) => cl.schools(t, caselist)),
   '/caselist/teams': ({ caselist, school }) => authedJob('caselist teams', (t) => cl.teams(t, caselist, school)),
 
@@ -485,7 +503,45 @@ const routes = {
     }
   },
 
-  '/caselist/search': ({ caselist, q }) => authedJob('caselist search', (t) => searchTeams(t, caselist, q, clOpts)),
+  '/caselist/search': ({ caselist, q }) => authedJob('caselist search', async (t) => { await searchSlot(); return searchTeams(t, caselist, q, clOpts); }),
+
+  // Card search across caselists, in the order given (newest first). Results stream out
+  // through the job's progress; ~15 s per caselist after the first four (the rate limit).
+  '/caselist/card-search': ({ q, caselists }) => {
+    const gen = ++cardSearchGen;
+    return authedJob('caselist card search', async (t, report) => {
+      const query = String(q ?? '').trim();
+      if (!query) throw new Error('no_query');
+      const list = (Array.isArray(caselists) ? caselists : []).map(String).filter(Boolean).slice(0, 100);
+      const hits = [];
+      const failed = [];
+      let done = 0;
+      const live = () => gen === cardSearchGen && hits.length < MAX_CARD_HITS;
+      for (const c of list) {
+        if (!live()) break;
+        for (let tries = 0; ; tries++) {
+          await searchSlot();
+          if (gen !== cardSearchGen) break;
+          try {
+            hits.push(...(await searchCards(t, c, query, clOpts)));
+            break;
+          } catch (err) {
+            if (err.message === 'login_expired') throw err;
+            if (err.message === 'http_429' && tries < 2) { searchFull(); continue; }
+            failed.push(c);
+            break;
+          }
+        }
+        if (gen !== cardSearchGen) break;
+        done++;
+        report({ done, total: list.length, hits: hits.slice(0, MAX_CARD_HITS), failed });
+      }
+      const out = { done, total: list.length, hits: hits.slice(0, MAX_CARD_HITS), failed, capped: hits.length >= MAX_CARD_HITS, stopped: gen !== cardSearchGen };
+      log('caselist card search', `${done}/${list.length} caselists`, out.hits.length, 'hits', out.stopped ? '(stopped)' : '');
+      return out;
+    });
+  },
+  '/caselist/card-search/stop': () => { cardSearchGen++; return { ok: true }; },
   '/caselist/team': ({ caselist, school, team }) => authedJob('caselist team', (t) => getTeam(t, caselist, school, team, clOpts)),
 
   // Read-only: downloads only a file listed on that team's own page.

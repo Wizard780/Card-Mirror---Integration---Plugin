@@ -42,10 +42,10 @@ function harness({ prefs = {}, responses = [], settings = {}, storage = {}, room
   return { api, calls, toasts, prompts, store, prefsReply, prefsSets };
 }
 
-test('registers twenty commands and one setting under the plugin id', () => {
+test('registers twenty-one commands and one setting under the plugin id', () => {
   assert.equal(def.id, 'debate-uploader');
   assert.equal(def.apiVersion, 1);
-  assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.boldEmphasis', 'debate-uploader.cardCheck', 'debate-uploader.cardCheckLast', 'debate-uploader.caselistScout', 'debate-uploader.caselistSearch', 'debate-uploader.caselistTeam', 'debate-uploader.caselistUpload', 'debate-uploader.emailChain', 'debate-uploader.evidenceFolders', 'debate-uploader.evidenceSearch', 'debate-uploader.gmailForget', 'debate-uploader.gmailSetup', 'debate-uploader.markCards', 'debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdPick', 'debate-uploader.setFolder',
+  assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.boldEmphasis', 'debate-uploader.cardCheck', 'debate-uploader.cardCheckLast', 'debate-uploader.caselistCardSearch', 'debate-uploader.caselistScout', 'debate-uploader.caselistSearch', 'debate-uploader.caselistTeam', 'debate-uploader.caselistUpload', 'debate-uploader.emailChain', 'debate-uploader.evidenceFolders', 'debate-uploader.evidenceSearch', 'debate-uploader.gmailForget', 'debate-uploader.gmailSetup', 'debate-uploader.markCards', 'debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdPick', 'debate-uploader.setFolder',
  'debate-uploader.tabroomLogin', 'debate-uploader.tabroomLogout', 'debate-uploader.tabroomRounds']);
   assert.deepEqual(def.settings.map((s) => [s.key, s.type, s.default]), [['sendDocFolder', 'text', '']]);
 });
@@ -750,6 +750,69 @@ test('search: pick a caselist (yours first) → a school from the list → a tea
   await cmd('caselistSearch').run(cancel.api);
   assert.equal(cancel.pages.length, 0);
   assert.equal(cancel.calls.filter((c) => c.route === '/caselist/teams').length, 0);
+});
+
+const ALL_LISTS = [
+  { name: 'hspf26', label: 'HS PF 2026-27', event: 'pf', year: 2026, archived: false },
+  { name: 'hsld26', label: 'HS LD 2026-27', event: 'ld', year: 2026, archived: false },
+  { name: 'hspf25', label: 'HS PF 2025-26', event: 'pf', year: 2025, archived: true },
+  { name: 'hspf24', label: 'HS PF 2024-25', event: 'pf', year: 2024, archived: true },
+];
+
+test('search the caselist lists past years too; a past year is never remembered for Scout; upload stays on open caselists', async () => {
+  const h = scoutHarness({ choose: [2, 0], results: { '/caselist/caselists': ALL_LISTS, '/caselist/schools': [{ name: 'Lexington', label: 'Lexington' }], '/caselist/teams': [{ name: 'AlHu', label: 'Lexington AlHu' }], '/caselist/team': TEAM } });
+  await cmd('caselistSearch').run(h.api);
+  assert.deepEqual(h.calls.find((c) => c.route === '/caselist/caselists').body, { all: true });
+  assert.deepEqual(h.chooseTitles[0][1], ['HS PF 2026-27', 'HS LD 2026-27', 'HS PF 2025-26', 'HS PF 2024-25']);
+  assert.deepEqual(h.calls.find((c) => c.route === '/caselist/team').body, { caselist: 'hspf25', school: 'Lexington', team: 'AlHu' });
+  assert.equal(h.store.get('scoutCaselist'), undefined);
+  assert.deepEqual(h.prefsSets, []);
+
+  const up = caselistHarness({ results: { ...LISTS, '/tabroom/rounds': TAB }, choose: [null] });
+  await cmd('caselistUpload').run(up.api);
+  assert.deepEqual(up.calls.find((c) => c.route === '/caselist/caselists').body, {});
+});
+
+test('card search: query → scope (your event first) → streamed hits; a file hit opens the doc, a cite hit the team page; closing stops the search', async () => {
+  const HITS = [
+    { type: 'file', caselist: 'hspf25', caselistLabel: 'HS PF 2025-26', school: 'Hawken', team: 'JoMi', teamLabel: 'Hawken JoMi', title: 'Hawken-JoMi-Pro-R4.docx', snippet: 'nuclear winter kills billions', path: 'hspf25/Hawken/JoMi/Hawken-JoMi-Pro-R4.docx' },
+    { type: 'cite', caselist: 'hspf24', caselistLabel: 'HS PF 2024-25', school: 'Interlake', team: 'WuZh', teamLabel: 'Interlake WuZh', title: '5 - Feb - DA - Cyber', snippet: 'Starr 15 nuclear winter', path: null },
+  ];
+  const h = scoutHarness({ prompt: 'nuclear winter', choose: [0], storage: { caselistTarget: TARGET },
+    results: { '/caselist/caselists': ALL_LISTS, '/caselist/card-search': { done: 3, total: 3, hits: HITS, failed: [], capped: false, stopped: false }, '/caselist/open': { name: 'Hawken-JoMi-Pro-R4.docx', path: '/p', app: 'CardMirror' }, '/caselist/team': TEAM },
+    direct: {} });
+  h.lists = [];
+  let close;
+  window.__debateUploaderUI.showList = (title, items, onPick, opts) => {
+    const l = { title, items, onPick, opts, statuses: [] };
+    h.lists.push(l);
+    const closed = new Promise((r) => { close = r; });
+    return { closed, close: () => close(), update: (next, status) => { l.items = next; l.statuses.push(status); } };
+  };
+  await cmd('caselistCardSearch').run(h.api);
+  assert.equal(h.prompts[0][0], 'Search every caselist for…');
+  assert.deepEqual(h.chooseTitles[0], ['Search for "nuclear winter" in…', ['HS PF, every year (3 · seconds)', 'HS LD, every year (1 · seconds)', 'This year, every event (2 · seconds)', 'Every caselist (4 · seconds)']]);
+  assert.deepEqual(h.calls.find((c) => c.route === '/caselist/card-search').body, { q: 'nuclear winter', caselists: ['hspf26', 'hspf25', 'hspf24'] });
+  const l = h.lists[0];
+  assert.equal(l.title, 'Caselist cards: "nuclear winter"');
+  assert.deepEqual(l.items.map((it) => [it.label, it.detail]), [
+    ['nuclear winter kills billions', 'Hawken JoMi · HS PF 2025-26'],
+    ['Starr 15 nuclear winter', 'cites: 5 - Feb - DA - Cyber · Interlake WuZh · HS PF 2024-25'],
+  ]);
+  assert.match(l.statuses.at(-1), /^2 hits · 3 of 3 caselists searched · /);
+  await l.onPick(l.items[0]);
+  assert.deepEqual(h.calls.find((c) => c.route === '/caselist/open').body, { caselist: 'hspf25', school: 'Hawken', team: 'JoMi', path: 'hspf25/Hawken/JoMi/Hawken-JoMi-Pro-R4.docx' });
+  assert.equal(h.toasts.at(-1), 'Opened "Hawken-JoMi-Pro-R4.docx" in CardMirror');
+  await l.onPick(l.items[1]);
+  assert.equal(h.pages[0].title, 'Interlake WuZh');
+  assert.equal(h.pages[0].subtitle.split(' · ')[0], 'HS PF 2024-25');
+  close();
+  await new Promise((r) => setImmediate(r));
+  assert.ok(h.calls.some((c) => c.route === '/caselist/card-search/stop'), 'closing the list stops the helper search');
+
+  const cancel = scoutHarness({ prompt: '  ', results: {} });
+  await cmd('caselistCardSearch').run(cancel.api);
+  assert.equal(cancel.calls.length, 0, 'an empty query sends nothing');
 });
 
 test('team page actions: copy without a clipboard explains; a vanished file says so', async () => {
