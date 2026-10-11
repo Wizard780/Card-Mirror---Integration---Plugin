@@ -14,6 +14,9 @@
       return "The helper didn't answer in time. Try again.";
     }
     if (ctx.browse && code === 'unreachable') return "Couldn't reach speechdrop.net. Try again.";
+    if (ctx.zip && code === 'empty_room') return `SpeechDrop room ${ctx.room} has no files yet.`;
+    if (ctx.zip && code === 'download_failed') return "Couldn't download any file in the room. Try again.";
+    if (ctx.zip && code === 'too_large') return 'That room is too big for one zip (over 4 GB or 65,535 files).';
     if (ctx.tabroom) {
       switch (code) {
         case 'bad_login': return 'Tabroom rejected that email or password.';
@@ -1404,6 +1407,31 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     }
   }
 
+  async function zipRoom(api) {
+    const u = ui();
+    const ctx = { browse: true, zip: true, room: '' };
+    try {
+      const raw = await u.prompt('SpeechDrop room code to download', api.storage.get('lastRoom') || '');
+      if (raw == null) return;
+      const room = normalizeRoom(raw);
+      ctx.room = room;
+      if (!room) return api.showToast(`"${String(raw).trim()}" doesn't look like a SpeechDrop room code.`);
+      remember(api, 'lastRoom', room);
+      api.showToast(`Downloading room ${room}…`);
+      let shown = 0;
+      const r = await runJob(api, '/speechdrop/zip', { room }, u.sleep, {
+        maxPolls: 1800, // ≈30 min: camp rooms hold 1,000+ files
+        onProgress: (p) => { // a toast every 10%, not every poll
+          if (p.total >= 20 && p.done < p.total && p.done - shown >= p.total / 10) { shown = p.done; api.showToast(`Downloading room ${room}: ${p.done} of ${p.total} files…`); }
+        },
+      });
+      const skipped = r.skipped ? ` ${r.skipped} file${r.skipped === 1 ? ' is' : 's are'} no longer on SpeechDrop and ${r.skipped === 1 ? 'was' : 'were'} skipped.` : '';
+      api.showToast(`Saved ${r.count} file${r.count === 1 ? '' : 's'} to "${r.name}" and showed it in Finder.${skipped}`);
+    } catch (err) {
+      api.showToast(message(err.message, ctx));
+    }
+  }
+
   async function tabroomLogin(api) {
     const u = ui();
     try {
@@ -2354,6 +2382,13 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         keywords: ['speechdrop', 'browse', 'open', 'download', 'room'],
         defaultKey: null,
         run: (api) => withPrefs(api, () => browse(api)),
+      },
+      {
+        id: `${ID}.sdZip`,
+        label: 'Download SpeechDrop room as zip…',
+        keywords: ['speechdrop', 'download', 'zip', 'all', 'room'],
+        defaultKey: null,
+        run: (api) => withPrefs(api, () => zipRoom(api)),
       },
       {
         id: `${ID}.setFolder`,

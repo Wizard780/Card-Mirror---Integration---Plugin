@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, mkdir, utimes, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { mimeFor, expandHome, newestDocx, uploadToSpeechDrop, MAX_BYTES, listRoom, downloadFile, saveUnique } from '../lib/speechdrop.mjs';
+import { mimeFor, expandHome, newestDocx, uploadToSpeechDrop, MAX_BYTES, listRoom, downloadFile, saveUnique, createZipWriter, freeName } from '../lib/speechdrop.mjs';
+import { readZip, unzipEntry } from '../lib/docx.mjs';
 
 const DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
 
@@ -174,4 +175,17 @@ test('saveUnique refuses names that could escape the folder', async () => {
     await assert.rejects(saveUnique(dir, bad, Buffer.from('x')), /^Error: bad_name$/, bad);
   }
   assert.deepEqual(await readdir(dir), []);
+});
+
+test('createZipWriter: streams a valid zip, keeps UTF-8 names, renames duplicates; freeName skips taken names', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'zip-'));
+  const path = await freeName(dir, 'r.zip');
+  assert.equal(path, join(dir, 'r.zip'));
+  const z = await createZipWriter(path);
+  await z.add('1AC — Ryan.docx', Buffer.from('a'));
+  await z.add('1AC — Ryan.docx', Buffer.from('b'));
+  await z.add('x.pdf', Buffer.alloc(0));
+  await z.close();
+  assert.deepEqual([...readZip(await readFile(path)).values()].map((e) => [e.name, unzipEntry(e).toString()]), [['1AC — Ryan.docx', 'a'], ['1AC — Ryan (2).docx', 'b'], ['x.pdf', '']]);
+  assert.equal(await freeName(dir, 'r.zip'), join(dir, 'r (2).zip'));
 });

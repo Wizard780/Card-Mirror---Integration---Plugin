@@ -3,7 +3,7 @@ import { createJobStore } from './lib/jobs.mjs';
 import { createHelperServer } from './lib/server.mjs';
 import { writeBridgeFiles, removeSession, newToken, defaultBridgeDir } from './lib/bridge.mjs';
 import { execFile } from 'node:child_process';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
 import { createKeychain } from './lib/keychain.mjs';
@@ -11,7 +11,7 @@ import { createRoomWatcher } from './lib/roomwatch.mjs';
 import { createPrefs } from './lib/prefs.mjs';
 import { login, getRounds, listCaselists, listSchools, listTeams, createRound, searchTeams, searchCards, SEARCH_ROWS, getTeam, downloadOpenSource, listTeamsDetailed, CASELIST_BASE } from './lib/caselist.mjs';
 import { parseOpponent, schoolScore, pickTeam } from './lib/scout.mjs';
-import { uploadToSpeechDrop, newestDocx, MAX_BYTES, listRoom, downloadFile, saveUnique, expandHome, SD_BASE, SD_MEDIA } from './lib/speechdrop.mjs';
+import { uploadToSpeechDrop, newestDocx, MAX_BYTES, listRoom, downloadFile, saveUnique, createZipWriter, freeName, expandHome, SD_BASE, SD_MEDIA } from './lib/speechdrop.mjs';
 import { createEvidenceIndex } from './lib/evidence.mjs';
 import { cardDocx, headingsOf, boldEmphasis } from './lib/docx.mjs';
 import { draftReport } from './lib/report-draft.mjs';
@@ -19,7 +19,7 @@ import { compare, skippedQualifiers, verdict, urlsIn } from './lib/cardcheck.mjs
 import { getSource, safeFetch } from './lib/fetchsafe.mjs';
 import { buildMessage, newMessageId, sendMail, verifyLogin, isEmail } from './lib/smtp.mjs';
 import { recentMessages } from './lib/imap.mjs';
-import { readFile, stat, writeFile, rename } from 'node:fs/promises';
+import { readFile, stat, writeFile, rename, mkdir, rm } from 'node:fs/promises';
 
 const VERSION = '0.4.0';
 const bridgeDir = process.env.DEBATE_UPLOADER_BRIDGE_DIR || defaultBridgeDir();
@@ -239,6 +239,48 @@ const routes = {
         return { name: entry.name, path, ...how };
       } catch (err) {
         log('speechdrop open failed', room, err.message);
+        throw err;
+      }
+    });
+    return { ok: true, job: id };
+  },
+
+  // Every file in the room, oldest first, in ~/Downloads/SpeechDrop/<room>.zip, shown in Finder.
+  // Files SpeechDrop lists but no longer serves are skipped and counted, not fatal.
+  '/speechdrop/zip': ({ room }) => {
+    const id = jobs.start(async (report) => {
+      let zip;
+      let part;
+      try {
+        const entries = (await listRoom(room, { base: sdBase })).filter((f) => f.name && !/[\\/]/.test(f.name) && f.name !== '.' && f.name !== '..').reverse();
+        if (!entries.length) throw new Error('empty_room');
+        await mkdir(downloadDir, { recursive: true });
+        part = join(downloadDir, `.${room}.${id}.zip.part`);
+        zip = await createZipWriter(part);
+        let done = 0;
+        let skipped = 0;
+        for (let i = 0; i < entries.length; i += 4) { // 4 downloads at a time, written in room order
+          const got = await Promise.all(entries.slice(i, i + 4).map((f) =>
+            downloadFile({ room, index: f.index, name: f.name }, { mediaBase: sdMedia }).catch(() => null)));
+          for (const [k, bytes] of got.entries()) {
+            if (bytes) await zip.add(entries[i + k].name, bytes); else skipped++;
+          }
+          done += got.length;
+          report({ done, total: entries.length });
+        }
+        if (skipped === entries.length) throw new Error('download_failed');
+        await zip.close();
+        zip = null;
+        const path = await freeName(downloadDir, `${room}.zip`);
+        await rename(part, path);
+        await quarantine(path);
+        const how = await openSafely(path);
+        log('speechdrop zip', room, entries.length - skipped, 'files', skipped, 'skipped');
+        return { name: basename(path), path, count: entries.length - skipped, skipped, ...how };
+      } catch (err) {
+        if (zip) await zip.abort();
+        if (part) await rm(part, { force: true });
+        log('speechdrop zip failed', room, err.message);
         throw err;
       }
     });

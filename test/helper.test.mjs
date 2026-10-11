@@ -338,6 +338,19 @@ test('open: same file again reuses the path; a name not in the room is "removed"
   assert.deepEqual(gone, { state: 'error', message: 'removed' });
 });
 
+test('zip: every room file in one zip next to the room folders, shown in Finder; empty room says so', async () => {
+  const r = await waitJob((await call('/speechdrop/zip', { room: 'room1' })).body.job);
+  const zipPath = join(downloadDir, 'room1.zip');
+  assert.deepEqual([r.state, r.result], ['done', { name: 'room1.zip', path: zipPath, count: 2, skipped: 0, app: 'finder' }]);
+  assert.deepEqual(r.progress, { done: 2, total: 2 });
+  assert.deepEqual((await readdir(downloadDir)).filter((n) => n.endsWith('.part')), [], 'no partial file left');
+  const entries = [...readZip(await readFile(zipPath)).values()];
+  assert.deepEqual(entries.map((e) => [e.name, unzipEntry(e).toString()]), [['pick.txt', (await readFile(join(downloadDir, 'room1', 'pick.txt'), 'utf8'))], ['Send 1AC.docx', 'docx-bytes']]);
+  assert.equal((await readFile(openLog, 'utf8')).trim().split('\n').at(-1), `-R|${zipPath}|`);
+  const none = await waitJob((await call('/speechdrop/zip', { room: 'nope1' })).body.job);
+  assert.deepEqual(none, { state: 'error', message: 'no_room' });
+});
+
 test('tabroom: rounds before login is not_logged_in', async () => {
   const r = await waitJob((await call('/tabroom/rounds', {})).body.job);
   assert.deepEqual(r, { state: 'error', message: 'not_logged_in' });
