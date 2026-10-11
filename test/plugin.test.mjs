@@ -42,10 +42,10 @@ function harness({ prefs = {}, responses = [], settings = {}, storage = {}, room
   return { api, calls, toasts, prompts, store, prefsReply, prefsSets };
 }
 
-test('registers twenty-one commands and one setting under the plugin id', () => {
+test('registers twenty-two commands and one setting under the plugin id', () => {
   assert.equal(def.id, 'debate-uploader');
   assert.equal(def.apiVersion, 1);
-  assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.boldEmphasis', 'debate-uploader.cardCheck', 'debate-uploader.cardCheckLast', 'debate-uploader.caselistCardSearch', 'debate-uploader.caselistScout', 'debate-uploader.caselistSearch', 'debate-uploader.caselistTeam', 'debate-uploader.caselistUpload', 'debate-uploader.emailChain', 'debate-uploader.evidenceFolders', 'debate-uploader.evidenceSearch', 'debate-uploader.gmailForget', 'debate-uploader.gmailSetup', 'debate-uploader.markCards', 'debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdPick', 'debate-uploader.setFolder',
+  assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.boldEmphasis', 'debate-uploader.cardCheck', 'debate-uploader.cardCheckLast', 'debate-uploader.caselistCardSearch', 'debate-uploader.caselistScout', 'debate-uploader.caselistSearch', 'debate-uploader.caselistTeam', 'debate-uploader.caselistUpload', 'debate-uploader.emailChain', 'debate-uploader.evidenceFolders', 'debate-uploader.evidenceSearch', 'debate-uploader.gmailForget', 'debate-uploader.gmailSetup', 'debate-uploader.markCards', 'debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdPick', 'debate-uploader.sdZip', 'debate-uploader.setFolder',
  'debate-uploader.tabroomLogin', 'debate-uploader.tabroomLogout', 'debate-uploader.tabroomRounds']);
   assert.deepEqual(def.settings.map((s) => [s.key, s.type, s.default]), [['sendDocFolder', 'text', '']]);
 });
@@ -237,6 +237,25 @@ const A = { index: 0, name: 'cards.pdf', ctime: 1791166000000 };
 const B = { index: 2, name: '1NC.docx', ctime: 1791166355023 };
 const C = { index: 3, name: '2NR.docx', ctime: 1791166999000 };
 const labels = (render) => render.items.map((i) => i.label + (i.isNew ? '*' : ''));
+test('zip: downloads the whole room and says where it went; empty room and failures read plainly', async () => {
+  const h = harness({ storage: { lastRoom: 'old99' },
+    responses: [ok({ ok: true, job: 'j' }), ok({ state: 'running', progress: { done: 40, total: 100 } }), ok({ state: 'done', result: { name: 'abc12.zip', path: '/d/abc12.zip', count: 3, skipped: 0, app: 'finder' } })] });
+  await cmd('sdZip').run(h.api);
+  assert.ok(h.toasts.includes('Downloading room abc12: 40 of 100 files…'));
+  assert.deepEqual(h.prompts.map((p) => p[1]), ['old99']);
+  assert.deepEqual([h.calls[0].route, h.calls[0].body], ['/speechdrop/zip', { room: 'abc12' }]);
+  assert.equal(h.toasts.at(-1), 'Saved 3 files to "abc12.zip" and showed it in Finder.');
+  assert.equal(h.store.get('lastRoom'), 'abc12');
+  const sk = harness({ responses: [ok({ ok: true, job: 'j' }), ok({ state: 'done', result: { name: 'abc12 (2).zip', count: 5, skipped: 2, app: 'finder' } })] });
+  await cmd('sdZip').run(sk.api);
+  assert.equal(sk.toasts.at(-1), 'Saved 5 files to "abc12 (2).zip" and showed it in Finder. 2 files are no longer on SpeechDrop and were skipped.');
+  for (const [code, expected] of [['empty_room', 'SpeechDrop room abc12 has no files yet.'], ['download_failed', "Couldn't download any file in the room. Try again."], ['unreachable', "Couldn't reach speechdrop.net. Try again."]]) {
+    const e = harness({ responses: [ok({ ok: true, job: 'j' }), ok({ state: 'error', message: code })] });
+    await cmd('sdZip').run(e.api);
+    assert.equal(e.toasts.at(-1), expected);
+  }
+});
+
 const W = (version, files, live = true) => ({ version, files, live });
 
 test('browse: shows the room newest first, says it is live, and opens picks', async () => {
