@@ -201,16 +201,16 @@
   --pmd-c-text:#18181b;--pmd-c-text-strong:#09090b;--pmd-c-text-secondary:#52525b;--pmd-c-text-muted:#71717a;--pmd-c-text-faint:#a1a1aa;
   --pmd-c-hover:#f4f4f5;--pmd-c-hover-strong:#e4e4e7;--pmd-c-button-hover:rgba(0,0,0,.045);--pmd-c-button-active:rgba(0,0,0,.07);
   --pmd-c-button-press:rgba(0,0,0,.08);--pmd-c-button-press-border:rgba(0,0,0,.2);--pmd-c-button-press-soft:rgba(0,0,0,.05);--pmd-c-button-press-soft-border:rgba(0,0,0,.12);
-  --pmd-c-accent:#18181b;--pmd-c-accent-hover:#3f3f46;--pmd-c-accent-soft:rgba(24,24,27,.07);--pmd-c-text-on-accent:#fff;
-  --pmd-c-focus:#71717a;--pmd-c-focus-glow:rgba(24,24,27,.12);--pmd-c-overlay:rgba(0,0,0,.28);
+  --pmd-c-accent:#2f6fde;--pmd-c-accent-hover:#2559b8;--pmd-c-accent-soft:rgba(47,111,222,.12);--pmd-c-text-on-accent:#fff;
+  --pmd-c-focus:#2f6fde;--pmd-c-focus-glow:rgba(47,111,222,.18);--pmd-c-overlay:rgba(0,0,0,.28);
   --pmd-c-info-bg:rgba(0,0,0,.05);--pmd-c-drop-soft:rgba(0,0,0,.055);--pmd-c-info-bg-alt:rgba(0,0,0,.035)}
 :root.du-app-sleek[data-theme="dark"]{--pmd-c-bg:#111113;--pmd-c-bg-soft:#151517;--pmd-c-surface-soft:#131315;--pmd-c-surface:#0e0e10;--pmd-c-surface-alt:#0a0a0b;
   --pmd-c-border:#2a2a2e;--pmd-c-border-soft:#232327;--pmd-c-divider:#1f1f23;--pmd-c-divider-faint:#19191c;
   --pmd-c-text:#ececee;--pmd-c-text-strong:#fff;--pmd-c-text-secondary:#a1a1aa;--pmd-c-text-muted:#8b8b93;--pmd-c-text-faint:#63636b;
   --pmd-c-hover:#1c1c1f;--pmd-c-hover-strong:#26262a;--pmd-c-button-hover:rgba(255,255,255,.06);--pmd-c-button-active:rgba(255,255,255,.09);
   --pmd-c-button-press:rgba(255,255,255,.1);--pmd-c-button-press-border:rgba(255,255,255,.22);--pmd-c-button-press-soft:rgba(255,255,255,.07);--pmd-c-button-press-soft-border:rgba(255,255,255,.14);
-  --pmd-c-accent:#fafafa;--pmd-c-accent-hover:#d4d4d8;--pmd-c-accent-soft:rgba(255,255,255,.09);--pmd-c-text-on-accent:#0a0a0b;
-  --pmd-c-focus:#a1a1aa;--pmd-c-focus-glow:rgba(255,255,255,.14);--pmd-c-overlay:rgba(0,0,0,.5);
+  --pmd-c-accent:#6b9cff;--pmd-c-accent-hover:#8ab1ff;--pmd-c-accent-soft:rgba(107,156,255,.16);--pmd-c-text-on-accent:#fff;
+  --pmd-c-focus:#6b9cff;--pmd-c-focus-glow:rgba(107,156,255,.25);--pmd-c-overlay:rgba(0,0,0,.5);
   --pmd-c-info-bg:rgba(255,255,255,.07);--pmd-c-drop-soft:rgba(255,255,255,.075);--pmd-c-info-bg-alt:rgba(255,255,255,.045)}
 :root.du-app-liquid{color-scheme:dark;--pmd-c-bg:#0b0f17;--pmd-c-bg-soft:#0e131c;--pmd-c-surface-soft:#0d121a;--pmd-c-surface:#0a0e15;--pmd-c-surface-alt:#070a10;
   --pmd-c-border:#1f2633;--pmd-c-border-soft:#1a202b;--pmd-c-divider:#161c26;--pmd-c-divider-faint:#121720;
@@ -231,6 +231,11 @@
 :root.du-app #ribbon button,:root.du-app .pmd-nav-panel button,:root.du-app #status-bar button{border-radius:7px;transition:background-color .12s,border-color .12s,color .12s}
 :root.du-app .pmd-nav-item{border-radius:7px}
 :root.du-app #status-bar{border-top:1px solid var(--pmd-c-divider)}
+/* Sleek keeps a real blue accent (selections, markers); the chrome's "selected" states stay monochrome */
+:root.du-app-sleek .pmd-pane-focused .pmd-pane-chip{background:#09090b;box-shadow:inset 0 -2px 0 var(--pmd-c-accent)}
+:root.du-app-sleek .pmd-pane-focused .pmd-pane-chip :is(.pmd-pane-chip-name,.pmd-pane-chip-close,.pmd-pane-chip-stack,.pmd-pane-chip-nav,.pmd-pane-chip-hide,.pmd-pane-chip-expand,.pmd-pane-chip-slot-num){color:#fff}
+:root.du-app-sleek[data-theme="dark"] .pmd-pane-focused .pmd-pane-chip{background:#000}
+:root.du-app-sleek .pmd-nav-level-btn-active{background:var(--pmd-c-text);border-color:var(--pmd-c-text);color:var(--pmd-c-bg)}
 :root.du-app .pmd-nav-panel{border-right:1px solid var(--pmd-c-divider)}
 :root.du-app ::-webkit-scrollbar{width:10px;height:10px}
 :root.du-app ::-webkit-scrollbar-thumb{background:var(--pmd-c-border);border-radius:8px;border:2px solid transparent;background-clip:padding-box}
