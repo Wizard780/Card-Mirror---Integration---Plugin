@@ -214,6 +214,11 @@ aren't found.
 
 ## Settings
 
+- **Sleek interface** (Settings → Plugins → Debate Uploader): a compact, monochrome look for every plugin dialog:
+  hairline borders, a blurred backdrop, pill-style toggles, and a black-or-white main button in place of the blue one.
+  It follows CardMirror's light and dark themes, and switching it restyles any open dialog right away.
+
+
 CardMirror clears a plugin's saved settings at every launch when it was loaded from a file, so the helper keeps a
 copy in `~/Library/Application Support/debate-uploader/prefs.json` (send doc folder, last room, caselist team,
 Tabroom email; never passwords) and the plugin restores it before each command.

@@ -150,7 +150,22 @@
     api.storage.set(key, value);
     Promise.resolve().then(() => api.flowPost(ID, '/prefs/set', { key, value })).catch(() => {});
   }
-  const withPrefs = async (api, fn) => { await restorePrefs(api); return fn(); };
+  const withPrefs = async (api, fn) => { syncLook(api); await restorePrefs(api); return fn(); };
+
+  // "Sleek interface" setting: read at every command, and applied live to open
+  // dialogs when it's switched in Settings.
+  let sleek = false;
+  let lookWatched = false;
+  function syncLook(api) {
+    try { sleek = !!(api.settings && api.settings.get('sleekUI')); } catch { /* standard look */ }
+    if (lookWatched || !api.settings || typeof api.settings.onChanged !== 'function') return;
+    lookWatched = true;
+    api.settings.onChanged((key, value) => {
+      if (key !== 'sleekUI') return;
+      sleek = !!value;
+      for (const n of document.querySelectorAll('.du-scrim, .du-pickbar')) n.classList.toggle('du-sleek', sleek);
+    });
+  }
 
   async function call(api, route, body) {
     const r = await api.flowPost(ID, route, body);
@@ -346,6 +361,68 @@ textarea.du-cmp-text{resize:none;min-height:0}
 .du-pickbar{position:fixed;left:50%;bottom:48px;transform:translateX(-50%);z-index:100000;display:flex;align-items:center;gap:10px;
   padding:8px 10px 8px 16px;border-radius:10px;background:var(--pmd-c-bg);color:var(--pmd-c-text);border:1px solid var(--pmd-c-border-soft);
   box-shadow:0 12px 34px var(--pmd-c-shadow-deep,rgba(0,0,0,.28));font-family:var(--pmd-ui-font,system-ui,sans-serif);font-size:.88rem}
+/* Sleek interface: monochrome, built from the theme's own text and page colors */
+.du-sleek{--du-line:color-mix(in srgb,var(--pmd-c-text) 10%,transparent);--du-line-2:color-mix(in srgb,var(--pmd-c-text) 17%,transparent);
+  --du-soft:color-mix(in srgb,var(--pmd-c-text) 4%,transparent);--du-soft-2:color-mix(in srgb,var(--pmd-c-text) 8%,transparent);
+  --du-muted:color-mix(in srgb,var(--pmd-c-text) 56%,var(--pmd-c-bg));-webkit-font-smoothing:antialiased}
+.du-scrim.du-sleek{background:color-mix(in srgb,var(--pmd-c-overlay,rgba(0,0,0,.4)) 75%,transparent);backdrop-filter:blur(6px) saturate(1.05)}
+.du-sleek .du-dialog{border-radius:14px;border:1px solid var(--du-line);font-size:13px;
+  box-shadow:0 28px 70px -16px rgba(0,0,0,.42),0 10px 24px -10px rgba(0,0,0,.22);animation:du-in-sleek .16s cubic-bezier(.2,.9,.3,1)}
+@keyframes du-in-sleek{from{opacity:0;transform:translateY(4px) scale(.985)}}
+@media (prefers-reduced-motion:reduce){.du-sleek .du-dialog{animation:none}}
+.du-sleek .du-head{padding:14px 16px 8px}
+.du-sleek .du-title{font-size:14px;font-weight:600;letter-spacing:-.01em}
+.du-sleek .du-sub{font-size:12px;color:var(--du-muted)}
+.du-sleek .du-body{padding:4px 16px 14px}
+.du-sleek .du-foot{background:transparent;border-top:1px solid var(--du-line);padding:9px 10px 9px 16px;gap:6px}
+.du-sleek .du-note,.du-sleek .du-hint{font-size:12px;color:var(--du-muted)}
+.du-sleek .du-label{font-size:12px;color:var(--du-muted)}
+.du-sleek .du-input{font-size:13px;border-radius:8px;border-color:var(--du-line-2);background:var(--du-soft);padding:6px 10px}
+.du-sleek .du-input:focus{border-color:color-mix(in srgb,var(--pmd-c-text) 38%,transparent);box-shadow:0 0 0 3px var(--du-soft-2);background:var(--pmd-c-bg)}
+.du-sleek .du-btn{font-size:12.5px;font-weight:500;padding:5px 11px;border-radius:8px;border-color:var(--du-line-2);background:transparent}
+.du-sleek .du-btn:hover{background:var(--du-soft-2)}
+.du-sleek .du-btn:disabled:hover{background:transparent}
+.du-sleek .du-btn:focus-visible,.du-sleek .du-choice:focus-visible,.du-sleek .du-seg button:focus-visible{outline:2px solid color-mix(in srgb,var(--pmd-c-text) 45%,transparent);outline-offset:2px}
+.du-sleek .du-primary{background:var(--pmd-c-text);border-color:var(--pmd-c-text);color:var(--pmd-c-bg);font-weight:600}
+.du-sleek .du-primary:hover{background:color-mix(in srgb,var(--pmd-c-text) 84%,var(--pmd-c-bg))}
+.du-sleek .du-primary:disabled:hover{background:var(--pmd-c-text)}
+.du-sleek .du-seg{border:0;border-radius:9px;padding:2px;gap:2px;background:var(--du-soft-2)}
+.du-sleek .du-seg button,.du-sleek .du-seg button+button{border:0;border-radius:7px;background:transparent;color:var(--du-muted);font-size:12.5px;font-weight:500;padding:4px 11px}
+.du-sleek .du-seg button:hover{background:transparent;color:var(--pmd-c-text)}
+.du-sleek .du-seg button[aria-pressed="true"],.du-sleek .du-tabs button[aria-selected="true"]{background:var(--pmd-c-bg);color:var(--pmd-c-text);font-weight:600;
+  box-shadow:0 1px 2px rgba(0,0,0,.14),0 0 0 1px var(--du-line)}
+.du-sleek .du-choice{border-color:var(--du-line);border-radius:9px;font-size:13px}
+.du-sleek .du-choice:hover{background:var(--du-soft)}
+.du-sleek .du-choice[aria-checked="true"]{border-color:color-mix(in srgb,var(--pmd-c-text) 40%,transparent);background:var(--du-soft-2)}
+.du-sleek .du-choice[aria-checked="true"] .du-radio{border-color:var(--pmd-c-text)}
+.du-sleek .du-choice-detail{font-size:12px;color:var(--du-muted)}
+.du-sleek .du-fill{border-radius:10px;border-color:var(--du-line);background:var(--du-soft)}
+.du-sleek .du-search{margin:0 12px 8px;width:calc(100% - 24px)}
+.du-sleek .du-list{padding:0 6px 6px}
+.du-sleek .du-row{border-radius:8px;padding:7px 10px}
+.du-sleek .du-row:hover{background:var(--du-soft)}
+.du-sleek .du-row[aria-selected="true"]{background:var(--du-soft-2)}
+.du-sleek .du-row-main{font-size:13px}
+.du-sleek .du-row-detail,.du-sleek .du-row-sub,.du-sleek .du-where{font-size:11.5px;color:var(--du-muted)}
+.du-sleek .du-group{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--du-muted)}
+.du-sleek .du-empty{font-size:12.5px;color:var(--du-muted)}
+.du-sleek .du-split{border-top-color:var(--du-line)}
+.du-sleek .du-split .du-list{border-color:var(--du-line)}
+.du-sleek .du-pane{font-size:13px}
+.du-sleek .du-pane h3{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--du-muted)}
+.du-sleek .du-info dt,.du-sleek .du-pane-meta,.du-sleek .du-round{color:var(--du-muted)}
+.du-sleek .du-link{color:var(--pmd-c-text);text-decoration-color:var(--du-line-2)}
+.du-sleek .du-check{border-radius:4px;border-color:var(--du-line-2)}
+.du-sleek .du-toggle{font-size:12.5px;color:var(--du-muted)}
+.du-sleek .du-toggle input{accent-color:var(--pmd-c-text)}
+.du-sleek .du-cmp-nav{font-size:12px}
+.du-sleek .du-cmp-out,.du-sleek textarea.du-cmp-text{border-radius:10px;border-color:var(--du-line-2);font-size:13.5px}
+.du-sleek .du-cmp-out{background:transparent}
+.du-sleek .du-cmp-out:focus-visible{border-color:color-mix(in srgb,var(--pmd-c-text) 38%,transparent);box-shadow:0 0 0 3px var(--du-soft-2)}
+.du-sleek .du-cmp-out .du-cur{text-decoration-color:var(--pmd-c-text)}
+.du-sleek .du-cmp-out .du-k3.du-cur{box-shadow:0 0 0 2px var(--pmd-c-text)}
+.du-pickbar.du-sleek{border-radius:12px;border-color:var(--du-line);font-size:13px;background:color-mix(in srgb,var(--pmd-c-bg) 86%,transparent);
+  backdrop-filter:blur(14px) saturate(1.1);box-shadow:0 18px 44px -12px rgba(0,0,0,.4)}
 `;
 
   function el(tag, props = {}, kids = []) {
@@ -413,7 +490,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
     const body = el('div', { class: 'du-body' });
     const foot = el('div', { class: 'du-foot' });
     dialog.append(head, body, foot);
-    const scrim = el('div', { class: 'du-scrim' }, [dialog]);
+    const scrim = el('div', { class: `du-scrim${sleek ? ' du-sleek' : ''}` }, [dialog]);
     let onDismiss = () => {};
     scrim.addEventListener('mousedown', (e) => { if (e.target === scrim) onDismiss(); });
     dialog.addEventListener('keydown', (e) => {
@@ -835,7 +912,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
             b.addEventListener('mousedown', (e) => e.preventDefault()); // keep the selection
             return b;
           };
-          const pickBar = el('div', { class: 'du-pickbar', attrs: { role: 'status' } }, [
+          const pickBar = el('div', { class: `du-pickbar${sleek ? ' du-sleek' : ''}`, attrs: { role: 'status' } }, [
             el('span', { textContent: `Select the text for Text ${k + 1} in your document` }),
             barBtn('Cancel', false, false),
             barBtn('Use selection', true, true),
@@ -2771,6 +2848,13 @@ textarea.du-cmp-text{resize:none;min-height:0}
         default: '',
         description: 'Folder where Save Send Doc writes. "Upload newest send doc" sends the newest .docx in it.',
       },
+      {
+        key: 'sleekUI',
+        label: 'Sleek interface',
+        type: 'boolean',
+        default: false,
+        description: "Compact, monochrome dialogs with hairline borders and a blurred backdrop, instead of CardMirror's standard look.",
+      },
     ],
     commands: [
       {
@@ -2890,7 +2974,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
         label: 'Compare text…',
         keywords: ['compare', 'diff', 'difference', 'text', 'changes', 'version', 'card', 'source'],
         defaultKey: null,
-        run: (api) => textCompare(api), // no helper needed
+        run: (api) => { syncLook(api); return textCompare(api); }, // no helper needed
       },
       {
         id: `${ID}.cardCheck`,
