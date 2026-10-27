@@ -1648,6 +1648,140 @@ textarea.du-cmp-text{resize:none;min-height:0}
     return { install, view };
   })();
 
+  // ---------------------------------------------------------------- Open cache
+  // Not a CardMirror API. CardMirror parses a .docx in a worker (docx-open-worker-*.js) that
+  // posts back { id, ok, docJson, threads, docId }; on a 30 MB document that parse is ~1 s of
+  // every open. The plugin keeps those replies in IndexedDB, keyed on CardMirror's bundle URL
+  // (its content hash changes with every parser change) plus a SHA-256 of the file bytes, so
+  // reopening an unchanged file skips the parse. Any cache failure falls back to the worker.
+  const OPEN_CACHE_DB = 'debate-uploader-open-cache';
+  const OPEN_CACHE_MAX = 10; // replies kept, least recently opened dropped first
+  const OPEN_CACHE_MIN_BYTES = 512 * 1024; // small files parse faster than a cache read
+
+  function idbStore(dbName) {
+    let dbp = null;
+    const db = () => (dbp ??= new Promise((res, rej) => {
+      const r = indexedDB.open(dbName, 1);
+      r.onupgradeneeded = () => { r.result.createObjectStore('replies'); r.result.createObjectStore('index'); };
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => { dbp = null; rej(r.error); };
+    }));
+    const run = (stores, mode, fn) => db().then((d) => new Promise((res, rej) => {
+      const t = d.transaction(stores, mode);
+      let out;
+      t.oncomplete = () => res(out);
+      t.onerror = t.onabort = () => rej(t.error);
+      out = fn(t);
+    }));
+    const req = (r) => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+    return {
+      async get(key) {
+        let reply;
+        await run(['replies'], 'readonly', (t) => req(t.objectStore('replies').get(key)).then((v) => { reply = v; }));
+        return reply;
+      },
+      async put(key, reply, max) {
+        await run(['replies', 'index'], 'readwrite', (t) => {
+          const replies = t.objectStore('replies');
+          const index = t.objectStore('index');
+          replies.put(reply, key);
+          return req(index.get('lru')).then((lru) => {
+            const keys = [key, ...(lru || []).filter((k) => k !== key)];
+            for (const old of keys.slice(max)) replies.delete(old);
+            index.put(keys.slice(0, max), 'lru');
+          });
+        });
+      },
+      async touch(key, max) {
+        await run(['index'], 'readwrite', (t) => {
+          const index = t.objectStore('index');
+          return req(index.get('lru')).then((lru) => index.put([key, ...(lru || []).filter((k) => k !== key)].slice(0, max), 'lru'));
+        });
+      },
+      async clear() {
+        await run(['replies', 'index'], 'readwrite', (t) => { t.objectStore('replies').clear(); t.objectStore('index').clear(); });
+      },
+    };
+  }
+
+  async function sha256Hex(bytes) {
+    const d = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+    let s = '';
+    for (const b of d) s += b.toString(16).padStart(2, '0');
+    return s;
+  }
+
+  // CardMirror's open request is exactly { id, bytes } (the quick-card parser also sends a format
+  // and kinds). Patching the prototype, not the constructor, also covers a worker CardMirror made
+  // before the plugin loaded, since it reuses one open worker for the whole session.
+  const isOpenRequest = (m) => !!m && typeof m === 'object' && typeof m.id === 'number' &&
+    (m.bytes instanceof Uint8Array || m.bytes instanceof ArrayBuffer) && Object.keys(m).length === 2;
+
+  function patchWorkerPostMessage(proto, { store, version, hash = sha256Hex, enabled = () => true, idle = (fn) => setTimeout(fn, 0), max = OPEN_CACHE_MAX, minBytes = OPEN_CACHE_MIN_BYTES }) {
+    const native = proto.postMessage;
+    if (native.__duOpenCache) return;
+    const pendingKeys = new WeakMap(); // worker -> Map(request id -> cache key)
+    const watch = (w) => {
+      let keys = pendingKeys.get(w);
+      if (keys) return keys;
+      keys = new Map();
+      pendingKeys.set(w, keys);
+      w.addEventListener('message', (e) => {
+        const msg = e.data;
+        if (!msg || e.__duCached || !keys.has(msg.id)) return;
+        const key = keys.get(msg.id);
+        keys.delete(msg.id);
+        if (msg.ok !== true || !msg.docJson) return;
+        // Saving clones the reply on this thread, so it waits until the open has painted.
+        idle(() => { store.put(key, { docJson: msg.docJson, threads: msg.threads, docId: msg.docId }, max).catch(() => {}); });
+      });
+      return keys;
+    };
+    const patched = function (msg, transfer) {
+      if (!isOpenRequest(msg) || msg.bytes.byteLength < minBytes || !enabled()) return native.call(this, msg, transfer);
+      const keys = watch(this);
+      (async () => {
+        let key = null;
+        try {
+          key = `${version()}|${await hash(msg.bytes)}`;
+          const hit = await store.get(key);
+          if (hit && hit.docJson) {
+            const ev = new MessageEvent('message', { data: { id: msg.id, ok: true, docJson: hit.docJson, threads: hit.threads || [], docId: hit.docId ?? null } });
+            ev.__duCached = true;
+            this.dispatchEvent(ev);
+            store.touch(key, max).catch(() => {});
+            return;
+          }
+        } catch { /* cache unreadable: parse as usual */ }
+        if (key) keys.set(msg.id, key);
+        native.call(this, msg, transfer);
+      })();
+    };
+    patched.__duOpenCache = true;
+    proto.postMessage = patched;
+  }
+
+  function openCacheOn() {
+    try {
+      const s = JSON.parse(localStorage.getItem(`plugin:${ID}`) || '{}').__settings || {};
+      return s.openCache !== false;
+    } catch { return true; }
+  }
+
+  // The parser ships inside CardMirror's hashed bundle, so the bundle's URL changes with it.
+  const bundleVersion = () => {
+    const s = document.querySelector('script[type="module"][src]');
+    return s ? s.src : location.href;
+  };
+
+  let openStore = null;
+  function installOpenCache() {
+    if (typeof Worker !== 'function' || typeof indexedDB === 'undefined' || !globalThis.crypto || !crypto.subtle) return;
+    openStore = idbStore(OPEN_CACHE_DB);
+    const idle = (fn) => (typeof requestIdleCallback === 'function' ? requestIdleCallback(fn, { timeout: 5000 }) : setTimeout(fn, 1000));
+    patchWorkerPostMessage(Worker.prototype, { store: openStore, version: bundleVersion, enabled: openCacheOn, idle });
+  }
+
   // ---------------------------------------------------------------- Copy into Google Docs / Word
   // CardMirror's clipboard HTML styles cite and emphasis with size/underline/box but no
   // bold, so Google Docs and Word paste them unbolded. Add bold on copy (tagged), and take
@@ -3002,6 +3136,8 @@ textarea.du-cmp-text{resize:none;min-height:0}
     setInterval(storedTheme, 1000);
   }
   try { installClipboardFix(); } catch { /* copies stay as CardMirror makes them */ }
+  if (!window.__debateUploaderTest) { try { installOpenCache(); } catch { /* opens parse as usual */ } }
+  if (window.__debateUploaderTest) window.__debateUploaderOpenCache = { patchWorkerPostMessage };
   if (window.__debateUploaderTest) window.__debateUploaderClipboard = { boldCopiedHTML, unboldCopiedHTML }; // only when tests ask
   if (window.__debateUploaderTest) window.__debateUploaderCompare = compareTexts;
 
@@ -3032,8 +3168,25 @@ textarea.du-cmp-text{resize:none;min-height:0}
         default: false,
         description: 'Also restyles the ribbon, sidebar, status bar and menus. Your document page keeps its normal look. Unofficial: a CardMirror update may undo parts until the plugin is updated.',
       },
+      {
+        key: 'openCache',
+        label: 'Reopen big files faster',
+        type: 'boolean',
+        default: true,
+        description: 'Keeps the last 10 big .docx files CardMirror parsed, so reopening an unchanged file skips the parse (about 1 second on a 30 MB file). A changed file is parsed fresh.',
+      },
     ],
     commands: [
+      {
+        id: `${ID}.clearOpenCache`,
+        label: 'Clear the reopen-faster cache',
+        keywords: ['cache', 'open', 'speed', 'fast', 'performance'],
+        defaultKey: null,
+        run: async (api) => {
+          if (!openStore) { api.showToast('The reopen cache is not running here.'); return; }
+          try { await openStore.clear(); api.showToast('Cleared. Big files parse fresh on their next open.'); } catch { api.showToast("Couldn't clear the cache. Try again."); }
+        },
+      },
       {
         id: `${ID}.sdNewest`,
         label: 'Upload newest send doc to SpeechDrop',

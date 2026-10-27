@@ -42,13 +42,13 @@ function harness({ prefs = {}, responses = [], settings = {}, storage = {}, room
   return { api, calls, toasts, prompts, store, prefsReply, prefsSets };
 }
 
-test('registers twenty-three commands and one setting under the plugin id', () => {
+test('registers twenty-four commands and one setting under the plugin id', () => {
   assert.equal(def.id, 'debate-uploader');
   assert.equal(def.apiVersion, 1);
-  assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.boldEmphasis', 'debate-uploader.cardCheck', 'debate-uploader.cardCheckLast', 'debate-uploader.caselistCardSearch', 'debate-uploader.caselistScout', 'debate-uploader.caselistSearch', 'debate-uploader.caselistTeam', 'debate-uploader.caselistUpload', 'debate-uploader.emailChain', 'debate-uploader.evidenceFolders', 'debate-uploader.evidenceSearch', 'debate-uploader.gmailForget', 'debate-uploader.gmailSetup', 'debate-uploader.markCards', 'debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdPick', 'debate-uploader.sdZip', 'debate-uploader.setFolder',
+  assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.boldEmphasis', 'debate-uploader.cardCheck', 'debate-uploader.cardCheckLast', 'debate-uploader.caselistCardSearch', 'debate-uploader.caselistScout', 'debate-uploader.caselistSearch', 'debate-uploader.caselistTeam', 'debate-uploader.caselistUpload', 'debate-uploader.clearOpenCache', 'debate-uploader.emailChain', 'debate-uploader.evidenceFolders', 'debate-uploader.evidenceSearch', 'debate-uploader.gmailForget', 'debate-uploader.gmailSetup', 'debate-uploader.markCards', 'debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdPick', 'debate-uploader.sdZip', 'debate-uploader.setFolder',
  'debate-uploader.tabroomLogin', 'debate-uploader.tabroomLogout', 'debate-uploader.tabroomRounds', 'debate-uploader.textCompare']);
   assert.deepEqual(def.settings.find((s) => s.key === 'theme').options, ['Standard', 'Sleek', 'Liquid']);
-  assert.deepEqual(def.settings.map((s) => [s.key, s.type, s.default]), [['sendDocFolder', 'text', ''], ['theme', 'select', 'Standard'], ['themeWholeApp', 'boolean', false]]);
+  assert.deepEqual(def.settings.map((s) => [s.key, s.type, s.default]), [['sendDocFolder', 'text', ''], ['theme', 'select', 'Standard'], ['themeWholeApp', 'boolean', false], ['openCache', 'boolean', true]]);
 });
 
 test('pick: uploads, polls the job, toasts success, remembers the room', async () => {
@@ -1807,4 +1807,101 @@ test('Compare text: the selection becomes Text 1; texts and options are kept for
   await cmd('textCompare').run(h.api);
   assert.deepEqual(specs[2].texts, ['A different card', 'Source paragraph'], 'no selection keeps Text 1 too');
   assert.equal(specs[2].readSelection(), '   ');
+});
+
+// ---------------------------------------------------------------- open cache
+const openCache = () => window.__debateUploaderOpenCache;
+function fakeWorkerClass() {
+  class FakeWorker extends EventTarget {
+    constructor() { super(); this.posted = []; }
+    reply(data) { this.dispatchEvent(new MessageEvent('message', { data })); }
+  }
+  FakeWorker.prototype.postMessage = function (m) { this.posted.push(m); };
+  return FakeWorker;
+}
+function memStore() {
+  const m = new Map();
+  return { m, puts: 0, async get(k) { return m.get(k); }, async put(k, v) { this.puts++; m.set(k, v); }, async touch() {}, async clear() { m.clear(); } };
+}
+const tick = () => new Promise((r) => setTimeout(r, 5));
+const big = (fill) => new Uint8Array(600 * 1024).fill(fill);
+const patch = (W, store, extra = {}) => openCache().patchWorkerPostMessage(W.prototype, { store, version: () => 'v1', hash: async (b) => `h${b[0]}`, idle: (fn) => fn(), ...extra });
+
+test('open cache: a miss parses in the worker, then the reply is stored and served on reopen', async () => {
+  const W = fakeWorkerClass();
+  const early = new W(); // made before the plugin loaded: still covered
+  const store = memStore();
+  patch(W, store);
+  const got = [];
+  early.onmessage = (e) => got.push(e.data);
+  early.addEventListener('message', (e) => got.push(e.data));
+  early.postMessage({ id: 1, bytes: big(7) });
+  await tick();
+  assert.equal(early.posted.length, 1, 'miss goes to the real worker');
+  early.reply({ id: 1, ok: true, docJson: { type: 'doc' }, threads: [], docId: 'd1' });
+  await tick();
+  assert.equal(store.puts, 1);
+  assert.deepEqual([...store.m.keys()], ['v1|h7']);
+  got.length = 0;
+  early.postMessage({ id: 2, bytes: big(7) });
+  await tick();
+  assert.equal(early.posted.length, 1, 'hit never reaches the worker');
+  assert.deepEqual(got[0], { id: 2, ok: true, docJson: { type: 'doc' }, threads: [], docId: 'd1' });
+  assert.equal(store.puts, 1, 'a cached reply is not stored again');
+});
+
+test('open cache: different bytes or a new CardMirror build miss', async () => {
+  const W = fakeWorkerClass();
+  const store = memStore();
+  let version = 'v1';
+  patch(W, store, { version: () => version });
+  const w = new W();
+  w.postMessage({ id: 1, bytes: big(1) });
+  await tick();
+  w.reply({ id: 1, ok: true, docJson: { a: 1 }, threads: [], docId: null });
+  await tick();
+  w.postMessage({ id: 2, bytes: big(2) });
+  await tick();
+  assert.equal(w.posted.length, 2, 'changed file parses fresh');
+  version = 'v2';
+  w.postMessage({ id: 3, bytes: big(1) });
+  await tick();
+  assert.equal(w.posted.length, 3, 'new build parses fresh');
+});
+
+test('open cache: failed parses, small files, other messages and the off switch are untouched', async () => {
+  const W = fakeWorkerClass();
+  const store = memStore();
+  let on = true;
+  patch(W, store, { hash: async () => 'h', enabled: () => on });
+  const w = new W();
+  w.postMessage({ id: 1, bytes: big(1) });
+  await tick();
+  w.reply({ id: 1, ok: false, error: 'bad zip' });
+  await tick();
+  assert.equal(store.puts, 0, 'errors are never cached');
+  w.postMessage({ id: 2, bytes: new Uint8Array(10) });
+  assert.equal(w.posted.length, 2, 'small file posts synchronously');
+  w.postMessage({ id: 3, bytes: big(1), format: 'docx', kinds: ['tag'] });
+  assert.equal(w.posted.length, 3, 'quick-card parse request posts synchronously');
+  w.postMessage('hello');
+  assert.equal(w.posted.length, 4);
+  on = false;
+  w.postMessage({ id: 4, bytes: big(1) });
+  assert.equal(w.posted.length, 5, 'setting off: straight to the worker');
+  patch(W, store);
+  w.postMessage({ id: 5, bytes: new Uint8Array(1) });
+  assert.equal(w.posted.length, 6, 'patching twice is a no-op');
+});
+
+test('open cache: an unreadable cache falls back to the worker', async () => {
+  const W = fakeWorkerClass();
+  const store = { async get() { throw new Error('quota'); }, async put() { throw new Error('quota'); }, async touch() {} };
+  patch(W, store);
+  const w = new W();
+  w.postMessage({ id: 1, bytes: big(1) });
+  await tick();
+  assert.equal(w.posted.length, 1);
+  w.reply({ id: 1, ok: true, docJson: {}, threads: [], docId: null }); // put rejects: swallowed
+  await tick();
 });
