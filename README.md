@@ -214,9 +214,15 @@ aren't found.
 
 ## Settings
 
-- **Sleek interface** (Settings → Plugins → Debate Uploader): a compact, monochrome look for every plugin dialog:
-  hairline borders, a blurred backdrop, pill-style toggles, and a black-or-white main button in place of the blue one.
-  It follows CardMirror's light and dark themes, and switching it restyles any open dialog right away.
+- **Interface theme** (Settings → Plugins → Debate Uploader) changes the look of every plugin dialog:
+  - **Standard** matches CardMirror.
+  - **Sleek** is compact and monochrome, with hairline borders, a blurred backdrop, pill-style toggles and a
+    black-or-white main button. It follows CardMirror's light and dark themes.
+  - **Liquid** uses Lynx Theme Pro's LIQUID look: frosted glass panels, a bright top edge, the Tokyo Night colors
+    and a glowing blue main button. It's always dark.
+
+  Changing it restyles any open dialog right away. (0.7.0's "Sleek interface" switch is now this dropdown; pick
+  Sleek again if you had it on.)
 
 
 CardMirror clears a plugin's saved settings at every launch when it was loaded from a file, so the helper keeps a
