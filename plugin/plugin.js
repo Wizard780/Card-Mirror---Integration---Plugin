@@ -746,7 +746,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
         d.foot.append(status.node, button('Swap', false, () => {
           [sides[0].text.value, sides[1].text.value] = [sides[1].text.value, sides[0].text.value];
           save();
-          if (showing) run();
+          if (showing) run(true);
         }), main);
 
         const close = () => { d.close(); resolve(); };
@@ -778,26 +778,27 @@ textarea.du-cmp-text{resize:none;min-height:0}
             out.append(span);
           }
         };
-        const run = () => {
+        const run = (rerun = false) => {
           const [a, b] = sides.map((s) => s.text.value);
           if (!a.trim() && !b.trim()) { status.set('Paste or select two texts to compare.'); return; }
           res = spec.compare(a, b, o);
           showing = true;
           paintSide(sides[0].out, res.left, 'a');
           paintSide(sides[1].out, res.right, 'b');
-          for (const s of sides) { s.text.hidden = true; s.out.hidden = false; s.out.scrollTop = 0; }
+          for (const s of sides) { s.text.hidden = true; s.out.hidden = false; if (!rerun) s.out.scrollTop = 0; }
           main.textContent = 'Edit';
           const ignoring = [o.ignoreCase && 'case', o.ignoreSpace && 'spacing'].filter(Boolean).join(' and ');
-          const unit = (n) => plural(n, res.unit);
           status.set(!res.diffs
             ? (a === b ? 'Identical, byte for byte.' : `No differences${ignoring ? ` (ignoring ${ignoring})` : ''}.`)
-            : `${plural(res.diffs, 'difference')} · ${unit(res.removed)} only in Text 1 · ${res.added} only in Text 2${res.timedOut ? ' · too long to line up exactly' : ''}`);
+            : [plural(res.diffs, 'difference'), res.removed && `${plural(res.removed, res.unit)} only in Text 1`,
+              res.added && `${plural(res.added, res.unit)} only in Text 2`, res.timedOut && 'too long to line up exactly'].filter(Boolean).join(' · '));
+          if (rerun) { goTo(cur); return; } // an option or Swap: stay where you were
           cur = -1;
           if (res.diffs) goTo(0); else paintBar();
           sides[1].out.focus();
         };
         const goTo = (i) => {
-          if (!res || !res.diffs) return;
+          if (!res || !res.diffs) { cur = -1; paintBar(); return; }
           cur = Math.max(0, Math.min(i, res.diffs - 1));
           for (const s of sides) {
             let first = null;
@@ -810,7 +811,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
           }
           paintBar();
         };
-        const changed = () => { save(); paintBar(); if (showing) run(); };
+        const changed = () => { save(); paintBar(); if (showing) run(true); };
 
         // The dialog steps aside so text can be selected in the document.
         const pick = (k) => {
@@ -2544,7 +2545,8 @@ textarea.du-cmp-text{resize:none;min-height:0}
   const WORD_RE = /\s+|[\p{L}\p{M}\p{N}]+(?:['’][\p{L}\p{M}\p{N}]+)*|[^]/gu;
   const COMPARE_MS = 2500; // past this, what's left is shown as one big change
 
-  // The point where the forward and reverse D-paths meet, or null (out of time, or nothing in common).
+  const TIMED_OUT = 'timed out';
+  // The point where the forward and reverse D-paths meet; null when they share nothing.
   function bisect(a, b, deadline) {
     const n = a.length, m = b.length, maxD = Math.ceil((n + m) / 2), off = maxD, len = 2 * maxD;
     const v1 = new Int32Array(len).fill(-1), v2 = new Int32Array(len).fill(-1);
@@ -2553,7 +2555,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
     const delta = n - m, front = delta % 2 !== 0;
     let k1s = 0, k1e = 0, k2s = 0, k2e = 0;
     for (let d = 0; d < maxD; d++) {
-      if (Date.now() > deadline) return null;
+      if (Date.now() > deadline) return TIMED_OUT;
       for (let k1 = -d + k1s; k1 <= d - k1e; k1 += 2) {
         const k1o = off + k1;
         let x1 = k1 === -d || (k1 !== d && v1[k1o - 1] < v1[k1o + 1]) ? v1[k1o + 1] : v1[k1o - 1] + 1;
@@ -2604,11 +2606,11 @@ textarea.du-cmp-text{resize:none;min-height:0}
       emit('=', p);
       const ma = a.subarray(p, a.length - s), mb = b.subarray(p, b.length - s);
       const at = ma.length && mb.length ? bisect(ma, mb, deadline) : null;
-      if (at) {
+      if (at === TIMED_OUT) timedOut = true;
+      if (at && at !== TIMED_OUT) {
         rec(ma.subarray(0, at[0]), mb.subarray(0, at[1]));
         rec(ma.subarray(at[0]), mb.subarray(at[1]));
       } else {
-        if (ma.length && mb.length && Date.now() > deadline) timedOut = true; // else they share nothing
         emit('-', ma.length);
         emit('+', mb.length);
       }
@@ -2656,9 +2658,12 @@ textarea.du-cmp-text{resize:none;min-height:0}
     let timedOut = slow;
 
     // Equal runs and changes, by unit index.
+    const isWord = (u) => /[\p{L}\p{N}]/u.test(u);
     let segs = [];
-    let i = 0, j = 0;
+    let i = 0, j = 0, removedWords = 0, addedWords = 0;
     for (const [t, n] of ops) {
+      if (t === '-') removedWords += ta.slice(i, i + n).filter(isWord).length;
+      if (t === '+') addedWords += tb.slice(j, j + n).filter(isWord).length;
       if (t === '=') { segs.push({ eq: true, a0: i, a1: i + n, b0: j, b1: j + n }); i += n; j += n; continue; }
       let last = segs[segs.length - 1];
       if (!last || last.eq) segs.push((last = { eq: false, a0: i, a1: i, b0: j, b1: j }));
@@ -2685,8 +2690,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
       const last = side[side.length - 1];
       if (last && last.kind === kind && last.g === g && kind !== 3) last.text += text; else side.push({ text, kind, g });
     };
-    const isWord = (u) => /[\p{L}\p{N}]/u.test(u);
-    let g = 0, removed = 0, added = 0;
+    let g = 0, removed = words ? removedWords : 0, added = words ? addedWords : 0;
     for (const s of segs) {
       const at = ta.slice(s.a0, s.a1).join(''), bt = tb.slice(s.b0, s.b1).join('');
       if (s.eq) { push(sides[0], at, 0, -1); push(sides[1], bt, 0, -1); continue; }
@@ -2711,8 +2715,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
         push(sides[1], bt, 2, g);
       }
       if (words) {
-        removed += ta.slice(s.a0, s.a1).filter(isWord).length;
-        added += tb.slice(s.b0, s.b1).filter(isWord).length;
+        // counted above, from the edit script (a merged "the" is in both texts)
       } else if (!sub) {
         removed += units(at, false, opts.ignoreSpace).length;
         added += units(bt, false, opts.ignoreSpace).length;

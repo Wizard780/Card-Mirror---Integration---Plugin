@@ -1749,6 +1749,9 @@ test('compare: a rewritten phrase is one difference, an insertion leaves a marke
   assert.equal(r.diffs, 1);
   assert.deepEqual([marked(r.left), marked(r.right)], [['big red'], ['small blue']]);
   assert.deepEqual([r.removed, r.added, r.unit], [2, 2, 'word']);
+  const merged = compare('hyperscalers a recession', 'investors a slowdown');
+  assert.equal(merged.diffs, 1, 'the short shared "a" joins the change');
+  assert.deepEqual([merged.removed, merged.added], [2, 2], 'but it is not counted as only in one text');
   const ins = compare('cause a recession.', 'could cause a severe recession.');
   assert.equal(ins.diffs, 2);
   assert.deepEqual([marked(ins.left), marked(ins.right)], [['|', '|'], ['could ', ' severe']]);
@@ -1770,6 +1773,8 @@ test('compare: Words mode flags spacing and case; the Ignore options hide only t
   assert.equal(compare('Data  center\nboom', 'Data center boom', { ignoreSpace: true }).diffs, 0);
   assert.equal(compare('DATA center', 'data Center', { ignoreCase: true }).diffs, 0);
   assert.equal(compare('Data center', 'Datacenter', { ignoreSpace: true }).diffs, 1, 'a missing space between words still differs');
+  const comma = compare('a, b', 'a b');
+  assert.deepEqual([comma.diffs, comma.removed, comma.added], [1, 0, 0], 'punctuation is a difference, not a word');
 });
 
 test('compare: a card against its whole source article stays fast and exact', () => {
