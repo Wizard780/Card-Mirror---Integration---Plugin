@@ -156,6 +156,21 @@ CardMirror still reads it as emphasis.
   **Send** (or ⌘Enter) emails it right away from your Gmail.
 - Never retried automatically. If a toast says Gmail didn't confirm, check your Sent folder before sending again.
 
+## Compare text
+
+- **Compare text…**: select text in your document and run it; the selection becomes **Text 1**. For **Text 2**, paste
+  it, or press **Use selection**: the dialog steps aside, you select the other passage, and press **Use selection** on
+  the bar at the bottom (Esc cancels). **Compare** (⌘Enter) shows both side by side: red is only in Text 1, green only in
+  Text 2, and a thin bar marks where the other side has text. ↑↓ (or the arrows, or a click) steps through the
+  differences and scrolls both sides to it; **Edit** goes back to the texts, **Swap** flips them.
+- **Words** (default) compares word by word. **Characters** marks the exact characters, so a curly vs straight
+  apostrophe or "colour" vs "color" shows the one byte; a swapped word ("nearly" / "almost") stays marked whole.
+  Unmarked text is identical byte for byte. A changed line break shows as ↵.
+- **Ignore case** and **Ignore spacing** (extra spaces, line breaks) are off unless you turn them on. If the texts
+  differ only in those, the footer says "No differences (ignoring …)" instead of "Identical, byte for byte".
+- Text only: highlighting, underlining and other formatting aren't compared. Text 2 is kept until CardMirror quits, so
+  one pasted source can be checked against several cards. Works without the helper.
+
 ## Card Check
 
 - **Card Check this document…**: checks every card in the open document against the page its cite links to.
