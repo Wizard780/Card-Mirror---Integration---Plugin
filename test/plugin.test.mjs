@@ -1889,9 +1889,56 @@ test('open cache: failed parses, small files, other messages and the off switch 
   on = false;
   w.postMessage({ id: 4, bytes: big(1) });
   assert.equal(w.posted.length, 5, 'setting off: straight to the worker');
+  on = true;
+  patch(W, store, { hash: async () => 'other' });
+  w.postMessage({ id: 5, bytes: big(1) });
+  await tick();
+  assert.equal(w.posted.length, 6, 'patching twice is a no-op: one post, keyed by the first patch');
+  w.reply({ id: 5, ok: true, docJson: { b: 1 }, threads: [], docId: null });
+  await tick();
+  assert.deepEqual([...store.m.keys()], ['v1|h'], 'first patch\'s hash and version are used');
+});
+
+test('open cache: a stalled cache lookup gives up and lets the worker parse', async () => {
+  const W = fakeWorkerClass();
+  const store = { get: () => new Promise(() => {}), async put() {}, async touch() {} };
+  patch(W, store, { lookupMs: 20 });
+  const w = new W();
+  w.postMessage({ id: 1, bytes: big(1) });
+  await tick();
+  assert.equal(w.posted.length, 0, 'waits for the lookup a little');
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(w.posted.length, 1, 'then parses as usual');
+});
+
+test('open cache: two opens in flight each get their own reply and key', async () => {
+  const W = fakeWorkerClass();
+  const store = memStore();
   patch(W, store);
-  w.postMessage({ id: 5, bytes: new Uint8Array(1) });
-  assert.equal(w.posted.length, 6, 'patching twice is a no-op');
+  const w = new W();
+  const got = [];
+  w.addEventListener('message', (e) => got.push(e.data.id));
+  w.postMessage({ id: 1, bytes: big(1) });
+  w.postMessage({ id: 2, bytes: big(2) });
+  await tick();
+  assert.deepEqual(w.posted.map((m) => m.id), [1, 2]);
+  w.reply({ id: 2, ok: true, docJson: { n: 2 }, threads: [], docId: null });
+  w.reply({ id: 1, ok: true, docJson: { n: 1 }, threads: [], docId: null });
+  await tick();
+  assert.deepEqual(store.m.get('v1|h1').docJson, { n: 1 });
+  assert.deepEqual(store.m.get('v1|h2').docJson, { n: 2 });
+  w.postMessage({ id: 3, bytes: big(2) });
+  await tick();
+  assert.equal(got.at(-1), 3);
+  assert.equal(w.posted.length, 2, 'the second file now opens from the cache');
+});
+
+test('open cache: LRU order keeps the newest ten and names what falls off', () => {
+  const { lruOrder } = openCache();
+  assert.deepEqual(lruOrder(undefined, 'a', 3), { keys: ['a'], evicted: [] });
+  assert.deepEqual(lruOrder(['b', 'a', 'c'], 'a', 3), { keys: ['a', 'b', 'c'], evicted: [] });
+  assert.deepEqual(lruOrder(['b', 'c', 'd'], 'a', 3), { keys: ['a', 'b', 'c'], evicted: ['d'] });
+  assert.deepEqual(lruOrder('junk', 'a', 3), { keys: ['a'], evicted: [] });
 });
 
 test('open cache: an unreadable cache falls back to the worker', async () => {
@@ -1902,6 +1949,9 @@ test('open cache: an unreadable cache falls back to the worker', async () => {
   w.postMessage({ id: 1, bytes: big(1) });
   await tick();
   assert.equal(w.posted.length, 1);
+  const got = [];
+  w.addEventListener('message', (e) => got.push(e.data.id));
   w.reply({ id: 1, ok: true, docJson: {}, threads: [], docId: null }); // put rejects: swallowed
   await tick();
+  assert.deepEqual(got, [1], 'the real reply still reaches CardMirror');
 });

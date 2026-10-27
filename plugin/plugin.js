@@ -1658,16 +1658,29 @@ textarea.du-cmp-text{resize:none;min-height:0}
   const OPEN_CACHE_MAX = 10; // replies kept, least recently opened dropped first
   const OPEN_CACHE_MIN_BYTES = 512 * 1024; // small files parse faster than a cache read
 
+  // Most recently opened first; returns the new order and the keys that fall off the end.
+  function lruOrder(lru, key, max) {
+    const keys = [key, ...(Array.isArray(lru) ? lru : []).filter((k) => k !== key)];
+    return { keys: keys.slice(0, max), evicted: keys.slice(max) };
+  }
+
   function idbStore(dbName) {
     let dbp = null;
     const db = () => (dbp ??= new Promise((res, rej) => {
       const r = indexedDB.open(dbName, 1);
       r.onupgradeneeded = () => { r.result.createObjectStore('replies'); r.result.createObjectStore('index'); };
-      r.onsuccess = () => res(r.result);
-      r.onerror = () => { dbp = null; rej(r.error); };
-    }));
+      r.onsuccess = () => {
+        const d = r.result;
+        // A closed connection would fail every later transaction, so the next call reopens.
+        d.onclose = () => { dbp = null; };
+        d.onversionchange = () => { d.close(); dbp = null; };
+        res(d);
+      };
+      r.onerror = () => rej(r.error);
+    }).catch((e) => { dbp = null; throw e; }));
     const run = (stores, mode, fn) => db().then((d) => new Promise((res, rej) => {
-      const t = d.transaction(stores, mode);
+      let t;
+      try { t = d.transaction(stores, mode); } catch (e) { dbp = null; rej(e); return; }
       let out;
       t.oncomplete = () => res(out);
       t.onerror = t.onabort = () => rej(t.error);
@@ -1681,21 +1694,33 @@ textarea.du-cmp-text{resize:none;min-height:0}
         return reply;
       },
       async put(key, reply, max) {
+        // Make room first, in its own transaction, so a full disk can't block the eviction too.
         await run(['replies', 'index'], 'readwrite', (t) => {
-          const replies = t.objectStore('replies');
           const index = t.objectStore('index');
-          replies.put(reply, key);
           return req(index.get('lru')).then((lru) => {
-            const keys = [key, ...(lru || []).filter((k) => k !== key)];
-            for (const old of keys.slice(max)) replies.delete(old);
-            index.put(keys.slice(0, max), 'lru');
+            const { keys, evicted } = lruOrder(lru, key, max);
+            for (const old of evicted) t.objectStore('replies').delete(old);
+            index.put(keys.filter((k) => k !== key), 'lru');
+          });
+        });
+        await run(['replies', 'index'], 'readwrite', (t) => {
+          t.objectStore('replies').put(reply, key);
+          const index = t.objectStore('index');
+          return req(index.get('lru')).then((lru) => {
+            const { keys, evicted } = lruOrder(lru, key, max);
+            for (const old of evicted) t.objectStore('replies').delete(old);
+            index.put(keys, 'lru');
           });
         });
       },
       async touch(key, max) {
-        await run(['index'], 'readwrite', (t) => {
+        await run(['replies', 'index'], 'readwrite', (t) => {
           const index = t.objectStore('index');
-          return req(index.get('lru')).then((lru) => index.put([key, ...(lru || []).filter((k) => k !== key)].slice(0, max), 'lru'));
+          // Only reorder a key that's still stored (a put or clear may have dropped it since the read).
+          return req(t.objectStore('replies').getKey(key)).then((have) => {
+            if (have === undefined) return null;
+            return req(index.get('lru')).then((lru) => index.put(lruOrder(lru, key, max).keys, 'lru'));
+          });
         });
       },
       async clear() {
@@ -1703,6 +1728,13 @@ textarea.du-cmp-text{resize:none;min-height:0}
       },
     };
   }
+
+  // A stalled IndexedDB must not hold up the open: past this, the worker parses as usual.
+  const OPEN_CACHE_LOOKUP_MS = 1500;
+  const within = (p, ms) => new Promise((res, rej) => {
+    const t = setTimeout(() => rej(new Error('cache lookup timed out')), ms);
+    p.then((v) => { clearTimeout(t); res(v); }, (e) => { clearTimeout(t); rej(e); });
+  });
 
   async function sha256Hex(bytes) {
     const d = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
@@ -1717,7 +1749,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
   const isOpenRequest = (m) => !!m && typeof m === 'object' && typeof m.id === 'number' &&
     (m.bytes instanceof Uint8Array || m.bytes instanceof ArrayBuffer) && Object.keys(m).length === 2;
 
-  function patchWorkerPostMessage(proto, { store, version, hash = sha256Hex, enabled = () => true, idle = (fn) => setTimeout(fn, 0), max = OPEN_CACHE_MAX, minBytes = OPEN_CACHE_MIN_BYTES }) {
+  function patchWorkerPostMessage(proto, { store, version, hash = sha256Hex, enabled = () => true, idle = (fn) => setTimeout(fn, 0), max = OPEN_CACHE_MAX, minBytes = OPEN_CACHE_MIN_BYTES, lookupMs = OPEN_CACHE_LOOKUP_MS }) {
     const native = proto.postMessage;
     if (native.__duOpenCache) return;
     const pendingKeys = new WeakMap(); // worker -> Map(request id -> cache key)
@@ -1743,8 +1775,10 @@ textarea.du-cmp-text{resize:none;min-height:0}
       (async () => {
         let key = null;
         try {
-          key = `${version()}|${await hash(msg.bytes)}`;
-          const hit = await store.get(key);
+          const hit = await within((async () => {
+            key = `${version()}|${await hash(msg.bytes)}`;
+            return store.get(key);
+          })(), lookupMs);
           if (hit && hit.docJson) {
             const ev = new MessageEvent('message', { data: { id: msg.id, ok: true, docJson: hit.docJson, threads: hit.threads || [], docId: hit.docId ?? null } });
             ev.__duCached = true;
@@ -1768,10 +1802,10 @@ textarea.du-cmp-text{resize:none;min-height:0}
     } catch { return true; }
   }
 
-  // The parser ships inside CardMirror's hashed bundle, so the bundle's URL changes with it.
+  // The parser ships inside CardMirror's hashed bundle, so its URLs change with it.
   const bundleVersion = () => {
-    const s = document.querySelector('script[type="module"][src]');
-    return s ? s.src : location.href;
+    const srcs = [...document.querySelectorAll('script[type="module"][src], link[rel="modulepreload"][href]')].map((n) => n.src || n.href);
+    return srcs.length ? srcs.sort().join(' ') : location.href;
   };
 
   let openStore = null;
@@ -3137,7 +3171,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
   }
   try { installClipboardFix(); } catch { /* copies stay as CardMirror makes them */ }
   if (!window.__debateUploaderTest) { try { installOpenCache(); } catch { /* opens parse as usual */ } }
-  if (window.__debateUploaderTest) window.__debateUploaderOpenCache = { patchWorkerPostMessage };
+  if (window.__debateUploaderTest) window.__debateUploaderOpenCache = { patchWorkerPostMessage, lruOrder, idbStore };
   if (window.__debateUploaderTest) window.__debateUploaderClipboard = { boldCopiedHTML, unboldCopiedHTML }; // only when tests ask
   if (window.__debateUploaderTest) window.__debateUploaderCompare = compareTexts;
 
