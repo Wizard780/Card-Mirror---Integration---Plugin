@@ -315,6 +315,37 @@ textarea.du-input{resize:vertical;min-height:3.4em}
 .du-issues li+li{margin-top:6px}
 .du-btn:disabled{opacity:.5;cursor:default}
 .du-btn:disabled:hover{background:var(--pmd-c-bg)}
+.du-cmp{height:min(86vh,760px);max-height:86vh}
+.du-cmp-bar{display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px;padding:0 20px 12px}
+.du-cmp-bar .du-seg button{flex:none;padding:5px 12px;font-size:.85rem}
+.du-toggle{display:flex;align-items:center;gap:6px;font-size:.85rem;color:var(--pmd-c-text-secondary);cursor:pointer;user-select:none}
+.du-toggle input{margin:0;accent-color:var(--pmd-c-accent)}
+.du-cmp-nav{margin-left:auto;display:flex;align-items:center;gap:6px;font-size:.82rem;color:var(--pmd-c-text-muted);font-variant-numeric:tabular-nums}
+.du-cmp-nav .du-btn{padding:4px 10px}
+.du-cmp-cols{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;padding:0 20px 16px}
+.du-cmp-col{display:flex;flex-direction:column;gap:6px;min-height:0;min-width:0}
+.du-cmp-head{display:flex;align-items:center;gap:6px;min-height:28px}
+.du-cmp-head .du-label{flex:1;min-width:0}
+.du-cmp-head .du-btn{padding:3px 9px;font-size:.8rem}
+.du-cmp-text,.du-cmp-out{flex:1 1 auto;min-height:0;font-size:.9rem;line-height:1.55}
+textarea.du-cmp-text{resize:none;min-height:0}
+.du-cmp-out{position:relative;overflow:auto;padding:7px 10px;border:1px solid var(--pmd-c-border);border-radius:6px;background:var(--pmd-c-bg);
+  white-space:pre-wrap;overflow-wrap:anywhere;outline:none}
+.du-cmp-out:focus-visible{border-color:var(--pmd-c-focus);box-shadow:0 0 0 3px var(--pmd-c-accent-soft)}
+.du-cmp-out[hidden],.du-cmp-text[hidden]{display:none}
+.du-cmp-out [data-g]{border-radius:2px;cursor:pointer}
+.du-k1.du-a{background:color-mix(in srgb,var(--pmd-c-error) 12%,transparent)}
+.du-k2.du-a{background:color-mix(in srgb,var(--pmd-c-error) 30%,transparent)}
+.du-k1.du-b{background:color-mix(in srgb,var(--pmd-c-success) 12%,transparent)}
+.du-k2.du-b{background:color-mix(in srgb,var(--pmd-c-success) 32%,transparent)}
+.du-k3{display:inline-block;width:3px;height:1.15em;margin:0 1px;vertical-align:text-bottom}
+.du-k3.du-a{background:var(--pmd-c-error)}
+.du-k3.du-b{background:var(--pmd-c-success)}
+.du-cmp-out .du-cur{text-decoration:underline 2px var(--pmd-c-focus);text-underline-offset:4px;text-decoration-skip-ink:none}
+.du-cmp-out .du-k3.du-cur{box-shadow:0 0 0 2px var(--pmd-c-focus)}
+.du-pickbar{position:fixed;left:50%;bottom:48px;transform:translateX(-50%);z-index:100000;display:flex;align-items:center;gap:10px;
+  padding:8px 10px 8px 16px;border-radius:10px;background:var(--pmd-c-bg);color:var(--pmd-c-text);border:1px solid var(--pmd-c-border-soft);
+  box-shadow:0 12px 34px var(--pmd-c-shadow-deep,rgba(0,0,0,.28));font-family:var(--pmd-ui-font,system-ui,sans-serif);font-size:.88rem}
 `;
 
   function el(tag, props = {}, kids = []) {
@@ -391,7 +422,7 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     });
     document.body.append(scrim);
     return {
-      dialog, head, body, foot,
+      dialog, head, body, foot, scrim,
       onDismiss: (fn) => { onDismiss = fn; },
       close: () => { scrim.remove(); if (prev && prev.focus) prev.focus(); },
     };
@@ -660,6 +691,169 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         });
         render();
         input.focus();
+      });
+    },
+
+    // Side-by-side compare: edit the two texts, then Compare shows both with the
+    // differences marked; ↑↓ step through them. Resolves when closed.
+    compareText(spec) {
+      return new Promise((resolve) => {
+        const d = openDialog({ title: 'Compare text', width: '1040px' });
+        d.dialog.className += ' du-cmp';
+        d.body.remove();
+        const o = { ...spec.opts };
+        let res = null;
+        let cur = -1;
+        let showing = false;
+        const status = note('');
+        const save = () => spec.onChange({ texts: sides.map((s) => s.text.value), opts: { ...o } });
+
+        const sides = [0, 1].map((k) => {
+          const text = el('textarea', {
+            class: 'du-input du-cmp-text', value: spec.texts[k] || '', spellcheck: false,
+            placeholder: k ? 'Paste the second text, or press Use selection and select it in your document' : 'Paste the first text, or press Use selection',
+            attrs: { 'aria-label': `Text ${k + 1}` },
+          });
+          text.addEventListener('input', save);
+          const out = el('div', { class: 'du-cmp-out', tabIndex: 0, hidden: true, attrs: { 'aria-label': `Text ${k + 1}, differences marked` } });
+          out.addEventListener('mousedown', (e) => { const g = e.target.dataset && e.target.dataset.g; if (g != null) goTo(Number(g)); });
+          const head = el('div', { class: 'du-cmp-head' }, [
+            el('span', { class: 'du-label', textContent: `Text ${k + 1}` }),
+            button('Use selection', false, () => pick(k)),
+            button('Clear', false, () => { text.value = ''; save(); edit(k); }),
+          ]);
+          return { text, out, col: el('div', { class: 'du-cmp-col' }, [head, text, out]) };
+        });
+
+        const modes = el('div', { class: 'du-seg', attrs: { role: 'group', 'aria-label': 'Compare by' } },
+          [['words', 'Words'], ['chars', 'Characters']].map(([m, label]) =>
+            el('button', { type: 'button', textContent: label, data: { mode: m }, onclick: () => { o.mode = m; changed(); } })));
+        const toggle = (key, label) => {
+          const box = el('input', { type: 'checkbox', checked: !!o[key], onchange: () => { o[key] = box.checked; changed(); } });
+          return el('label', { class: 'du-toggle' }, [box, label]);
+        };
+        const count = el('span', { attrs: { 'aria-live': 'polite' } });
+        const prev = button('↑', false, () => goTo(cur - 1));
+        const next = button('↓', false, () => goTo(cur + 1));
+        prev.title = 'Previous difference (↑)';
+        next.title = 'Next difference (↓)';
+        const nav = el('div', { class: 'du-cmp-nav' }, [count, prev, next]);
+        const bar = el('div', { class: 'du-cmp-bar' }, [modes, toggle('ignoreCase', 'Ignore case'), toggle('ignoreSpace', 'Ignore spacing'), nav]);
+        const cols = el('div', { class: 'du-cmp-cols' }, sides.map((s) => s.col));
+        if (d.dialog.insertBefore) { d.dialog.insertBefore(bar, d.foot); d.dialog.insertBefore(cols, d.foot); } else d.dialog.append(bar, cols);
+
+        const main = button('Compare', true, () => (showing ? edit(0) : run()));
+        d.foot.append(status.node, button('Swap', false, () => {
+          [sides[0].text.value, sides[1].text.value] = [sides[1].text.value, sides[0].text.value];
+          save();
+          if (showing) run(true);
+        }), main);
+
+        const close = () => { d.close(); resolve(); };
+        d.onDismiss(close);
+
+        const paintBar = () => {
+          for (const b of modes.children) b.setAttribute('aria-pressed', String(b.dataset.mode === (o.mode === 'chars' ? 'chars' : 'words')));
+          const n = showing && res ? res.diffs : 0;
+          count.textContent = n ? `${cur + 1} of ${n}` : '';
+          prev.disabled = !n || cur <= 0;
+          next.disabled = !n || cur >= n - 1;
+        };
+        const edit = (k) => {
+          showing = false;
+          for (const s of sides) { s.text.hidden = false; s.out.hidden = true; }
+          main.textContent = 'Compare';
+          status.set('⌘Enter to compare · Esc to close');
+          paintBar();
+          sides[k].text.focus();
+        };
+        const paintSide = (out, pieces, side) => {
+          out.textContent = '';
+          for (const p of pieces) {
+            if (!p.kind) { out.append(p.text); continue; }
+            // A changed line break or space has to be visible.
+            const shown = p.kind === 3 ? '' : p.kind === 2 ? p.text.replace(/\n/g, '↵\n') : p.text;
+            const span = el('span', { class: `du-k${p.kind} du-${side}`, textContent: shown, data: { g: String(p.g) } });
+            if (p.kind === 3) span.title = side === 'a' ? 'Text 2 has text here' : 'Text 1 has text here';
+            out.append(span);
+          }
+        };
+        const run = (rerun = false) => {
+          const [a, b] = sides.map((s) => s.text.value);
+          if (!a.trim() && !b.trim()) { status.set('Paste or select two texts to compare.'); return; }
+          res = spec.compare(a, b, o);
+          showing = true;
+          paintSide(sides[0].out, res.left, 'a');
+          paintSide(sides[1].out, res.right, 'b');
+          for (const s of sides) { s.text.hidden = true; s.out.hidden = false; if (!rerun) s.out.scrollTop = 0; }
+          main.textContent = 'Edit';
+          const ignoring = [o.ignoreCase && 'case', o.ignoreSpace && 'spacing'].filter(Boolean).join(' and ');
+          status.set(!res.diffs
+            ? (a === b ? 'Identical, byte for byte.' : `No differences${ignoring ? ` (ignoring ${ignoring})` : ''}.`)
+            : [plural(res.diffs, 'difference'), res.removed && `${plural(res.removed, res.unit)} only in Text 1`,
+              res.added && `${plural(res.added, res.unit)} only in Text 2`, res.timedOut && 'too long to line up exactly'].filter(Boolean).join(' · '));
+          if (rerun) { goTo(cur); return; } // an option or Swap: stay where you were
+          cur = -1;
+          if (res.diffs) goTo(0); else paintBar();
+          sides[1].out.focus();
+        };
+        const goTo = (i) => {
+          if (!res || !res.diffs) { cur = -1; paintBar(); return; }
+          cur = Math.max(0, Math.min(i, res.diffs - 1));
+          for (const s of sides) {
+            let first = null;
+            for (const span of s.out.querySelectorAll('[data-g]')) {
+              const on = span.dataset.g === String(cur);
+              span.classList.toggle('du-cur', on);
+              if (on && !first) first = span;
+            }
+            if (first) s.out.scrollTop = Math.max(0, first.offsetTop - s.out.clientHeight / 3);
+          }
+          paintBar();
+        };
+        const changed = () => { save(); paintBar(); if (showing) run(true); };
+
+        // The dialog steps aside so text can be selected in the document.
+        const pick = (k) => {
+          d.scrim.style.display = 'none';
+          const finish = (take) => {
+            pickBar.remove();
+            window.removeEventListener('keydown', onKey, true);
+            d.scrim.style.display = '';
+            const got = take ? spec.readSelection() : '';
+            if (got.trim()) { sides[k].text.value = got; save(); }
+            const other = sides[1 - k].text.value.trim();
+            if (got.trim() && other) run();
+            else {
+              edit(got.trim() ? 1 - k : k);
+              if (take && !got.trim()) status.set('Nothing was selected. Select text in the document first.');
+            }
+          };
+          const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(false); } };
+          const barBtn = (label, primary, take) => {
+            const b = button(label, primary, () => finish(take));
+            b.addEventListener('mousedown', (e) => e.preventDefault()); // keep the selection
+            return b;
+          };
+          const pickBar = el('div', { class: 'du-pickbar', attrs: { role: 'status' } }, [
+            el('span', { textContent: `Select the text for Text ${k + 1} in your document` }),
+            barBtn('Cancel', false, false),
+            barBtn('Use selection', true, true),
+          ]);
+          document.body.append(pickBar);
+          window.addEventListener('keydown', onKey, true);
+        };
+
+        d.dialog.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); showing ? edit(0) : run(); return; }
+          if (!showing || e.target.tagName === 'INPUT') return;
+          if (e.key === 'ArrowDown') { e.preventDefault(); goTo(cur + 1); }
+          else if (e.key === 'ArrowUp') { e.preventDefault(); goTo(cur - 1); }
+        });
+
+        const [a, b] = spec.texts;
+        edit(a ? 1 : 0);
+        if (a && b) sides[1].text.select(); // pasting replaces the kept Text 2
       });
     },
 
@@ -2344,9 +2538,226 @@ textarea.du-input{resize:vertical;min-height:3.4em}
     }
   }
 
+  // ---------------------------------------------------------------- Text compare
+  // Words are diffed first (Myers in linear space, after diff-match-patch's bisect);
+  // in Characters mode each changed stretch is then diffed letter by letter, so
+  // anything left unhighlighted is identical, byte for byte, unless an Ignore option is on.
+  const WORD_RE = /\s+|[\p{L}\p{M}\p{N}]+(?:['’][\p{L}\p{M}\p{N}]+)*|[^]/gu;
+  const COMPARE_MS = 2500; // past this, what's left is shown as one big change
+
+  const TIMED_OUT = 'timed out';
+  // The point where the forward and reverse D-paths meet; null when they share nothing.
+  function bisect(a, b, deadline) {
+    const n = a.length, m = b.length, maxD = Math.ceil((n + m) / 2), off = maxD, len = 2 * maxD;
+    const v1 = new Int32Array(len).fill(-1), v2 = new Int32Array(len).fill(-1);
+    v1[off + 1] = 0;
+    v2[off + 1] = 0;
+    const delta = n - m, front = delta % 2 !== 0;
+    let k1s = 0, k1e = 0, k2s = 0, k2e = 0;
+    for (let d = 0; d < maxD; d++) {
+      if (Date.now() > deadline) return TIMED_OUT;
+      for (let k1 = -d + k1s; k1 <= d - k1e; k1 += 2) {
+        const k1o = off + k1;
+        let x1 = k1 === -d || (k1 !== d && v1[k1o - 1] < v1[k1o + 1]) ? v1[k1o + 1] : v1[k1o - 1] + 1;
+        let y1 = x1 - k1;
+        while (x1 < n && y1 < m && a[x1] === b[y1]) { x1++; y1++; }
+        v1[k1o] = x1;
+        if (x1 > n) k1e += 2;
+        else if (y1 > m) k1s += 2;
+        else if (front) {
+          const k2o = off + delta - k1;
+          if (k2o >= 0 && k2o < len && v2[k2o] !== -1 && x1 >= n - v2[k2o]) return [x1, y1];
+        }
+      }
+      for (let k2 = -d + k2s; k2 <= d - k2e; k2 += 2) {
+        const k2o = off + k2;
+        let x2 = k2 === -d || (k2 !== d && v2[k2o - 1] < v2[k2o + 1]) ? v2[k2o + 1] : v2[k2o - 1] + 1;
+        let y2 = x2 - k2;
+        while (x2 < n && y2 < m && a[n - x2 - 1] === b[m - y2 - 1]) { x2++; y2++; }
+        v2[k2o] = x2;
+        if (x2 > n) k2e += 2;
+        else if (y2 > m) k2s += 2;
+        else if (!front) {
+          const k1o = off + delta - k2;
+          if (k1o >= 0 && k1o < len && v1[k1o] !== -1) {
+            const x1 = v1[k1o];
+            if (x1 >= n - x2) return [x1, off + x1 - k1o];
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  // Edit script over two Int32Arrays: [['=', n] | ['-', n] | ['+', n], …].
+  function diffSeq(a, b, deadline) {
+    const ops = [];
+    let timedOut = false;
+    const emit = (t, n) => {
+      if (!n) return;
+      const last = ops[ops.length - 1];
+      if (last && last[0] === t) last[1] += n; else ops.push([t, n]);
+    };
+    const rec = (a, b) => {
+      let p = 0;
+      while (p < a.length && p < b.length && a[p] === b[p]) p++;
+      let s = 0;
+      while (s < a.length - p && s < b.length - p && a[a.length - 1 - s] === b[b.length - 1 - s]) s++;
+      emit('=', p);
+      const ma = a.subarray(p, a.length - s), mb = b.subarray(p, b.length - s);
+      const at = ma.length && mb.length ? bisect(ma, mb, deadline) : null;
+      if (at === TIMED_OUT) timedOut = true;
+      if (at && at !== TIMED_OUT) {
+        rec(ma.subarray(0, at[0]), mb.subarray(0, at[1]));
+        rec(ma.subarray(at[0]), mb.subarray(at[1]));
+      } else {
+        emit('-', ma.length);
+        emit('+', mb.length);
+      }
+      emit('=', s);
+    };
+    rec(a, b);
+    return { ops, timedOut };
+  }
+
+  // Units to compare. With Ignore spacing, whitespace rides along with the unit
+  // before it and never counts.
+  function units(text, words, ignoreSpace) {
+    const raw = words ? text.match(WORD_RE) || [] : Array.from(text);
+    if (!ignoreSpace) return raw;
+    const out = [];
+    let lead = '';
+    for (const u of raw) {
+      if (!/^\s+$/.test(u)) { out.push(lead + u); lead = ''; } else if (out.length) out[out.length - 1] += u; else lead += u;
+    }
+    if (lead) out.push(lead);
+    return out;
+  }
+
+  function encode(listA, listB, opts) {
+    const ids = new Map();
+    const key = (u) => {
+      let k = opts.ignoreSpace ? u.replace(/\s+/g, '') : u;
+      if (opts.ignoreCase) k = k.toLowerCase();
+      if (!ids.has(k)) ids.set(k, ids.size);
+      return ids.get(k);
+    };
+    return [Int32Array.from(listA, key), Int32Array.from(listB, key)];
+  }
+
+  const textLen = (list, i, j) => { let n = 0; for (let k = i; k < j; k++) n += list[k].length; return n; };
+
+  // Pieces per side: { text, kind, g } with kind 0 = same, 1 = in a change but
+  // the same letters (Characters mode), 2 = changed, 3 = where the other side has text.
+  function compareTexts(left, right, opts = {}) {
+    const deadline = Date.now() + COMPARE_MS;
+    const words = opts.mode !== 'chars';
+    const ta = units(left, true, opts.ignoreSpace), tb = units(right, true, opts.ignoreSpace);
+    const [a, b] = encode(ta, tb, opts);
+    const { ops, timedOut: slow } = diffSeq(a, b, deadline);
+    let timedOut = slow;
+
+    // Equal runs and changes, by unit index.
+    const isWord = (u) => /[\p{L}\p{N}]/u.test(u);
+    let segs = [];
+    let i = 0, j = 0, removedWords = 0, addedWords = 0;
+    for (const [t, n] of ops) {
+      if (t === '-') removedWords += ta.slice(i, i + n).filter(isWord).length;
+      if (t === '+') addedWords += tb.slice(j, j + n).filter(isWord).length;
+      if (t === '=') { segs.push({ eq: true, a0: i, a1: i + n, b0: j, b1: j + n }); i += n; j += n; continue; }
+      let last = segs[segs.length - 1];
+      if (!last || last.eq) segs.push((last = { eq: false, a0: i, a1: i, b0: j, b1: j }));
+      if (t === '-') last.a1 = i += n; else last.b1 = j += n;
+    }
+    // A short equal run between two bigger changes ("the", a space) joins them,
+    // so a rewritten phrase reads as one change instead of confetti.
+    for (let again = true; again;) {
+      again = false;
+      for (let k = 1; k < segs.length - 1; k++) {
+        const [p, e, q] = [segs[k - 1], segs[k], segs[k + 1]];
+        if (!e.eq || p.eq || q.eq) continue;
+        const n = textLen(ta, e.a0, e.a1);
+        if (n <= Math.max(textLen(ta, p.a0, p.a1), textLen(tb, p.b0, p.b1)) && n <= Math.max(textLen(ta, q.a0, q.a1), textLen(tb, q.b0, q.b1))) {
+          segs.splice(k - 1, 3, { eq: false, a0: p.a0, a1: q.a1, b0: p.b0, b1: q.b1 });
+          again = true;
+        }
+      }
+    }
+
+    const sides = [[], []];
+    const push = (side, text, kind, g) => {
+      if (!text && kind !== 3) return;
+      const last = side[side.length - 1];
+      if (last && last.kind === kind && last.g === g && kind !== 3) last.text += text; else side.push({ text, kind, g });
+    };
+    let g = 0, removed = words ? removedWords : 0, added = words ? addedWords : 0;
+    for (const s of segs) {
+      const at = ta.slice(s.a0, s.a1).join(''), bt = tb.slice(s.b0, s.b1).join('');
+      if (s.eq) { push(sides[0], at, 0, -1); push(sides[1], bt, 0, -1); continue; }
+      if (!at || !bt) {
+        push(sides[0], at, at ? 2 : 3, g);
+        push(sides[1], bt, bt ? 2 : 3, g);
+      }
+      // Characters mode marks the exact letters only when the two sides mostly
+      // share them ("colour"/"color"); a swapped word ("nearly"/"almost") stays whole.
+      let sub = null, ca = null, cb = null;
+      if (!words && at && bt) {
+        ca = units(at, false, opts.ignoreSpace);
+        cb = units(bt, false, opts.ignoreSpace);
+        const [x, y] = encode(ca, cb, opts);
+        sub = diffSeq(x, y, deadline);
+        timedOut = timedOut || sub.timedOut;
+        const same = sub.ops.reduce((n, [t, c]) => (t === '=' ? n + c : n), 0);
+        if (same * 2 < Math.min(ca.length, cb.length)) sub = null;
+      }
+      if (at && bt && !sub) {
+        push(sides[0], at, 2, g);
+        push(sides[1], bt, 2, g);
+      }
+      if (words) {
+        // counted above, from the edit script (a merged "the" is in both texts)
+      } else if (!sub) {
+        removed += units(at, false, opts.ignoreSpace).length;
+        added += units(bt, false, opts.ignoreSpace).length;
+      } else {
+        let ci = 0, cj = 0;
+        for (const [t, n] of sub.ops) {
+          if (t !== '+') { const part = ca.slice(ci, ci + n).join(''); ci += n; push(sides[0], part, t === '=' ? 1 : 2, g); if (t === '-') removed += n; }
+          if (t !== '-') { const part = cb.slice(cj, cj + n).join(''); cj += n; push(sides[1], part, t === '=' ? 1 : 2, g); if (t === '+') added += n; }
+        }
+      }
+      g++;
+    }
+    return { diffs: g, removed, added, unit: words ? 'word' : 'character', left: sides[0], right: sides[1], timedOut };
+  }
+
+  // Text in the document selection, paragraph breaks as newlines.
+  function selectedText() {
+    const sel = window.getSelection && window.getSelection();
+    return sel ? String(sel.toString()) : '';
+  }
+
+  // Kept for the session, so one source can be compared against several cards.
+  let compareTextsKept = ['', ''];
+
+  async function textCompare(api) {
+    const u = ui();
+    const read = u.selectedText || selectedText;
+    const sel = read();
+    if (sel.trim()) compareTextsKept[0] = sel;
+    await u.compareText({
+      texts: compareTextsKept.slice(),
+      opts: { mode: 'words', ignoreCase: false, ignoreSpace: false, ...(api.storage.get('compareOpts') || {}) },
+      compare: compareTexts,
+      readSelection: read,
+      onChange: ({ texts, opts }) => { compareTextsKept = texts.slice(); api.storage.set('compareOpts', opts); },
+    });
+  }
+
   try { editor.install(); } catch { /* marking just reports it can't reach the editor */ }
   try { installClipboardFix(); } catch { /* copies stay as CardMirror makes them */ }
   if (window.__debateUploaderTest) window.__debateUploaderClipboard = { boldCopiedHTML, unboldCopiedHTML }; // only when tests ask
+  if (window.__debateUploaderTest) window.__debateUploaderCompare = compareTexts;
 
   window.__registerCardMirrorPlugin && window.__registerCardMirrorPlugin({
     id: ID,
@@ -2473,6 +2884,13 @@ textarea.du-input{resize:vertical;min-height:3.4em}
         keywords: ['email', 'gmail', 'logout', 'forget'],
         defaultKey: null,
         run: (api) => withPrefs(api, () => gmailForget(api)),
+      },
+      {
+        id: `${ID}.textCompare`,
+        label: 'Compare text…',
+        keywords: ['compare', 'diff', 'difference', 'text', 'changes', 'version', 'card', 'source'],
+        defaultKey: null,
+        run: (api) => textCompare(api), // no helper needed
       },
       {
         id: `${ID}.cardCheck`,

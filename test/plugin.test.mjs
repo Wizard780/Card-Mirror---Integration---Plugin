@@ -42,11 +42,11 @@ function harness({ prefs = {}, responses = [], settings = {}, storage = {}, room
   return { api, calls, toasts, prompts, store, prefsReply, prefsSets };
 }
 
-test('registers twenty-two commands and one setting under the plugin id', () => {
+test('registers twenty-three commands and one setting under the plugin id', () => {
   assert.equal(def.id, 'debate-uploader');
   assert.equal(def.apiVersion, 1);
   assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.boldEmphasis', 'debate-uploader.cardCheck', 'debate-uploader.cardCheckLast', 'debate-uploader.caselistCardSearch', 'debate-uploader.caselistScout', 'debate-uploader.caselistSearch', 'debate-uploader.caselistTeam', 'debate-uploader.caselistUpload', 'debate-uploader.emailChain', 'debate-uploader.evidenceFolders', 'debate-uploader.evidenceSearch', 'debate-uploader.gmailForget', 'debate-uploader.gmailSetup', 'debate-uploader.markCards', 'debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdPick', 'debate-uploader.sdZip', 'debate-uploader.setFolder',
- 'debate-uploader.tabroomLogin', 'debate-uploader.tabroomLogout', 'debate-uploader.tabroomRounds']);
+ 'debate-uploader.tabroomLogin', 'debate-uploader.tabroomLogout', 'debate-uploader.tabroomRounds', 'debate-uploader.textCompare']);
   assert.deepEqual(def.settings.map((s) => [s.key, s.type, s.default]), [['sendDocFolder', 'text', '']]);
 });
 
@@ -1721,4 +1721,89 @@ test('copy: cite and emphasis get bold (tagged) for other apps; pasting back int
   assert.match(out, /<span class="pmd-underline" style="font-size: 11pt; text-decoration: underline">Prime/, 'underline is not bolded');
   assert.equal(boldCopiedHTML(out), out, 'idempotent');
   assert.equal(unboldCopiedHTML(out), html, 'pasting back restores CardMirror\'s own HTML exactly');
+});
+
+// ---------------------------------------------------------------- Compare text
+const compare = (...a) => window.__debateUploaderCompare(...a);
+const marked = (pieces) => pieces.filter((p) => p.kind).map((p) => (p.kind === 3 ? '|' : p.text));
+const joined = (pieces) => pieces.map((p) => p.text).join('');
+
+test('compare: identical texts have no differences', () => {
+  const r = compare('Same text.\nTwo lines.', 'Same text.\nTwo lines.');
+  assert.equal(r.diffs, 0);
+  assert.deepEqual(r.left, [{ text: 'Same text.\nTwo lines.', kind: 0, g: -1 }]);
+});
+
+test('compare: each side always rebuilds its own text exactly', () => {
+  const pairs = [['The big red dog ran home.', 'The small blue dog ran.'], ['', 'only right'], ['only left', ''],
+    ['Hello  World\nagain', 'hello World again'], ['a b c d e f', 'f e d c b a'], ['don’t — stop', "don't - stop!"]];
+  for (const [a, b] of pairs) for (const o of [{}, { mode: 'chars' }, { ignoreCase: true, ignoreSpace: true }, { mode: 'chars', ignoreSpace: true }]) {
+    const r = compare(a, b, o);
+    assert.equal(joined(r.left), a, JSON.stringify([a, b, o]));
+    assert.equal(joined(r.right), b, JSON.stringify([a, b, o]));
+  }
+});
+
+test('compare: a rewritten phrase is one difference, an insertion leaves a marker on the other side', () => {
+  const r = compare('The big red dog ran home.', 'The small blue dog ran home.');
+  assert.equal(r.diffs, 1);
+  assert.deepEqual([marked(r.left), marked(r.right)], [['big red'], ['small blue']]);
+  assert.deepEqual([r.removed, r.added, r.unit], [2, 2, 'word']);
+  const merged = compare('hyperscalers a recession', 'investors a slowdown');
+  assert.equal(merged.diffs, 1, 'the short shared "a" joins the change');
+  assert.deepEqual([merged.removed, merged.added], [2, 2], 'but it is not counted as only in one text');
+  const ins = compare('cause a recession.', 'could cause a severe recession.');
+  assert.equal(ins.diffs, 2);
+  assert.deepEqual([marked(ins.left), marked(ins.right)], [['|', '|'], ['could ', ' severe']]);
+});
+
+test('compare: Characters mode marks the exact byte when the words mostly match, whole words otherwise', () => {
+  const quote = compare("don’t stop", "don't stop", { mode: 'chars' });
+  assert.deepEqual([marked(quote.left), marked(quote.right)], [['don', '’', 't'], ['don', "'", 't']]);
+  assert.deepEqual(quote.left.filter((p) => p.kind === 2).map((p) => p.text), ['’'], 'only the apostrophe is a changed byte');
+  assert.deepEqual([quote.removed, quote.added, quote.unit], [1, 1, 'character']);
+  const swap = compare('nearly all', 'almost all', { mode: 'chars' });
+  assert.deepEqual([marked(swap.left), marked(swap.right)], [['nearly'], ['almost']]);
+  assert.deepEqual(swap.left.find((p) => p.kind).kind, 2);
+});
+
+test('compare: Words mode flags spacing and case; the Ignore options hide only those', () => {
+  assert.equal(compare('Data  center', 'Data center').diffs, 1, 'a double space is a difference by default');
+  assert.equal(compare('Data center', 'data center').diffs, 1);
+  assert.equal(compare('Data  center\nboom', 'Data center boom', { ignoreSpace: true }).diffs, 0);
+  assert.equal(compare('DATA center', 'data Center', { ignoreCase: true }).diffs, 0);
+  assert.equal(compare('Data center', 'Datacenter', { ignoreSpace: true }).diffs, 1, 'a missing space between words still differs');
+  const comma = compare('a, b', 'a b');
+  assert.deepEqual([comma.diffs, comma.removed, comma.added], [1, 0, 0], 'punctuation is a difference, not a word');
+});
+
+test('compare: a card against its whole source article stays fast and exact', () => {
+  const words = Array.from({ length: 9000 }, (_, i) => `w${(i * 7919) % 1000}`);
+  const card = words.slice(4000, 4300).join(' ');
+  const t = Date.now();
+  const r = compare(card, words.join(' '));
+  assert.ok(Date.now() - t < 1000, 'well under a second');
+  assert.equal(r.timedOut, false);
+  assert.equal(r.removed, 0, 'every card word is in the source');
+});
+
+test('Compare text: the selection becomes Text 1; texts and options are kept for the session', async () => {
+  const h = harness();
+  const specs = [];
+  let selection = '  Card text from the doc  ';
+  window.__debateUploaderUI = { selectedText: () => selection, compareText: async (spec) => { specs.push(spec); } };
+  await cmd('textCompare').run(h.api);
+  assert.equal(h.calls.length, 0, 'never calls the helper');
+  assert.deepEqual(specs[0].texts, ['  Card text from the doc  ', '']);
+  assert.deepEqual(specs[0].opts, { mode: 'words', ignoreCase: false, ignoreSpace: false });
+  assert.equal(specs[0].compare('a', 'b').diffs, 1);
+  specs[0].onChange({ texts: ['Card text from the doc', 'Source paragraph'], opts: { mode: 'chars', ignoreCase: true, ignoreSpace: false } });
+  selection = 'A different card';
+  await cmd('textCompare').run(h.api);
+  assert.deepEqual(specs[1].texts, ['A different card', 'Source paragraph'], 'Text 2 is kept so one source checks several cards');
+  assert.equal(specs[1].opts.mode, 'chars');
+  selection = '   ';
+  await cmd('textCompare').run(h.api);
+  assert.deepEqual(specs[2].texts, ['A different card', 'Source paragraph'], 'no selection keeps Text 1 too');
+  assert.equal(specs[2].readSelection(), '   ');
 });
