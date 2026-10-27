@@ -221,7 +221,13 @@ aren't found.
   - **Liquid** uses Lynx Theme Pro's LIQUID look: frosted glass panels, a bright top edge, the Tokyo Night colors
     and a glowing blue main button. It's always dark.
 
-  Changing it restyles any open dialog right away. (0.7.0's "Sleek interface" switch is now this dropdown; pick
+  Changing it restyles any open dialog right away.
+- **Apply the theme to all of CardMirror** (off by default) extends Sleek or Liquid to CardMirror itself: the
+  ribbon (idle buttons go borderless, pressed ones keep their state), the sidebar, the status bar, scrollbars, and
+  CardMirror's own menus and Settings window. Your document page keeps CardMirror's normal paper and ink. It applies
+  as CardMirror starts and follows Settings changes within a second. This is unofficial: it restyles CardMirror's
+  color variables and a few elements (`#ribbon`, `#status-bar`, `.pmd-nav-panel`), so a CardMirror update may
+  undo parts of it until the plugin catches up. Turn it off, or set the theme to Standard, to undo it at once. (0.7.0's "Sleek interface" switch is now this dropdown; pick
   Sleek again if you had it on.)
 
 

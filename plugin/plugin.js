@@ -152,24 +152,134 @@
   }
   const withPrefs = async (api, fn) => { syncLook(api); await restorePrefs(api); return fn(); };
 
-  // "Interface theme" setting: read at every command, and applied live to open
-  // dialogs when it's changed in Settings. Liquid is Sleek's layout in glass.
+  // "Interface theme" settings. Liquid is Sleek's layout in glass. CardMirror only
+  // hands a plugin its api when a command runs, so the settings are also read
+  // from CardMirror's own plugin storage at load and every second after.
   const THEMES = ['Standard', 'Sleek', 'Liquid'];
   let look = '';
+  let lookTheme = null;
+  let appTheme = null; // what's applied to CardMirror itself
   let lookWatched = false;
   const lookClass = (theme) => (theme === 'Liquid' ? ' du-sleek du-liquid' : theme === 'Sleek' ? ' du-sleek' : '');
+  function applyTheme(rawTheme, rawWhole) {
+    const theme = THEMES.includes(rawTheme) ? rawTheme : 'Standard';
+    const wantApp = rawWhole === true && theme !== 'Standard' ? theme : null;
+    if (theme !== lookTheme) {
+      lookTheme = theme;
+      look = lookClass(theme);
+      if (typeof document !== 'undefined') {
+        for (const n of document.querySelectorAll('.du-scrim, .du-pickbar')) {
+          n.classList.remove('du-sleek', 'du-liquid');
+          if (look) n.classList.add(...look.trim().split(' '));
+        }
+      }
+    }
+    // Retried on every poll until CardMirror's page rule is there to copy.
+    if (wantApp !== appTheme && typeof document !== 'undefined' && applyAppTheme(wantApp)) appTheme = wantApp;
+  }
   function syncLook(api) {
-    try { look = lookClass(api.settings && api.settings.get('theme')); } catch { /* standard look */ }
+    const get = (k) => { try { return api.settings && api.settings.get(k); } catch { return undefined; } };
+    applyTheme(get('theme'), get('themeWholeApp'));
     if (lookWatched || !api.settings || typeof api.settings.onChanged !== 'function') return;
     lookWatched = true;
-    api.settings.onChanged((key, value) => {
-      if (key !== 'theme') return;
-      look = lookClass(value);
-      for (const n of document.querySelectorAll('.du-scrim, .du-pickbar')) {
-        n.classList.remove('du-sleek', 'du-liquid');
-        if (look) n.classList.add(...look.trim().split(' '));
+    api.settings.onChanged((key) => { if (key === 'theme' || key === 'themeWholeApp') applyTheme(get('theme'), get('themeWholeApp')); });
+  }
+  function storedTheme() {
+    try {
+      const s = JSON.parse(localStorage.getItem(`plugin:${ID}`) || '{}').__settings || {};
+      applyTheme(s.theme, s.themeWholeApp);
+    } catch { /* storage unreadable: themes apply when a command runs */ }
+  }
+
+  // ---------------------------------------------------------------- Whole-app theme
+  // Not a CardMirror API: CardMirror paints its chrome from --pmd-c-* tokens, so
+  // redefining them on <html> restyles the app. The page keeps CardMirror's own
+  // light paper: its dark-mode rule that resets the editor is copied under our class.
+  const APP_CSS = `
+:root.du-app-sleek{--pmd-c-bg:#fff;--pmd-c-bg-soft:#fafafa;--pmd-c-surface-soft:#fafafa;--pmd-c-surface:#fafafa;--pmd-c-surface-alt:#f4f4f5;
+  --pmd-c-border:#e4e4e7;--pmd-c-border-soft:#e4e4e7;--pmd-c-divider:#ececee;--pmd-c-divider-faint:#f4f4f5;
+  --pmd-c-text:#18181b;--pmd-c-text-strong:#09090b;--pmd-c-text-secondary:#52525b;--pmd-c-text-muted:#71717a;--pmd-c-text-faint:#a1a1aa;
+  --pmd-c-hover:#f4f4f5;--pmd-c-hover-strong:#e4e4e7;--pmd-c-button-hover:rgba(0,0,0,.045);--pmd-c-button-active:rgba(0,0,0,.07);
+  --pmd-c-button-press:rgba(0,0,0,.08);--pmd-c-button-press-border:rgba(0,0,0,.2);--pmd-c-button-press-soft:rgba(0,0,0,.05);--pmd-c-button-press-soft-border:rgba(0,0,0,.12);
+  --pmd-c-accent:#18181b;--pmd-c-accent-hover:#3f3f46;--pmd-c-accent-soft:rgba(24,24,27,.07);--pmd-c-text-on-accent:#fff;
+  --pmd-c-focus:#71717a;--pmd-c-focus-glow:rgba(24,24,27,.12);--pmd-c-overlay:rgba(0,0,0,.28);
+  --pmd-c-info-bg:rgba(0,0,0,.05);--pmd-c-drop-soft:rgba(0,0,0,.055);--pmd-c-info-bg-alt:rgba(0,0,0,.035)}
+:root.du-app-sleek[data-theme="dark"]{--pmd-c-bg:#111113;--pmd-c-bg-soft:#151517;--pmd-c-surface-soft:#131315;--pmd-c-surface:#0e0e10;--pmd-c-surface-alt:#0a0a0b;
+  --pmd-c-border:#2a2a2e;--pmd-c-border-soft:#232327;--pmd-c-divider:#1f1f23;--pmd-c-divider-faint:#19191c;
+  --pmd-c-text:#ececee;--pmd-c-text-strong:#fff;--pmd-c-text-secondary:#a1a1aa;--pmd-c-text-muted:#8b8b93;--pmd-c-text-faint:#63636b;
+  --pmd-c-hover:#1c1c1f;--pmd-c-hover-strong:#26262a;--pmd-c-button-hover:rgba(255,255,255,.06);--pmd-c-button-active:rgba(255,255,255,.09);
+  --pmd-c-button-press:rgba(255,255,255,.1);--pmd-c-button-press-border:rgba(255,255,255,.22);--pmd-c-button-press-soft:rgba(255,255,255,.07);--pmd-c-button-press-soft-border:rgba(255,255,255,.14);
+  --pmd-c-accent:#fafafa;--pmd-c-accent-hover:#d4d4d8;--pmd-c-accent-soft:rgba(255,255,255,.09);--pmd-c-text-on-accent:#0a0a0b;
+  --pmd-c-focus:#a1a1aa;--pmd-c-focus-glow:rgba(255,255,255,.14);--pmd-c-overlay:rgba(0,0,0,.5);
+  --pmd-c-info-bg:rgba(255,255,255,.07);--pmd-c-drop-soft:rgba(255,255,255,.075);--pmd-c-info-bg-alt:rgba(255,255,255,.045)}
+:root.du-app-liquid{color-scheme:dark;--pmd-c-bg:#0b0f17;--pmd-c-bg-soft:#0e131c;--pmd-c-surface-soft:#0d121a;--pmd-c-surface:#0a0e15;--pmd-c-surface-alt:#070a10;
+  --pmd-c-border:#1f2633;--pmd-c-border-soft:#1a202b;--pmd-c-divider:#161c26;--pmd-c-divider-faint:#121720;
+  --pmd-c-text:#c0caf5;--pmd-c-text-strong:#e4e9ff;--pmd-c-text-secondary:#a9b1d6;--pmd-c-text-muted:#7090a8;--pmd-c-text-faint:#4a6070;
+  --pmd-c-hover:rgba(255,255,255,.05);--pmd-c-hover-strong:rgba(255,255,255,.09);--pmd-c-button-hover:rgba(255,255,255,.07);--pmd-c-button-active:rgba(122,162,247,.14);
+  --pmd-c-button-press:rgba(122,162,247,.18);--pmd-c-button-press-border:rgba(122,162,247,.45);--pmd-c-button-press-soft:rgba(122,162,247,.1);--pmd-c-button-press-soft-border:rgba(122,162,247,.3);
+  --pmd-c-accent:#7aa2f7;--pmd-c-accent-hover:#93b4ff;--pmd-c-accent-soft:rgba(122,162,247,.16);--pmd-c-text-on-accent:#fff;
+  --pmd-c-focus:#7aa2f7;--pmd-c-focus-glow:rgba(122,162,247,.25);--pmd-c-link:#7aa2f7;--pmd-c-overlay:rgba(4,6,12,.5);
+  --pmd-color-analytic:#8aa9d1;--pmd-color-undertag:#8fb377;
+  --pmd-c-success:#73daca;--pmd-c-error:#f7768e;--pmd-c-warning:#e0af68;--pmd-c-info-bg:rgba(122,162,247,.14);--pmd-c-drop-soft:rgba(122,162,247,.16);--pmd-c-info-bg-alt:rgba(122,162,247,.08);
+  background:radial-gradient(900px 520px at 0% 0%,rgba(122,162,247,.16),transparent 60%),radial-gradient(800px 600px at 100% 100%,rgba(115,218,202,.07),transparent 60%),#070a10}
+:root.du-app-liquid body{background:transparent}
+:root.du-app #ribbon{border-bottom:1px solid var(--pmd-c-divider)}
+:root.du-app #ribbon button:not(.formatting-panel-btn):not(.pmd-timer-prep):not([aria-pressed="true"]),
+:root.du-app #status-bar button:not([aria-pressed="true"]){background-color:transparent;border-color:transparent}
+:root.du-app #ribbon button:not(.formatting-panel-btn):not(.pmd-timer-prep):not([aria-pressed="true"]):hover,
+:root.du-app #status-bar button:not([aria-pressed="true"]):hover{background-color:var(--pmd-c-button-hover)}
+:root.du-app #ribbon button,:root.du-app .pmd-nav-panel button,:root.du-app #status-bar button{border-radius:7px;transition:background-color .12s,border-color .12s,color .12s}
+:root.du-app .pmd-nav-item{border-radius:7px}
+:root.du-app #status-bar{border-top:1px solid var(--pmd-c-divider)}
+:root.du-app .pmd-nav-panel{border-right:1px solid var(--pmd-c-divider)}
+:root.du-app ::-webkit-scrollbar{width:10px;height:10px}
+:root.du-app ::-webkit-scrollbar-thumb{background:var(--pmd-c-border);border-radius:8px;border:2px solid transparent;background-clip:padding-box}
+:root.du-app ::-webkit-scrollbar-thumb:hover{background-color:var(--pmd-c-text-faint)}
+:root.du-app ::-webkit-scrollbar-track{background:transparent}
+:root.du-app-liquid #ribbon,:root.du-app-liquid #status-bar{background:rgba(10,14,20,.45);backdrop-filter:blur(32px) saturate(160%);border-color:rgba(255,255,255,.06)}
+:root.du-app-liquid #ribbon{box-shadow:inset 0 1px 0 rgba(255,255,255,.06)}
+:root.du-app-liquid .pmd-nav-panel{background:rgba(10,14,20,.3);backdrop-filter:blur(32px) saturate(160%);border-right-color:rgba(255,255,255,.05)}
+:root.du-app-liquid .pmd-nav-panel>header{background:linear-gradient(180deg,rgba(255,255,255,.04),transparent);border-bottom:1px solid rgba(255,255,255,.05)}
+:root.du-app-liquid #ribbon .formatting-panel-btn,:root.du-app-liquid .pmd-nav-panel button:not(.pmd-nav-level-btn-active){background-color:rgba(255,255,255,.04);border-color:rgba(255,255,255,.08)}
+:root.du-app-liquid #ribbon .formatting-panel-btn:hover,:root.du-app-liquid .pmd-nav-panel button:not(.pmd-nav-level-btn-active):hover{background-color:rgba(255,255,255,.08);border-color:rgba(255,255,255,.14)}
+:root.du-app-liquid .pmd-nav-panel button[aria-pressed="true"],:root.du-app-liquid #ribbon button[aria-pressed="true"],:root.du-app-liquid .pmd-nav-level-btn-active{background-color:rgba(122,162,247,.18);border-color:rgba(122,162,247,.4);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 0 12px rgba(122,162,247,.15)}
+:root.du-app-liquid ::-webkit-scrollbar-thumb{background-color:rgba(255,255,255,.07)}
+`;
+  // CardMirror's page reset (light paper inside a dark app), re-scoped to our themes.
+  function pageGuard() {
+    const find = (rules) => {
+      for (const r of rules) {
+        if (r.selectorText && /data-theme-doc/.test(r.selectorText) && /#editor/.test(r.selectorText) && /--pmd-c-bg\s*:/.test(r.style.cssText)) {
+          return `:root.du-app:not([data-theme-doc="dark"]) :is(#editor, .pmd-pane-editor){${r.style.cssText}}`;
+        }
+        const inner = r.cssRules && find(r.cssRules); // @media, @layer, @supports
+        if (inner) return inner;
       }
-    });
+      return '';
+    };
+    for (const sheet of document.styleSheets) {
+      let rules;
+      try { rules = sheet.cssRules; } catch { continue; }
+      const hit = find(rules);
+      if (hit) return hit;
+    }
+    return '';
+  }
+  // Returns false (try again later) rather than theme CardMirror without the page guard,
+  // so the document is never recolored.
+  function applyAppTheme(theme) {
+    const root = document.documentElement;
+    if (!root) return false;
+    if (theme && !document.getElementById('du-app-style')) {
+      const guard = pageGuard();
+      if (!guard) return false;
+      (document.head || document.body).append(el('style', { id: 'du-app-style', textContent: APP_CSS + guard }));
+    }
+    root.classList.toggle('du-app', !!theme);
+    root.classList.toggle('du-app-sleek', theme === 'Sleek');
+    root.classList.toggle('du-app-liquid', theme === 'Liquid');
+    return true;
   }
 
   async function call(api, route, body) {
@@ -2882,6 +2992,10 @@ textarea.du-cmp-text{resize:none;min-height:0}
   }
 
   try { editor.install(); } catch { /* marking just reports it can't reach the editor */ }
+  if (!window.__debateUploaderTest && typeof document !== 'undefined') {
+    storedTheme();
+    setInterval(storedTheme, 1000);
+  }
   try { installClipboardFix(); } catch { /* copies stay as CardMirror makes them */ }
   if (window.__debateUploaderTest) window.__debateUploaderClipboard = { boldCopiedHTML, unboldCopiedHTML }; // only when tests ask
   if (window.__debateUploaderTest) window.__debateUploaderCompare = compareTexts;
@@ -2905,6 +3019,13 @@ textarea.du-cmp-text{resize:none;min-height:0}
         options: THEMES,
         default: 'Standard',
         description: "Standard matches CardMirror. Sleek: compact and monochrome. Liquid: Lynx Theme Pro's frosted glass, always dark.",
+      },
+      {
+        key: 'themeWholeApp',
+        label: 'Apply the theme to all of CardMirror',
+        type: 'boolean',
+        default: false,
+        description: 'Also restyles the ribbon, sidebar, status bar and menus. Your document page keeps its normal look. Unofficial: a CardMirror update may undo parts until the plugin is updated.',
       },
     ],
     commands: [
