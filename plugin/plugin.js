@@ -157,20 +157,25 @@
   // from CardMirror's own plugin storage at load and every second after.
   const THEMES = ['Standard', 'Sleek', 'Liquid'];
   let look = '';
-  let lookKey = null;
+  let lookTheme = null;
+  let appTheme = null; // what's applied to CardMirror itself
   let lookWatched = false;
   const lookClass = (theme) => (theme === 'Liquid' ? ' du-sleek du-liquid' : theme === 'Sleek' ? ' du-sleek' : '');
-  function applyTheme(theme, whole) {
-    const key = `${theme}|${!!whole}`;
-    if (key === lookKey) return;
-    lookKey = key;
-    look = lookClass(theme);
-    if (typeof document === 'undefined') return; // node tests
-    for (const n of document.querySelectorAll('.du-scrim, .du-pickbar')) {
-      n.classList.remove('du-sleek', 'du-liquid');
-      if (look) n.classList.add(...look.trim().split(' '));
+  function applyTheme(rawTheme, rawWhole) {
+    const theme = THEMES.includes(rawTheme) ? rawTheme : 'Standard';
+    const wantApp = rawWhole === true && theme !== 'Standard' ? theme : null;
+    if (theme !== lookTheme) {
+      lookTheme = theme;
+      look = lookClass(theme);
+      if (typeof document !== 'undefined') {
+        for (const n of document.querySelectorAll('.du-scrim, .du-pickbar')) {
+          n.classList.remove('du-sleek', 'du-liquid');
+          if (look) n.classList.add(...look.trim().split(' '));
+        }
+      }
     }
-    applyAppTheme(whole && look ? theme : null);
+    // Retried on every poll until CardMirror's page rule is there to copy.
+    if (wantApp !== appTheme && typeof document !== 'undefined' && applyAppTheme(wantApp)) appTheme = wantApp;
   }
   function syncLook(api) {
     const get = (k) => { try { return api.settings && api.settings.get(k); } catch { return undefined; } };
@@ -182,7 +187,7 @@
   function storedTheme() {
     try {
       const s = JSON.parse(localStorage.getItem(`plugin:${ID}`) || '{}').__settings || {};
-      applyTheme(THEMES.includes(s.theme) ? s.theme : 'Standard', s.themeWholeApp === true);
+      applyTheme(s.theme, s.themeWholeApp);
     } catch { /* storage unreadable: themes apply when a command runs */ }
   }
 
@@ -243,26 +248,38 @@
 `;
   // CardMirror's page reset (light paper inside a dark app), re-scoped to our themes.
   function pageGuard() {
+    const find = (rules) => {
+      for (const r of rules) {
+        if (r.selectorText && /data-theme-doc/.test(r.selectorText) && /#editor/.test(r.selectorText) && /--pmd-c-bg\s*:/.test(r.style.cssText)) {
+          return `:root.du-app:not([data-theme-doc="dark"]) :is(#editor, .pmd-pane-editor){${r.style.cssText}}`;
+        }
+        const inner = r.cssRules && find(r.cssRules); // @media, @layer, @supports
+        if (inner) return inner;
+      }
+      return '';
+    };
     for (const sheet of document.styleSheets) {
       let rules;
       try { rules = sheet.cssRules; } catch { continue; }
-      for (const r of rules) {
-        if (r.selectorText && /data-theme-doc/.test(r.selectorText) && /#editor/.test(r.selectorText) && r.style.length > 10) {
-          return `:root.du-app:not([data-theme-doc="dark"]) :is(#editor, .pmd-pane-editor){${r.style.cssText}}`;
-        }
-      }
+      const hit = find(rules);
+      if (hit) return hit;
     }
     return '';
   }
+  // Returns false (try again later) rather than theme CardMirror without the page guard,
+  // so the document is never recolored.
   function applyAppTheme(theme) {
     const root = document.documentElement;
-    if (!root) return;
+    if (!root) return false;
     if (theme && !document.getElementById('du-app-style')) {
-      (document.head || document.body).append(el('style', { id: 'du-app-style', textContent: APP_CSS + pageGuard() }));
+      const guard = pageGuard();
+      if (!guard) return false;
+      (document.head || document.body).append(el('style', { id: 'du-app-style', textContent: APP_CSS + guard }));
     }
     root.classList.toggle('du-app', !!theme);
     root.classList.toggle('du-app-sleek', theme === 'Sleek');
     root.classList.toggle('du-app-liquid', theme === 'Liquid');
+    return true;
   }
 
   async function call(api, route, body) {
