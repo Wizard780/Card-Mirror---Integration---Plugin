@@ -152,18 +152,23 @@
   }
   const withPrefs = async (api, fn) => { syncLook(api); await restorePrefs(api); return fn(); };
 
-  // "Sleek interface" setting: read at every command, and applied live to open
-  // dialogs when it's switched in Settings.
-  let sleek = false;
+  // "Interface theme" setting: read at every command, and applied live to open
+  // dialogs when it's changed in Settings. Liquid is Sleek's layout in glass.
+  const THEMES = ['Standard', 'Sleek', 'Liquid'];
+  let look = '';
   let lookWatched = false;
+  const lookClass = (theme) => (theme === 'Liquid' ? ' du-sleek du-liquid' : theme === 'Sleek' ? ' du-sleek' : '');
   function syncLook(api) {
-    try { sleek = !!(api.settings && api.settings.get('sleekUI')); } catch { /* standard look */ }
+    try { look = lookClass(api.settings && api.settings.get('theme')); } catch { /* standard look */ }
     if (lookWatched || !api.settings || typeof api.settings.onChanged !== 'function') return;
     lookWatched = true;
     api.settings.onChanged((key, value) => {
-      if (key !== 'sleekUI') return;
-      sleek = !!value;
-      for (const n of document.querySelectorAll('.du-scrim, .du-pickbar')) n.classList.toggle('du-sleek', sleek);
+      if (key !== 'theme') return;
+      look = lookClass(value);
+      for (const n of document.querySelectorAll('.du-scrim, .du-pickbar')) {
+        n.classList.remove('du-sleek', 'du-liquid');
+        if (look) n.classList.add(...look.trim().split(' '));
+      }
     });
   }
 
@@ -423,6 +428,51 @@ textarea.du-cmp-text{resize:none;min-height:0}
 .du-sleek .du-cmp-out .du-k3.du-cur{box-shadow:0 0 0 2px var(--pmd-c-text)}
 .du-pickbar.du-sleek{border-radius:12px;border-color:var(--du-line);font-size:13px;background:color-mix(in srgb,var(--pmd-c-bg) 86%,transparent);
   backdrop-filter:blur(14px) saturate(1.1);box-shadow:0 18px 44px -12px rgba(0,0,0,.4)}
+/* Liquid: Lynx Theme Pro's LIQUID palette and frosted glass, on top of Sleek's layout */
+.du-liquid{--pmd-c-text:#c0caf5;--pmd-c-bg:#0a0e15;--pmd-c-error:#f7768e;--pmd-c-success:#73daca;--pmd-c-warning:#e0af68;
+  --pmd-c-accent:#7aa2f7;--pmd-c-focus:#7aa2f7;--du-line:rgba(255,255,255,.08);--du-line-2:rgba(255,255,255,.12);
+  --du-soft:rgba(255,255,255,.04);--du-soft-2:rgba(122,162,247,.10);--du-muted:#7090a8;--du-ease:cubic-bezier(.16,1,.3,1);color-scheme:dark}
+.du-scrim.du-liquid{background:rgba(4,6,12,.38);backdrop-filter:blur(6px) saturate(120%)}
+.du-liquid .du-dialog{position:relative;color:var(--pmd-c-text);background:rgba(8,12,18,.72);backdrop-filter:blur(48px) saturate(180%);
+  border:1px solid rgba(255,255,255,.08);border-radius:16px;animation:du-in-liquid .25s var(--du-ease);
+  box-shadow:0 8px 40px rgba(0,0,0,.65),0 2px 8px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.18),0 0 30px rgba(122,162,247,.08)}
+.du-liquid .du-dialog::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;pointer-events:none;z-index:1;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.18) 30%,rgba(255,255,255,.25) 50%,rgba(255,255,255,.18) 70%,transparent)}
+@keyframes du-in-liquid{from{opacity:0;transform:translateY(6px) scale(.98)}}
+@media (prefers-reduced-motion:reduce){.du-liquid .du-dialog{animation:none}}
+.du-liquid .du-title{color:#e4e9ff;text-shadow:0 1px 8px rgba(122,162,247,.15)}
+.du-liquid .du-foot{background:rgba(255,255,255,.02)}
+.du-liquid .du-btn{background:rgba(255,255,255,.04);color:var(--pmd-c-text);
+  transition:background .15s var(--du-ease),box-shadow .25s var(--du-ease),transform .15s cubic-bezier(.34,1.56,.64,1)}
+.du-liquid .du-btn:hover{background:rgba(255,255,255,.08);box-shadow:0 2px 8px rgba(255,255,255,.06)}
+.du-liquid .du-btn:disabled:hover{background:rgba(255,255,255,.04);box-shadow:none}
+.du-liquid .du-primary,.du-liquid .du-primary:disabled:hover{color:#fff;border-color:rgba(122,162,247,.45);
+  background:linear-gradient(135deg,rgba(122,162,247,.65),rgba(80,110,190,.55));box-shadow:0 2px 12px rgba(122,162,247,.2),inset 0 1px 0 rgba(255,255,255,.18)}
+.du-liquid .du-primary:hover:not(:disabled){background:linear-gradient(135deg,rgba(122,162,247,.8),rgba(80,110,190,.7));
+  box-shadow:0 4px 24px rgba(122,162,247,.35),inset 0 1px 0 rgba(255,255,255,.22);transform:translateY(-1px)}
+.du-liquid .du-primary:active{transform:none}
+.du-liquid .du-btn:focus-visible,.du-liquid .du-choice:focus-visible,.du-liquid .du-seg button:focus-visible{outline:2px solid rgba(122,162,247,.6)}
+.du-liquid .du-input{background:rgba(255,255,255,.04);border-color:var(--du-line-2);color:var(--pmd-c-text)}
+.du-liquid .du-input::placeholder{color:#4a6070}
+.du-liquid .du-input:focus{background:rgba(255,255,255,.05);border-color:rgba(122,162,247,.45);box-shadow:0 0 0 3px rgba(122,162,247,.12)}
+.du-liquid .du-input option{background:#0a0e15}
+.du-liquid .du-seg{background:rgba(255,255,255,.05)}
+.du-liquid .du-seg button[aria-pressed="true"],.du-liquid .du-tabs button[aria-selected="true"]{background:rgba(122,162,247,.18);color:#e4e9ff;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 0 0 1px rgba(122,162,247,.3)}
+.du-liquid .du-row:hover,.du-liquid .du-choice:hover{background:rgba(255,255,255,.04)}
+.du-liquid .du-row[aria-selected="true"]{background:rgba(122,162,247,.14)}
+.du-liquid .du-choice[aria-checked="true"]{border-color:rgba(122,162,247,.45);background:rgba(122,162,247,.08)}
+.du-liquid .du-choice[aria-checked="true"] .du-radio{border-color:#7aa2f7}
+.du-liquid .du-toggle input{accent-color:#7aa2f7}
+.du-liquid .du-link{color:#7aa2f7;text-decoration-color:rgba(122,162,247,.4)}
+.du-liquid .du-cmp-out .du-cur{text-decoration-color:#7aa2f7}
+.du-liquid .du-cmp-out .du-k3.du-cur{box-shadow:0 0 0 2px #7aa2f7}
+.du-liquid ::-webkit-scrollbar{width:10px;height:10px}
+.du-liquid ::-webkit-scrollbar-thumb{background:rgba(255,255,255,.06);border-radius:4px;border:2px solid transparent;background-clip:padding-box}
+.du-liquid ::-webkit-scrollbar-thumb:hover{background-color:rgba(255,255,255,.12)}
+.du-liquid ::-webkit-scrollbar-track{background:transparent}
+.du-pickbar.du-liquid{color:var(--pmd-c-text);background:rgba(8,12,18,.72);backdrop-filter:blur(48px) saturate(180%);border:1px solid rgba(255,255,255,.08);
+  border-radius:16px;box-shadow:0 8px 40px rgba(0,0,0,.65),inset 0 1px 0 rgba(255,255,255,.18),0 0 30px rgba(122,162,247,.08)}
 `;
 
   function el(tag, props = {}, kids = []) {
@@ -490,7 +540,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
     const body = el('div', { class: 'du-body' });
     const foot = el('div', { class: 'du-foot' });
     dialog.append(head, body, foot);
-    const scrim = el('div', { class: `du-scrim${sleek ? ' du-sleek' : ''}` }, [dialog]);
+    const scrim = el('div', { class: `du-scrim${look}` }, [dialog]);
     let onDismiss = () => {};
     scrim.addEventListener('mousedown', (e) => { if (e.target === scrim) onDismiss(); });
     dialog.addEventListener('keydown', (e) => {
@@ -912,7 +962,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
             b.addEventListener('mousedown', (e) => e.preventDefault()); // keep the selection
             return b;
           };
-          const pickBar = el('div', { class: `du-pickbar${sleek ? ' du-sleek' : ''}`, attrs: { role: 'status' } }, [
+          const pickBar = el('div', { class: `du-pickbar${look}`, attrs: { role: 'status' } }, [
             el('span', { textContent: `Select the text for Text ${k + 1} in your document` }),
             barBtn('Cancel', false, false),
             barBtn('Use selection', true, true),
@@ -2849,11 +2899,12 @@ textarea.du-cmp-text{resize:none;min-height:0}
         description: 'Folder where Save Send Doc writes. "Upload newest send doc" sends the newest .docx in it.',
       },
       {
-        key: 'sleekUI',
-        label: 'Sleek interface',
-        type: 'boolean',
-        default: false,
-        description: "Compact, monochrome dialogs with hairline borders and a blurred backdrop, instead of CardMirror's standard look.",
+        key: 'theme',
+        label: 'Interface theme',
+        type: 'select',
+        options: THEMES,
+        default: 'Standard',
+        description: "Standard matches CardMirror. Sleek: compact and monochrome. Liquid: Lynx Theme Pro's frosted glass, always dark.",
       },
     ],
     commands: [
