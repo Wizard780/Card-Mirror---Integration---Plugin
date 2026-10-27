@@ -229,6 +229,12 @@ aren't found.
   color variables and a few elements (`#ribbon`, `#status-bar`, `.pmd-nav-panel`), so a CardMirror update may
   undo parts of it until the plugin catches up. Turn it off, or set the theme to Standard, to undo it at once. (0.7.0's "Sleek interface" switch is now this dropdown; pick
   Sleek again if you had it on.)
+- **Reopen big files faster** (on by default): CardMirror parses a `.docx` every time you open it, about 1 second
+  for a 30 MB file. The plugin keeps the parsed result of the last 10 files over 512 KB, so reopening an unchanged
+  file skips that parse. Measured on real files: 30 MB of document text 1.72 s → 0.75 s, 20 MB 1.14 s → 0.49 s,
+  2 MB 0.41 s → 0.13 s. It survives restarts. The first open of a file, and saving, take as long as before. A
+  changed file (or a new CardMirror version) is parsed fresh, and the result is identical to a normal open.
+  **Clear the reopen-faster cache** empties it. Unofficial: it wraps how CardMirror talks to its parser worker.
 
 
 CardMirror clears a plugin's saved settings at every launch when it was loaded from a file, so the helper keeps a
