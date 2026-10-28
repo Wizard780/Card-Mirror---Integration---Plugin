@@ -196,6 +196,7 @@
   // Not a CardMirror API: CardMirror paints its chrome from --pmd-c-* tokens, so
   // redefining them on <html> restyles the app. The page keeps CardMirror's own
   // light paper: its dark-mode rule that resets the editor is copied under our class.
+  const LIQUID_BG = 'radial-gradient(900px 520px at 0% 0%,rgba(122,162,247,.16),transparent 60%),radial-gradient(800px 600px at 100% 100%,rgba(115,218,202,.07),transparent 60%),#070a10';
   const APP_CSS = `
 :root.du-app-sleek{--pmd-c-bg:#fff;--pmd-c-bg-soft:#fafafa;--pmd-c-surface-soft:#fafafa;--pmd-c-surface:#fafafa;--pmd-c-surface-alt:#f4f4f5;
   --pmd-c-border:#e4e4e7;--pmd-c-border-soft:#e4e4e7;--pmd-c-divider:#ececee;--pmd-c-divider-faint:#f4f4f5;
@@ -222,7 +223,7 @@
   --pmd-c-focus:#7aa2f7;--pmd-c-focus-glow:rgba(122,162,247,.25);--pmd-c-link:#7aa2f7;--pmd-c-overlay:rgba(4,6,12,.5);
   --pmd-color-analytic:#8aa9d1;--pmd-color-undertag:#8fb377;
   --pmd-c-success:#73daca;--pmd-c-error:#f7768e;--pmd-c-warning:#e0af68;--pmd-c-info-bg:rgba(122,162,247,.14);--pmd-c-drop-soft:rgba(122,162,247,.16);--pmd-c-info-bg-alt:rgba(122,162,247,.08);
-  background:radial-gradient(900px 520px at 0% 0%,rgba(122,162,247,.16),transparent 60%),radial-gradient(800px 600px at 100% 100%,rgba(115,218,202,.07),transparent 60%),#070a10}
+  background:${LIQUID_BG}}
 :root.du-app-liquid body{background:transparent}
 :root.du-app #ribbon{border-bottom:1px solid var(--pmd-c-divider)}
 :root.du-app #ribbon button:not(.formatting-panel-btn):not(.pmd-timer-prep):not([aria-pressed="true"]),
@@ -351,13 +352,146 @@
     if (theme && !document.getElementById('du-app-style')) {
       const guard = pageGuard();
       if (!guard) return false;
-      (document.head || document.body).append(el('style', { id: 'du-app-style', textContent: APP_CSS + guard }));
+      (document.head || document.body).append(el('style', { id: 'du-app-style', textContent: APP_CSS + HOME_THEME_CSS + guard }));
     }
     if (theme) refreshSurfaces();
     root.classList.toggle('du-app', !!theme);
     root.classList.toggle('du-app-sleek', theme === 'Sleek');
     root.classList.toggle('du-app-liquid', theme === 'Liquid');
     return true;
+  }
+
+  // The home screen under the whole-app theme. Its colors already follow the tokens
+  // above; these give its tiles, rows and file chips the theme's shapes.
+  const HOME_THEME_CSS = `
+:root.du-app .pmd-home-title{letter-spacing:-.025em}
+:root.du-app .pmd-home-recent,:root.du-app .pmd-home-session-open,:root.du-app .pmd-home-learn-row,:root.du-app .pmd-home-workspace-item{border-radius:8px}
+:root.du-app .pmd-home-action{border-radius:12px;transition:background-color .15s,border-color .15s,box-shadow .15s}
+:root.du-app .pmd-home-section-title{font-size:.72rem;letter-spacing:.08em}
+:root.du-app-sleek .pmd-home-action:not(.pmd-home-action-disabled){background:var(--pmd-c-bg);border-color:var(--pmd-c-border);box-shadow:0 1px 2px rgba(0,0,0,.05)}
+:root.du-app-sleek .pmd-home-action:not(.pmd-home-action-disabled):hover{border-color:color-mix(in srgb,var(--pmd-c-text) 30%,transparent);box-shadow:0 8px 24px -10px rgba(0,0,0,.3)}
+:root.du-app-sleek .pmd-home-recent-format{background:var(--pmd-c-hover);color:var(--pmd-c-text-secondary)}
+:root.du-app-sleek .pmd-home-learn-badge,:root.du-app-sleek .pmd-home-session-role{background:var(--pmd-c-text);color:var(--pmd-c-bg)}
+:root.du-app-liquid .pmd-home-screen{background:${LIQUID_BG}}
+:root.du-app-liquid .pmd-home-title{background:linear-gradient(90deg,#e4e9ff,#a9b1d6);-webkit-background-clip:text;background-clip:text;color:transparent}
+:root.du-app-liquid .pmd-home-action:not(.pmd-home-action-disabled){background:rgba(255,255,255,.035);border-color:rgba(255,255,255,.08);
+  backdrop-filter:blur(24px) saturate(150%);box-shadow:inset 0 1px 0 rgba(255,255,255,.07),0 8px 30px rgba(0,0,0,.28)}
+:root.du-app-liquid .pmd-home-action:not(.pmd-home-action-disabled):hover{background:rgba(255,255,255,.06);border-color:rgba(122,162,247,.35);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 8px 30px rgba(0,0,0,.28),0 0 24px rgba(122,162,247,.12)}
+:root.du-app-liquid .pmd-home-action-disabled{background:rgba(255,255,255,.02);border-color:rgba(255,255,255,.05)}
+:root.du-app-liquid :is(.pmd-home-recent,.pmd-home-session-open,.pmd-home-learn-row,.pmd-home-workspace-item):hover{background:rgba(255,255,255,.05)}
+:root.du-app-liquid .pmd-home-recent-format{background:rgba(122,162,247,.14);color:#a9c1ff}
+:root.du-app-liquid .pmd-home-recent-format-cmir{background:rgba(115,218,202,.13);color:#73daca}
+:root.du-app-liquid .pmd-home-workspace-open{background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.1)}
+`;
+
+  // ---------------------------------------------------------------- Home screen favorites
+  // Not a CardMirror API: a star on each Recent row and a Favorites list above Recent.
+  // A favorite opens by clicking CardMirror's own Recent row for that path (put back at
+  // the top of CardMirror's recents when it has fallen off), so the open, the error for a
+  // moved file and the recents bookkeeping all stay CardMirror's.
+  const FAV_KEY = 'du-home-favorites';
+  const RECENTS_KEY = 'pmd-recent-files'; // CardMirror's recents-store
+  const HOME_CSS = `
+.du-fav-section{margin-bottom:1.1rem}
+.du-fav-section[hidden]{display:none}
+.du-fav-star{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;margin:-4px -4px -4px 0;
+  border-radius:6px;color:var(--pmd-c-text-muted);opacity:0;transition:opacity .12s,color .12s,background-color .12s}
+.pmd-home-recent:hover .du-fav-star,.du-fav-star.du-on{opacity:1}
+.du-fav-star:hover{color:var(--pmd-c-text);background:var(--pmd-c-hover-strong)}
+.du-fav-star.du-on{color:#e0a92e}
+.du-fav-star svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linejoin:round}
+.du-fav-star.du-on svg{fill:currentColor}
+`;
+  const STAR = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.6l1.95 4.1 4.45.55-3.28 3.08.85 4.42L8 11.6l-3.97 2.15.85-4.42L1.6 6.25l4.45-.55z"/></svg>';
+  function readList(key) {
+    try { const v = JSON.parse(localStorage.getItem(key) || '[]'); return Array.isArray(v) ? v : []; } catch { return []; }
+  }
+  const favorites = () => readList(FAV_KEY).filter((f) => f && typeof f.handle === 'string' && typeof f.filename === 'string');
+  function saveFavorites(list) {
+    try { localStorage.setItem(FAV_KEY, JSON.stringify(list)); } catch { /* storage full: the list stays as it was */ }
+    renderFavorites();
+  }
+  function toggleFavorite(entry) {
+    const list = favorites();
+    saveFavorites(list.some((f) => f.handle === entry.handle) ? list.filter((f) => f.handle !== entry.handle) : [...list, entry]);
+  }
+  function starButton(entry, on) {
+    // A span, not a button: it sits inside CardMirror's row <button>.
+    const star = el('span', { class: `du-fav-star${on ? ' du-on' : ''}`, innerHTML: STAR, title: on ? 'Remove from favorites' : 'Add to favorites',
+      attrs: { role: 'button', 'aria-label': on ? `Remove ${entry.filename} from favorites` : `Add ${entry.filename} to favorites` } });
+    star.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); toggleFavorite(entry); });
+    return star;
+  }
+  const recentRows = (home) => [...home.querySelectorAll('.pmd-home-recents-section:not(.du-fav-section) .pmd-home-recent:not(:disabled)')];
+  // CardMirror sets a reopenable row's title to its path, then on hover moves it into its own
+  // tooltip (and into aria-label when that's empty), so the path is pinned on the row the first
+  // time it's seen.
+  function handleOf(row) {
+    if (!row.dataset.duHandle) row.dataset.duHandle = row.title || row.getAttribute('aria-label') || '';
+    return row.dataset.duHandle;
+  }
+  function decorateRecents(home) {
+    const byHandle = new Map(readList(RECENTS_KEY).filter((r) => r && typeof r.handle === 'string').map((r) => [r.handle, r]));
+    const favs = new Set(favorites().map((f) => f.handle));
+    for (const row of recentRows(home)) {
+      const r = byHandle.get(handleOf(row));
+      row.querySelector('.du-fav-star')?.remove();
+      if (r) row.append(starButton({ handle: r.handle, filename: r.filename, format: r.format ?? null }, favs.has(r.handle)));
+    }
+  }
+  function openFavorite(home, fav) {
+    const find = () => recentRows(home).find((row) => handleOf(row) === fav.handle);
+    if (!find()) {
+      const rest = readList(RECENTS_KEY).filter((r) => r && r.handle !== fav.handle);
+      try {
+        localStorage.setItem(RECENTS_KEY, JSON.stringify([{ ...fav, lastOpenedAt: Date.now() }, ...rest].slice(0, 10)));
+      } catch { return; }
+      // CardMirror's recents listen for the cross-window event; this window's write needs it sent by hand.
+      window.dispatchEvent(new StorageEvent('storage', { key: RECENTS_KEY }));
+    }
+    find()?.click();
+  }
+  function favoriteRow(home, fav) {
+    const format = fav.format === 'cmir' || fav.format === 'docx' ? fav.format : 'unknown';
+    const row = el('button', { type: 'button', class: 'pmd-home-recent du-fav-row', title: fav.handle, onclick: () => openFavorite(home, fav) }, [
+      el('span', { class: `pmd-home-recent-format pmd-home-recent-format-${format}`, textContent: (fav.format || '?').toUpperCase() }),
+      el('span', { class: 'pmd-home-recent-name', textContent: fav.filename.replace(/\.(cmir|docx)$/i, ''), title: fav.filename }),
+      el('span', { class: 'pmd-home-recent-path', textContent: `‎${fav.handle}‎` }),
+    ]);
+    row.append(starButton(fav, true));
+    return row;
+  }
+  let favSection = null;
+  let favWatched = false;
+  function renderFavorites() {
+    const home = typeof document !== 'undefined' && document.querySelector('.pmd-home-screen');
+    if (!home || !favSection) return;
+    const favs = favorites();
+    favSection.hidden = favs.length === 0;
+    favSection.querySelector('.du-fav-list').replaceChildren(...favs.map((f) => favoriteRow(home, f)));
+    decorateRecents(home);
+  }
+  // Called every second: CardMirror builds the home screen once, possibly after the plugin loads.
+  function installHome() {
+    if (favSection?.isConnected) return;
+    const home = document.querySelector('.pmd-home-screen');
+    const recents = home && home.querySelector('.pmd-home-recents-section:not(.du-fav-section)');
+    const list = recents && recents.querySelector('.pmd-home-recents');
+    if (!list) return;
+    if (!document.getElementById('du-home-style')) (document.head || document.body).append(el('style', { id: 'du-home-style', textContent: HOME_CSS }));
+    favSection = el('section', { class: 'pmd-home-recents-section du-fav-section' }, [
+      el('div', { class: 'pmd-home-recents-header' }, [el('h2', { class: 'pmd-home-section-title', textContent: 'Favorites' })]),
+      el('div', { class: 'pmd-home-recents du-fav-list' }),
+    ]);
+    recents.before(favSection);
+    // CardMirror rebuilds the Recent rows on every visit and every recents change.
+    new MutationObserver(() => decorateRecents(home)).observe(list, { childList: true });
+    if (!favWatched) {
+      favWatched = true; // another window starred a file
+      window.addEventListener('storage', (e) => { if (e.key === FAV_KEY || e.key === null) renderFavorites(); });
+    }
+    renderFavorites();
   }
 
   async function call(api, route, body) {
@@ -3794,8 +3928,12 @@ textarea.du-cmp-text{resize:none;min-height:0}
 
   try { editor.install(); } catch { /* marking just reports it can't reach the editor */ }
   if (!window.__debateUploaderTest && typeof document !== 'undefined') {
-    storedTheme();
-    setInterval(storedTheme, 1000);
+    const tick = () => {
+      storedTheme();
+      try { installHome(); } catch { /* home screen stays as CardMirror draws it */ }
+    };
+    tick();
+    setInterval(tick, 1000);
   }
   try { installClipboardFix(); } catch { /* copies stay as CardMirror makes them */ }
   if (!window.__debateUploaderTest) { try { installOpenCache(); } catch { /* opens parse as usual */ } }
@@ -3828,7 +3966,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
         label: 'Apply the theme to all of CardMirror',
         type: 'boolean',
         default: false,
-        description: 'Also restyles the ribbon, sidebar, status bar and menus. Your document page keeps its normal look. Unofficial: a CardMirror update may undo parts until the plugin is updated.',
+        description: 'Also restyles the home screen, ribbon, sidebar, status bar and menus. Your document page keeps its normal look. Unofficial: a CardMirror update may undo parts until the plugin is updated.',
       },
       {
         key: 'fastOpen',
