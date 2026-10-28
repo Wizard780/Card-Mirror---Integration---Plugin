@@ -1749,7 +1749,9 @@ textarea.du-cmp-text{resize:none;min-height:0}
   const isOpenRequest = (m) => !!m && typeof m === 'object' && typeof m.id === 'number' &&
     (m.bytes instanceof Uint8Array || m.bytes instanceof ArrayBuffer) && Object.keys(m).length === 2;
 
-  function patchWorkerPostMessage(proto, { store, version, hash = sha256Hex, enabled = () => true, idle = (fn) => setTimeout(fn, 0), max = OPEN_CACHE_MAX, minBytes = OPEN_CACHE_MIN_BYTES, lookupMs = OPEN_CACHE_LOOKUP_MS }) {
+  // `route(worker, msg)` (fast first open) may take a request the cache doesn't answer;
+  // it resolves false to leave the parse to CardMirror's worker.
+  function patchWorkerPostMessage(proto, { store, version, hash = sha256Hex, enabled = () => true, idle = (fn) => setTimeout(fn, 0), max = OPEN_CACHE_MAX, minBytes = OPEN_CACHE_MIN_BYTES, lookupMs = OPEN_CACHE_LOOKUP_MS, route = null, onHit = null }) {
     const native = proto.postMessage;
     if (native.__duOpenCache) return;
     const pendingKeys = new WeakMap(); // worker -> Map(request id -> cache key)
@@ -1770,24 +1772,30 @@ textarea.du-cmp-text{resize:none;min-height:0}
       return keys;
     };
     const patched = function (msg, transfer) {
-      if (!isOpenRequest(msg) || msg.bytes.byteLength < minBytes || !enabled()) return native.call(this, msg, transfer);
-      const keys = watch(this);
+      if (this.__duFastWorker || !isOpenRequest(msg)) return native.call(this, msg, transfer);
+      const useCache = !!store && msg.bytes.byteLength >= minBytes && enabled();
+      if (!useCache && !route) return native.call(this, msg, transfer);
+      const keys = useCache ? watch(this) : null;
       (async () => {
         let key = null;
-        try {
+        if (useCache) try {
           const hit = await within((async () => {
             key = `${version()}|${await hash(msg.bytes)}`;
             return store.get(key);
           })(), lookupMs);
           if (hit && hit.docJson) {
+            // onHit (the preview) draws the first screens and resolves once they've painted.
+            const after = onHit ? await onHit(hit.docJson).catch(() => null) : null;
             const ev = new MessageEvent('message', { data: { id: msg.id, ok: true, docJson: hit.docJson, threads: hit.threads || [], docId: hit.docId ?? null } });
             ev.__duCached = true;
             this.dispatchEvent(ev);
+            if (after) after();
             store.touch(key, max).catch(() => {});
             return;
           }
         } catch { /* cache unreadable: parse as usual */ }
         if (key) keys.set(msg.id, key);
+        if (route && await route(this, msg).catch(() => false)) return;
         native.call(this, msg, transfer);
       })();
     };
@@ -1810,10 +1818,552 @@ textarea.du-cmp-text{resize:none;min-height:0}
 
   let openStore = null;
   function installOpenCache() {
-    if (typeof Worker !== 'function' || typeof indexedDB === 'undefined' || !globalThis.crypto || !crypto.subtle) return;
-    openStore = idbStore(OPEN_CACHE_DB);
+    if (typeof Worker !== 'function') return;
+    if (typeof indexedDB !== 'undefined' && globalThis.crypto && crypto.subtle) openStore = idbStore(OPEN_CACHE_DB);
     const idle = (fn) => (typeof requestIdleCallback === 'function' ? requestIdleCallback(fn, { timeout: 5000 }) : setTimeout(fn, 1000));
-    patchWorkerPostMessage(Worker.prototype, { store: openStore, version: bundleVersion, enabled: openCacheOn, idle });
+    const preview = makeOpenPreview();
+    const route = (w, msg) => (fastOpenOn() ? openViaFastWorker(w, msg, preview) : Promise.resolve(false));
+    // A cached reopen skips the parse but not the mount: preview it too.
+    const onHit = async (docJson) => {
+      if (!fastOpenOn()) return null;
+      const first = firstBlocks(docJson, PREVIEW_CHARS);
+      if (!first) return null;
+      preview.show(first);
+      await new Promise((r) => { requestAnimationFrame(() => setTimeout(r, 0)); setTimeout(r, 50); });
+      return () => preview.afterReply();
+    };
+    watchWorkerUrls();
+    patchWorkerPostMessage(Worker.prototype, { store: openStore, version: bundleVersion, enabled: openCacheOn, idle, route, onHit });
+  }
+
+
+  // ---------------------------------------------------------------- Fast first open
+  // CardMirror parses a .docx in its docx-open worker, and most of that time is fast-xml-parser.
+  // The plugin runs a copy of that same worker script with a faster parser injected
+  // (makeFastXml builds exactly fast-xml-parser's tree for well-formed Word XML and hands
+  // anything unusual back to fast-xml-parser), and shows the doc's first screens while
+  // CardMirror mounts the rest. Any mismatch or failure falls back to CardMirror's own worker.
+  // makeFastXml is stringified into the worker, so it must not use anything outside itself.
+  function makeFastXml() {
+    const GUARDED_NAMES = new Set([
+      "__proto__",
+      "constructor",
+      "prototype",
+      "hasOwnProperty",
+      "toString",
+      "valueOf",
+      "__defineGetter__",
+      "__defineSetter__",
+      "__lookupGetter__",
+      "__lookupSetter__",
+      "#text",
+      ":@"
+    ]);
+    function element(name, kids) {
+      switch (name) {
+        case "w:r":
+          return { "w:r": kids };
+        case "w:t":
+          return { "w:t": kids };
+        case "w:rPr":
+          return { "w:rPr": kids };
+        case "w:rStyle":
+          return { "w:rStyle": kids };
+        case "w:sz":
+          return { "w:sz": kids };
+        case "w:highlight":
+          return { "w:highlight": kids };
+        case "w:u":
+          return { "w:u": kids };
+        case "w:szCs":
+          return { "w:szCs": kids };
+        case "w:p":
+          return { "w:p": kids };
+        case "w:color":
+          return { "w:color": kids };
+        case "w:pPr":
+          return { "w:pPr": kids };
+        case "w:rFonts":
+          return { "w:rFonts": kids };
+        case "w:proofErr":
+          return { "w:proofErr": kids };
+        case "w:b":
+          return { "w:b": kids };
+        case "w:bCs":
+          return { "w:bCs": kids };
+        case "w:iCs":
+          return { "w:iCs": kids };
+        case "w:lang":
+          return { "w:lang": kids };
+        case "w:bdr":
+          return { "w:bdr": kids };
+        case "w:pStyle":
+          return { "w:pStyle": kids };
+        case "w:lastRenderedPageBreak":
+          return { "w:lastRenderedPageBreak": kids };
+        case "w:spacing":
+          return { "w:spacing": kids };
+        case "w:shd":
+          return { "w:shd": kids };
+        case "w:i":
+          return { "w:i": kids };
+        case "w:keepNext":
+          return { "w:keepNext": kids };
+        case "w:keepLines":
+          return { "w:keepLines": kids };
+        case "w:outlineLvl":
+          return { "w:outlineLvl": kids };
+        case "w:bookmarkStart":
+          return { "w:bookmarkStart": kids };
+        case "w:bookmarkEnd":
+          return { "w:bookmarkEnd": kids };
+        case "w:numPr":
+          return { "w:numPr": kids };
+        case "w:numId":
+          return { "w:numId": kids };
+        case "w:ilvl":
+          return { "w:ilvl": kids };
+        case "w:ind":
+          return { "w:ind": kids };
+        case "w:hyperlink":
+          return { "w:hyperlink": kids };
+        case "w:jc":
+          return { "w:jc": kids };
+        case "w:tab":
+          return { "w:tab": kids };
+        case "w:instrText":
+          return { "w:instrText": kids };
+        case "w:fldChar":
+          return { "w:fldChar": kids };
+        case "w:noProof":
+          return { "w:noProof": kids };
+        case "w:vertAlign":
+          return { "w:vertAlign": kids };
+        case "w:caps":
+          return { "w:caps": kids };
+        case "w:strike":
+          return { "w:strike": kids };
+      }
+      const node = {};
+      node[name] = kids;
+      return node;
+    }
+    const isGuarded = (name) => name.indexOf(":") <= 0 && GUARDED_NAMES.has(name);
+    const ENTITY_RE = /&(?:apos|#39|#x27|gt|#62|#x3E|lt|#60|#x3C|quot|#34|#x22|amp|#38|#x26);/g;
+    const ENTITY_VALUES = {
+      "&apos;": "'",
+      "&#39;": "'",
+      "&#x27;": "'",
+      "&gt;": ">",
+      "&#62;": ">",
+      "&#x3E;": ">",
+      "&lt;": "<",
+      "&#60;": "<",
+      "&#x3C;": "<",
+      "&quot;": '"',
+      "&#34;": '"',
+      "&#x22;": '"',
+      "&amp;": "&",
+      "&#38;": "&",
+      "&#x26;": "&"
+    };
+    const decodeEntity = (m) => ENTITY_VALUES[m];
+    function decodeEntities(s) {
+      return s.indexOf("&") === -1 ? s : s.replace(ENTITY_RE, decodeEntity);
+    }
+    const isSpace = (c) => c === 32 || c === 10 || c === 9 || c === 13 || c === 12 || c === 11;
+    function readAttrs(s, i, node) {
+      let out;
+      const len = s.length;
+      while (true) {
+        while (i < len && isSpace(s.charCodeAt(i))) i++;
+        const c = s.charCodeAt(i);
+        if (c === 62 || c === 47 && s.charCodeAt(i + 1) === 62) {
+          if (out) node[":@"] = out;
+          return c === 62 ? i + 1 : -(i + 3);
+        }
+        const n0 = i;
+        while (i < len) {
+          const d = s.charCodeAt(i);
+          if (d === 61 || isSpace(d) || d === 62 || d === 47 || d === 60 || d === 34 || d === 39 || d > 127) break;
+          i++;
+        }
+        if (i === n0 || s.charCodeAt(i) !== 61) return -1;
+        const name = s.slice(n0, i);
+        i++;
+        const q = s.charCodeAt(i);
+        if (q !== 34 && q !== 39) return -1;
+        const close = s.indexOf(q === 34 ? '"' : "'", i + 1);
+        if (close === -1 || isGuarded(name)) return -1;
+        const v = decodeEntities(s.slice(i + 1, close));
+        if (out) out[name] = v;
+        else if (name === "w:val") out = { "w:val": v };
+        else (out = {})[name] = v;
+        i = close + 1;
+      }
+    }
+    function fastParseXml(input) {
+      const xml = input.indexOf("\r") === -1 ? input : input.replace(/\r\n?/g, "\n");
+      const root = [];
+      const stack = [];
+      const names = [];
+      let cur = root;
+      let text = "";
+      const flush = () => {
+        if (text) {
+          const v = decodeEntities(text);
+          if (v) cur.push({ "#text": v });
+          text = "";
+        }
+      };
+      let i = 0;
+      const len = xml.length;
+      while (i < len) {
+        const lt = xml.indexOf("<", i);
+        if (lt === -1) {
+          text += xml.slice(i);
+          break;
+        }
+        if (lt > i) text += xml.slice(i, lt);
+        const c1 = xml.charCodeAt(lt + 1);
+        if (c1 === 47) {
+          const gt = xml.indexOf(">", lt);
+          if (gt === -1 || stack.length === 0) return null;
+          if (xml.slice(lt + 2, gt).trim() !== names[names.length - 1]) return null;
+          flush();
+          cur = stack.pop();
+          names.pop();
+          i = gt + 1;
+        } else if (c1 === 63) {
+          const end = xml.indexOf("?>", lt);
+          if (end === -1) return null;
+          const body = xml.slice(lt + 1, end);
+          flush();
+          const sep = body.search(/\s/);
+          const name = sep === -1 ? body : body.slice(0, sep);
+          if (isGuarded(name) || /["']/.test(name)) return null;
+          const node = element(name, [{ "#text": "" }]);
+          if (sep !== -1 && readAttrs(body.slice(sep) + ">", 0, node) === -1) return null;
+          cur.push(node);
+          i = end + 2;
+        } else if (c1 === 33) {
+          if (!xml.startsWith("!--", lt + 1)) return null;
+          const end = xml.indexOf("-->", lt + 4);
+          if (end === -1) return null;
+          i = end + 3;
+        } else {
+          let n = lt + 1;
+          while (n < len) {
+            const c = xml.charCodeAt(n);
+            if (isSpace(c) || c === 47 || c === 62 || c === 60 || c === 34 || c === 39 || c > 127) break;
+            n++;
+          }
+          if (n === lt + 1 || n >= len) return null;
+          const name = xml.slice(lt + 1, n);
+          if (isGuarded(name)) return null;
+          const kids = [];
+          const node = element(name, kids);
+          const after = readAttrs(xml, n, node);
+          if (after === -1) return null;
+          if (stack.length > 0) flush();
+          else text = "";
+          cur.push(node);
+          if (after > 0) {
+            if (stack.length > 100) return null;
+            stack.push(cur);
+            names.push(name);
+            cur = kids;
+            i = after;
+          } else {
+            i = -after - 1;
+          }
+        }
+      }
+      if (stack.length > 0) return null;
+      return root;
+    }
+    return fastParseXml;
+  }
+
+  // fast-xml-parser options CardMirror's worker uses. The injection needs this exact literal;
+  // a CardMirror update that changes it turns the fast parser off until the plugin is updated.
+  const PARSER_OPTS = '{ignoreAttributes:!1,attributeNamePrefix:"",textNodeName:"#text",preserveOrder:!0,trimValues:!1,parseAttributeValue:!1,parseTagValue:!1,processEntities:{enabled:!0,maxTotalExpansions:1/0,maxExpandedLength:1/0}}';
+  const PREVIEW_CHARS = 12000; // about three screens of a debate file
+
+  // Runs inside the worker: before the full reply, post the doc's first top-level blocks.
+  function workerPreviewPrelude(chars) {
+    const post = self.postMessage.bind(self);
+    const textLen = (n) => {
+      let s = typeof n.text === 'string' ? n.text.length : 0;
+      if (Array.isArray(n.content)) for (const c of n.content) s += textLen(c);
+      return s;
+    };
+    self.postMessage = function (m, t) {
+      try {
+        const c = m && m.ok === true && m.docJson && Array.isArray(m.docJson.content) ? m.docJson.content : null;
+        if (c) {
+          let n = 0;
+          let seen = 0;
+          while (n < c.length && seen < chars) seen += textLen(c[n++]);
+          if (n < c.length) post({ id: m.id, duPreview: { ...m.docJson, content: c.slice(0, n) } });
+        }
+      } catch { /* the preview is optional */ }
+      return t === undefined ? post(m) : post(m, t);
+    };
+  }
+
+  /** CardMirror's worker source with the fast parser injected, or null when it doesn't match. */
+  function patchParserSource(src) {
+    if (typeof src !== 'string') return null;
+    const at = src.indexOf(PARSER_OPTS);
+    if (at < 0 || src.indexOf(PARSER_OPTS, at + 1) >= 0) return null;
+    const m = /new ([\w$.]+)\($/.exec(src.slice(Math.max(0, at - 100), at));
+    if (!m || src[at + PARSER_OPTS.length] !== ')') return null;
+    const start = at - m[0].length;
+    const end = at + PARSER_OPTS.length + 1;
+    const prelude = `const __duFastXml=(${makeFastXml})();` +
+      'function __duFast(p){const o=p.parse.bind(p);p.parse=function(x){const r=typeof x==="string"?__duFastXml(x):null;return r===null?o(x):r};return p}' +
+      `;(${workerPreviewPrelude})(${PREVIEW_CHARS});\n`;
+    return `${prelude}${src.slice(0, start)}__duFast(${src.slice(start, end)})${src.slice(end)}`;
+  }
+
+  /** The doc JSON cut to its first top-level blocks holding `chars` of text, or null if that's all of it. */
+  function firstBlocks(docJson, chars) {
+    const c = docJson && Array.isArray(docJson.content) ? docJson.content : null;
+    if (!c) return null;
+    const textLen = (n) => {
+      let s = typeof n.text === 'string' ? n.text.length : 0;
+      if (Array.isArray(n.content)) for (const k of n.content) s += textLen(k);
+      return s;
+    };
+    let n = 0;
+    let seen = 0;
+    while (n < c.length && seen < chars) seen += textLen(c[n++]);
+    return n < c.length ? { ...docJson, content: c.slice(0, n) } : null;
+  }
+
+  // ProseMirror's DOMSerializer, enough for a static preview: the schema's own toDOM specs.
+  function renderSpec(spec) {
+    if (typeof spec === 'string') return { dom: document.createTextNode(spec) };
+    if (spec && spec.nodeType != null) return { dom: spec };
+    if (spec && spec.dom && spec.dom.nodeType != null) return spec;
+    let tag = spec[0];
+    let ns = null;
+    const sp = tag.indexOf(' ');
+    if (sp > 0) { ns = tag.slice(0, sp); tag = tag.slice(sp + 1); }
+    const dom = ns ? document.createElementNS(ns, tag) : document.createElement(tag);
+    let i = 1;
+    let contentDOM = null;
+    const attrs = spec[1];
+    if (attrs && typeof attrs === 'object' && attrs.nodeType == null && !Array.isArray(attrs)) {
+      i = 2;
+      for (const k of Object.keys(attrs)) {
+        const v = attrs[k];
+        if (v == null) continue;
+        const s = k.indexOf(' ');
+        if (s > 0) dom.setAttributeNS(k.slice(0, s), k.slice(s + 1), v); else dom.setAttribute(k, v);
+      }
+    }
+    for (; i < spec.length; i++) {
+      if (spec[i] === 0) { contentDOM = dom; continue; }
+      const r = renderSpec(spec[i]);
+      dom.appendChild(r.dom);
+      if (r.contentDOM) contentDOM = r.contentDOM;
+    }
+    return { dom, contentDOM };
+  }
+  function renderNode(node) {
+    if (node.isText) {
+      let dom = document.createTextNode(node.text);
+      for (let i = node.marks.length - 1; i >= 0; i--) {
+        const toDOM = node.marks[i].type.spec.toDOM;
+        if (!toDOM) continue;
+        const r = renderSpec(toDOM(node.marks[i], true));
+        (r.contentDOM || r.dom).appendChild(dom);
+        dom = r.dom;
+      }
+      return dom;
+    }
+    const toDOM = node.type.spec.toDOM;
+    if (!toDOM) return null;
+    const r = renderSpec(toDOM(node));
+    if (r.contentDOM) {
+      node.forEach((child) => { const d = renderNode(child); if (d) r.contentDOM.appendChild(d); });
+      // ProseMirror gives an empty textblock a <br> so it keeps its line.
+      if (node.isTextblock && node.content.size === 0) r.contentDOM.appendChild(document.createElement('br'));
+    }
+    return r.dom;
+  }
+
+  // Static preview of the first blocks, in #editor where the real view will mount. Single-pane only.
+  function makeOpenPreview() {
+    let shown = null;
+    const clear = (restore) => {
+      if (!shown) return;
+      const s = shown;
+      shown = null;
+      clearTimeout(s.timer);
+      s.el.remove();
+      if (restore && s.viewDom.isConnected) {
+        s.viewDom.style.display = s.display;
+        if (s.home) { document.documentElement.classList.add('pmd-home-active'); if (s.homeRoot) s.homeRoot.hidden = false; }
+        if (s.scroller) s.scroller.scrollTop = s.scrollTop;
+      }
+    };
+    return {
+      show(json) {
+        if (shown || document.body.classList.contains('pmd-multi-doc')) return;
+        const host = document.getElementById('editor');
+        const viewDom = host && [...host.children].find((n) => n.classList.contains('ProseMirror') && !n.classList.contains('du-open-preview'));
+        const schema = viewDom && viewDom.pmViewDesc && viewDom.pmViewDesc.node && viewDom.pmViewDesc.node.type.schema;
+        if (!schema) return;
+        let doc;
+        try { doc = schema.nodeFromJSON(json); } catch { return; }
+        const el = document.createElement('div');
+        el.className = 'ProseMirror du-open-preview';
+        el.setAttribute('aria-hidden', 'true');
+        try { doc.forEach((b) => { const d = renderNode(b); if (d) el.appendChild(d); }); } catch { return; }
+        const home = document.documentElement.classList.contains('pmd-home-active');
+        const homeRoot = document.querySelector('.pmd-home-screen');
+        const scroller = document.getElementById('app');
+        shown = { el, viewDom, display: viewDom.style.display, home, homeRoot, scroller, scrollTop: scroller ? scroller.scrollTop : 0 };
+        viewDom.style.display = 'none';
+        if (home) { document.documentElement.classList.remove('pmd-home-active'); if (homeRoot) homeRoot.hidden = true; }
+        host.prepend(el);
+        if (scroller) scroller.scrollTop = 0;
+        // Never outlive a stuck open.
+        shown.timer = setTimeout(() => clear(true), 15000);
+      },
+      // CardMirror has the full doc: drop the preview once its new view replaced the old one.
+      afterReply() {
+        if (!shown) return;
+        const s = shown;
+        const started = Date.now();
+        const check = () => {
+          if (shown !== s) return;
+          if (!s.viewDom.isConnected) clear(false);
+          else if (Date.now() - started > 10000) clear(true);
+          else setTimeout(check, 30);
+        };
+        setTimeout(check, 0);
+      },
+      cancel() { clear(true); },
+    };
+  }
+
+  // Where CardMirror's docx-open worker script lives (recorded when CardMirror creates it).
+  const fastOpen = { url: null, worker: null, ready: null, off: false };
+  const NativeWorker = typeof Worker === 'function' ? Worker : null;
+  const isOpenWorkerUrl = (u) => /\/docx-open-worker-[\w-]+\.js(?:[?#]|$)/.test(u);
+  function watchWorkerUrls() {
+    if (!NativeWorker || NativeWorker.__duWatched) return;
+    const Watched = function (url, opts) {
+      const w = new NativeWorker(url, opts);
+      try {
+        const u = new URL(String(url && url.href ? url.href : url), location.href).href;
+        if (isOpenWorkerUrl(u)) fastOpen.url = u;
+      } catch { /* not a URL we care about */ }
+      return w;
+    };
+    Watched.prototype = NativeWorker.prototype;
+    Object.setPrototypeOf(Watched, NativeWorker);
+    Watched.__duWatched = true;
+    window.Worker = Watched;
+  }
+  function openWorkerUrl() {
+    if (fastOpen.url) return fastOpen.url;
+    try {
+      const e = performance.getEntriesByType('resource').find((r) => isOpenWorkerUrl(r.name));
+      if (e) fastOpen.url = e.name;
+    } catch { /* no resource timing */ }
+    return fastOpen.url;
+  }
+
+  // The worker script's text: fetch, then XHR (file:// pages), then the helper reads it from disk.
+  async function workerSource(url) {
+    try { const r = await fetch(url); if (r.ok) return await r.text(); } catch { /* next */ }
+    try {
+      return await new Promise((res, rej) => {
+        const x = new XMLHttpRequest();
+        x.open('GET', url);
+        x.onload = () => ((x.status === 200 || x.status === 0) && x.responseText ? res(x.responseText) : rej(new Error('empty')));
+        x.onerror = () => rej(new Error('xhr'));
+        x.send();
+      });
+    } catch { /* next */ }
+    try {
+      const host = window.electronAPI;
+      if (host && typeof host.flowPost === 'function') {
+        const r = await host.flowPost(ID, '/cm/worker-source', { url });
+        if (r && r.ok && r.body && r.body.ok && typeof r.body.source === 'string') return r.body.source;
+      }
+    } catch { /* helper not running */ }
+    return null;
+  }
+
+  function fastWorker() {
+    if (fastOpen.off) return Promise.resolve(null);
+    if (fastOpen.ready) return fastOpen.ready;
+    const url = openWorkerUrl();
+    if (!url || !NativeWorker) return Promise.resolve(null);
+    fastOpen.ready = (async () => {
+      const patched = patchParserSource(await workerSource(url));
+      if (!patched) { fastOpen.off = true; return null; }
+      try {
+        const w = new NativeWorker(URL.createObjectURL(new Blob([patched], { type: 'text/javascript' })));
+        w.__duFastWorker = true; // its requests skip the open hooks below
+        return (fastOpen.worker = w);
+      } catch { fastOpen.off = true; return null; }
+    })().catch(() => { fastOpen.off = true; return null; });
+    return fastOpen.ready;
+  }
+
+  /** Parse an open request on the fast worker and deliver the reply as CardMirror's worker
+   *  would. Resolves false (CardMirror's worker should parse) on any failure. */
+  function openViaFastWorker(cmWorker, msg, preview) {
+    return fastWorker().then((fw) => {
+      if (!fw) return false;
+      return new Promise((resolve) => {
+        const id = msg.id;
+        const size = msg.bytes.byteLength || 0;
+        const done = (ok) => {
+          fw.removeEventListener('message', onMessage);
+          fw.removeEventListener('error', onError);
+          clearTimeout(timer);
+          resolve(ok);
+        };
+        const retire = () => {
+          fastOpen.off = true;
+          try { fw.terminate(); } catch { /* gone */ }
+          if (preview) preview.cancel();
+          done(false);
+        };
+        const onMessage = (e) => {
+          const d = e.data;
+          if (!d || d.id !== id) return;
+          if (d.duPreview) { if (preview) preview.show(d.duPreview); return; }
+          if (d.ok !== true) { if (preview) preview.cancel(); done(false); return; } // CardMirror reports its own error
+          const ev = new MessageEvent('message', { data: d });
+          ev.__duFast = true;
+          cmWorker.dispatchEvent(ev);
+          if (preview) preview.afterReply();
+          done(true);
+        };
+        const onError = () => retire();
+        // Well inside CardMirror's own wait for its worker (20 s + 2 s a MB).
+        const timer = setTimeout(retire, 15000 + Math.ceil(size / (1024 * 1024)) * 1500);
+        fw.addEventListener('message', onMessage);
+        fw.addEventListener('error', onError);
+        try { fw.postMessage({ id, bytes: msg.bytes }); } catch { retire(); }
+      });
+    }, () => false);
+  }
+
+  function fastOpenOn() {
+    try {
+      const s = JSON.parse(localStorage.getItem(`plugin:${ID}`) || '{}').__settings || {};
+      return s.fastOpen !== false;
+    } catch { return true; }
   }
 
   // ---------------------------------------------------------------- Copy into Google Docs / Word
@@ -3171,7 +3721,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
   }
   try { installClipboardFix(); } catch { /* copies stay as CardMirror makes them */ }
   if (!window.__debateUploaderTest) { try { installOpenCache(); } catch { /* opens parse as usual */ } }
-  if (window.__debateUploaderTest) window.__debateUploaderOpenCache = { patchWorkerPostMessage, lruOrder, idbStore };
+  if (window.__debateUploaderTest) window.__debateUploaderOpenCache = { patchWorkerPostMessage, lruOrder, idbStore, makeFastXml, patchParserSource, PARSER_OPTS };
   if (window.__debateUploaderTest) window.__debateUploaderClipboard = { boldCopiedHTML, unboldCopiedHTML }; // only when tests ask
   if (window.__debateUploaderTest) window.__debateUploaderCompare = compareTexts;
 
@@ -3201,6 +3751,13 @@ textarea.du-cmp-text{resize:none;min-height:0}
         type: 'boolean',
         default: false,
         description: 'Also restyles the ribbon, sidebar, status bar and menus. Your document page keeps its normal look. Unofficial: a CardMirror update may undo parts until the plugin is updated.',
+      },
+      {
+        key: 'fastOpen',
+        label: 'Open big files faster',
+        type: 'boolean',
+        default: true,
+        description: "Parses .docx files with a faster XML reader (same result as CardMirror's) and shows the first pages while the rest loads. Turns itself off if a CardMirror update changes the parser.",
       },
       {
         key: 'openCache',

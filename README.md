@@ -229,6 +229,16 @@ aren't found.
   color variables and a few elements (`#ribbon`, `#status-bar`, `.pmd-nav-panel`), so a CardMirror update may
   undo parts of it until the plugin catches up. Turn it off, or set the theme to Standard, to undo it at once. (0.7.0's "Sleek interface" switch is now this dropdown; pick
   Sleek again if you had it on.)
+- **Open big files faster** (on by default): the first open of a `.docx` (nothing cached) parses with a faster XML
+  reader and shows the first pages while CardMirror lays out the rest. Measured on real files (median of 5, headless
+  Chrome, CardMirror 1.16.0): first card on screen for 30 MB of document text 1.70 s → 0.55 s, 20 MB 1.13 s → 0.45 s,
+  small files 9-13% sooner. The document is fully editable a quarter sooner (1.71 s → 1.26 s on the 30 MB file).
+  The reader builds exactly what CardMirror's own parser builds: checked on all 49,198 XML parts of 3,013 debate
+  files, and saves of a fast-opened file match a normal open part for part. Anything it doesn't recognize goes to
+  CardMirror's parser. How it works: the plugin runs a copy of CardMirror's own parser worker with the faster
+  reader added. If a CardMirror update changes that worker, the feature turns itself off until the plugin is updated.
+  The desktop app may not let the plugin read the worker script directly, so the helper reads it from inside
+  `cardmirror.app` (nothing else). Saving takes as long as before: CardMirror does it in code a plugin can't reach.
 - **Reopen big files faster** (on by default): CardMirror parses a `.docx` every time you open it, about 1 second
   for a 30 MB file. The plugin keeps the parsed result of the last 10 files over 512 KB, so reopening an unchanged
   file skips that parse. Measured on real files: 30 MB of document text 1.72 s → 0.75 s, 20 MB 1.14 s → 0.49 s,

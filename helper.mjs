@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { createKeychain } from './lib/keychain.mjs';
 import { createRoomWatcher } from './lib/roomwatch.mjs';
 import { createPrefs } from './lib/prefs.mjs';
+import { cmWorkerPath } from './lib/cmworker.mjs';
 import { login, getRounds, listCaselists, listSchools, listTeams, createRound, searchTeams, searchCards, SEARCH_ROWS, getTeam, downloadOpenSource, listTeamsDetailed, CASELIST_BASE } from './lib/caselist.mjs';
 import { parseOpponent, schoolScore, pickTeam } from './lib/scout.mjs';
 import { uploadToSpeechDrop, newestDocx, MAX_BYTES, listRoom, downloadFile, saveUnique, createZipWriter, freeName, expandHome, SD_BASE, SD_MEDIA } from './lib/speechdrop.mjs';
@@ -537,6 +538,17 @@ const routes = {
       return { name: doc.name, recipients: list.length, reply: prior.length > 0 };
     }),
   }),
+  // CardMirror's own docx-open worker script, for the plugin's fast first open (a file://
+  // page can't always fetch it). Only that worker, only from inside an installed app bundle.
+  '/cm/worker-source': async ({ url }) => {
+    const path = cmWorkerPath(url);
+    if (!path) return { ok: false, error: 'bad_url' };
+    try {
+      return { ok: true, source: await readFile(path, 'utf8') };
+    } catch {
+      return { ok: false, error: 'unreadable' };
+    }
+  },
   '/prefs/get': async () => ({ ok: true, prefs: await prefs.getAll() }),
   '/prefs/set': async ({ key, value }) => {
     try {
