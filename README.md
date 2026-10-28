@@ -212,6 +212,16 @@ aren't found.
 - Plugin: Settings → Plugins → **Update** on Debate Uploader (needs `__plugins('community-on')` still on).
 - Helper: `cd ~/debate-uploader && git pull && launchctl kickstart -k gui/$(id -u)/debate-uploader`
 
+## Home screen favorites
+
+Hover a file under **Recent** on CardMirror's home screen and click the star to add it to **Favorites**, a list just
+above Recent. Click a favorite to open it; click its star to remove it. Favorites stay after a file drops off Recent
+(CardMirror keeps only the last 10). Opening one puts it back at the top of Recent and goes through CardMirror's
+own open, so a moved or deleted file gets CardMirror's usual message. Favorites live in CardMirror's local storage
+(`du-home-favorites`) and show in every CardMirror window. Only files under Recent can be starred, so open a file
+once to add it. This is unofficial: CardMirror has no home-screen API, so a CardMirror update that reshapes the home
+screen can hide the list until the plugin is updated. Your favorites stay saved.
+
 ## Settings
 
 - **Interface theme** (Settings → Plugins → Debate Uploader) changes the look of every plugin dialog:
@@ -223,7 +233,8 @@ aren't found.
 
   Changing it restyles any open dialog right away.
 - **Apply the theme to all of CardMirror** (off by default) extends Sleek or Liquid to CardMirror itself: the
-  ribbon (idle buttons go borderless, pressed ones keep their state), the sidebar, the status bar, scrollbars, and
+  home screen (its tiles, file rows and file-type chips; Liquid's glass background), the ribbon (idle buttons go
+  borderless, pressed ones keep their state), the sidebar, the status bar, scrollbars, and
   CardMirror's own menus and Settings window. Your document page keeps CardMirror's normal paper and ink. It applies
   as CardMirror starts and follows Settings changes within a second. This is unofficial: it restyles CardMirror's
   color variables and a few elements (`#ribbon`, `#status-bar`, `.pmd-nav-panel`, and since 0.11.1 its dialogs (Settings and the rest), their backdrops, menus, popovers and toasts, found from CardMirror's own styles), so a CardMirror update may
