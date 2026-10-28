@@ -176,6 +176,7 @@
     }
     // Retried on every poll until CardMirror's page rule is there to copy.
     if (wantApp !== appTheme && typeof document !== 'undefined' && applyAppTheme(wantApp)) appTheme = wantApp;
+    else if (appTheme && typeof document !== 'undefined') { try { refreshSurfaces(); } catch { /* keep the last styles */ } }
   }
   function syncLook(api) {
     const get = (k) => { try { return api.settings && api.settings.get(k); } catch { return undefined; } };
@@ -251,6 +252,77 @@
   box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 0 12px rgba(122,162,247,.15)}
 :root.du-app-liquid ::-webkit-scrollbar-thumb{background-color:rgba(255,255,255,.07)}
 `;
+  // CardMirror's dialogs, their backdrops and its menus/popovers, found by how CardMirror
+  // styles them (overlay color; deep vs plain shadow on the page background), so a dialog a
+  // CardMirror update adds is themed too. Lazy CSS chunks are picked up as they load.
+  function findSurfaces() {
+    const out = { overlay: [], dialog: [], pop: [] };
+    const walk = (rules) => {
+      for (const r of rules) {
+        if (!r.selectorText) { if (r.cssRules) walk(r.cssRules); continue; }
+        if (/du-/.test(r.selectorText)) continue;
+        const st = r.style;
+        const bg = st.getPropertyValue('background') + st.getPropertyValue('background-color');
+        const sh = st.getPropertyValue('box-shadow');
+        if (/--pmd-c-overlay/.test(bg) && st.getPropertyValue('position') === 'fixed') out.overlay.push(r.selectorText);
+        else if (/--pmd-c-shadow-deep/.test(sh) && /--pmd-c-bg\)/.test(bg)) out.dialog.push(r.selectorText);
+        else if (/--pmd-c-shadow\b/.test(sh) && /--pmd-c-bg\b/.test(bg)) out.pop.push(r.selectorText);
+      }
+    };
+    for (const sheet of document.styleSheets) {
+      let rules;
+      try { rules = sheet.cssRules; } catch { continue; }
+      walk(rules);
+    }
+    return { overlay: out.overlay.join(','), dialog: out.dialog.join(','), pop: out.pop.join(',') };
+  }
+  function surfacesCss({ overlay, dialog, pop }) {
+    const field = 'input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]),select,textarea';
+    const box = [dialog, pop].filter(Boolean).join(',');
+    let css = '';
+    if (overlay) css += `
+:root.du-app-sleek :is(${overlay}){background:rgba(9,9,11,.28);backdrop-filter:blur(3px)}
+:root.du-app-liquid :is(${overlay}){background:rgba(4,6,12,.38);backdrop-filter:blur(6px) saturate(120%)}`;
+    if (dialog) css += `
+:root.du-app-sleek :is(${dialog}){border:1px solid var(--pmd-c-border);border-radius:14px;box-shadow:0 24px 64px -16px rgba(0,0,0,.32),0 2px 8px rgba(0,0,0,.06)}
+:root.du-app-liquid :is(${dialog}){background:rgba(8,12,18,.86);backdrop-filter:blur(48px) saturate(180%);border:1px solid rgba(255,255,255,.08);border-radius:16px;
+  box-shadow:0 8px 40px rgba(0,0,0,.65),0 2px 8px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.18),0 0 30px rgba(122,162,247,.08)}`;
+    if (pop) css += `
+:root.du-app-sleek :is(${pop}){border:1px solid var(--pmd-c-border);border-radius:10px;box-shadow:0 12px 32px -8px rgba(0,0,0,.24),0 1px 3px rgba(0,0,0,.06)}
+:root.du-app-liquid :is(${pop}){background:rgba(10,14,20,.82);backdrop-filter:blur(32px) saturate(160%);border:1px solid rgba(255,255,255,.08);border-radius:12px;
+  box-shadow:0 12px 36px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.1)}`;
+    if (box) css += `
+:root.du-app :is(${box}) :is(${field}){border:1px solid var(--pmd-c-border);border-radius:8px;color:var(--pmd-c-text)}
+:root.du-app-sleek :is(${box}) :is(${field}){background:var(--pmd-c-bg-soft)}
+:root.du-app-liquid :is(${box}) :is(${field}){background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.12)}
+:root.du-app :is(${box}) :is(${field}):focus{outline:none;border-color:var(--pmd-c-accent);box-shadow:0 0 0 3px var(--pmd-c-focus-glow)}
+:root.du-app-sleek :is(${box}) :is(${field}):focus{border-color:color-mix(in srgb,var(--pmd-c-text) 38%,transparent);box-shadow:0 0 0 3px rgba(0,0,0,.06)}
+:root.du-app-sleek :is(${box}) input:is([type=checkbox],[type=radio]){accent-color:var(--pmd-c-text)}
+:root.du-app-liquid :is(${box}) input:is([type=checkbox],[type=radio]){accent-color:#7aa2f7}
+:root.du-app-liquid :is(${box}) select option{background:#0a0e15}`;
+    return css + `
+:root.du-app .pmd-theme-editor{display:inline-flex;gap:2px;padding:2px;border:0;border-radius:9px;background:var(--pmd-c-hover)}
+:root.du-app .pmd-theme-editor-btn{border:0;border-radius:7px;background:transparent;color:var(--pmd-c-text-muted);padding:3px 11px;font-weight:500}
+:root.du-app .pmd-theme-editor-btn:hover{color:var(--pmd-c-text)}
+:root.du-app-sleek .pmd-theme-editor-btn[aria-pressed="true"]{background:var(--pmd-c-bg);color:var(--pmd-c-text);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.14),0 0 0 1px var(--pmd-c-border)}
+:root.du-app-liquid .pmd-theme-editor{background:rgba(255,255,255,.05)}
+:root.du-app-liquid .pmd-theme-editor-btn[aria-pressed="true"]{background:rgba(122,162,247,.18);color:#e4e9ff;box-shadow:inset 0 1px 0 rgba(255,255,255,.1)}
+:root.du-app .pmd-settings-tab{border-radius:7px 7px 0 0}
+:root.du-app .pmd-toast{border-radius:8px;padding:.4rem .75rem;box-shadow:0 8px 24px rgba(0,0,0,.25)}
+:root.du-app-sleek .pmd-toast{background:#18181b;color:#fff}
+:root.du-app-liquid .pmd-toast{background:rgba(10,14,20,.82);backdrop-filter:blur(24px) saturate(160%);color:var(--pmd-c-text);border:1px solid rgba(255,255,255,.1)}
+`;
+  }
+  let surfaceSheets = -1;
+  function refreshSurfaces() {
+    const n = document.styleSheets.length;
+    if (n === surfaceSheets) return;
+    surfaceSheets = n;
+    let tag = document.getElementById('du-app-surfaces');
+    if (!tag) { tag = el('style', { id: 'du-app-surfaces' }); (document.head || document.body).append(tag); }
+    tag.textContent = surfacesCss(findSurfaces());
+  }
+
   // CardMirror's page reset (light paper inside a dark app), re-scoped to our themes.
   function pageGuard() {
     const find = (rules) => {
@@ -281,6 +353,7 @@
       if (!guard) return false;
       (document.head || document.body).append(el('style', { id: 'du-app-style', textContent: APP_CSS + guard }));
     }
+    if (theme) refreshSurfaces();
     root.classList.toggle('du-app', !!theme);
     root.classList.toggle('du-app-sleek', theme === 'Sleek');
     root.classList.toggle('du-app-liquid', theme === 'Liquid');
