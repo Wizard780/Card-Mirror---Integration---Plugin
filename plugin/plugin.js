@@ -2252,7 +2252,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
   }
 
   // Where CardMirror's docx-open worker script lives (recorded when CardMirror creates it).
-  const fastOpen = { url: null, worker: null, ready: null, off: false };
+  const fastOpen = { url: null, worker: null, ready: null, off: false, inflight: new Set() };
   const NativeWorker = typeof Worker === 'function' ? Worker : null;
   const isOpenWorkerUrl = (u) => /\/docx-open-worker-[\w-]+\.js(?:[?#]|$)/.test(u);
   function watchWorkerUrls() {
@@ -2329,14 +2329,17 @@ textarea.du-cmp-text{resize:none;min-height:0}
         const done = (ok) => {
           fw.removeEventListener('message', onMessage);
           fw.removeEventListener('error', onError);
+          fw.removeEventListener('messageerror', onError);
+          fastOpen.inflight.delete(fail);
           clearTimeout(timer);
           resolve(ok);
         };
+        const fail = () => { if (preview) preview.cancel(); done(false); };
+        // The worker is shared: retiring it fails every open still waiting on it.
         const retire = () => {
           fastOpen.off = true;
           try { fw.terminate(); } catch { /* gone */ }
-          if (preview) preview.cancel();
-          done(false);
+          for (const f of [...fastOpen.inflight]) f();
         };
         const onMessage = (e) => {
           const d = e.data;
@@ -2352,8 +2355,10 @@ textarea.du-cmp-text{resize:none;min-height:0}
         const onError = () => retire();
         // Well inside CardMirror's own wait for its worker (20 s + 2 s a MB).
         const timer = setTimeout(retire, 15000 + Math.ceil(size / (1024 * 1024)) * 1500);
+        fastOpen.inflight.add(fail);
         fw.addEventListener('message', onMessage);
         fw.addEventListener('error', onError);
+        fw.addEventListener('messageerror', onError);
         try { fw.postMessage({ id, bytes: msg.bytes }); } catch { retire(); }
       });
     }, () => false);
