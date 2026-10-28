@@ -48,7 +48,7 @@ test('registers twenty-four commands and one setting under the plugin id', () =>
   assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.boldEmphasis', 'debate-uploader.cardCheck', 'debate-uploader.cardCheckLast', 'debate-uploader.caselistCardSearch', 'debate-uploader.caselistScout', 'debate-uploader.caselistSearch', 'debate-uploader.caselistTeam', 'debate-uploader.caselistUpload', 'debate-uploader.clearOpenCache', 'debate-uploader.emailChain', 'debate-uploader.evidenceFolders', 'debate-uploader.evidenceSearch', 'debate-uploader.gmailForget', 'debate-uploader.gmailSetup', 'debate-uploader.markCards', 'debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdPick', 'debate-uploader.sdZip', 'debate-uploader.setFolder',
  'debate-uploader.tabroomLogin', 'debate-uploader.tabroomLogout', 'debate-uploader.tabroomRounds', 'debate-uploader.textCompare']);
   assert.deepEqual(def.settings.find((s) => s.key === 'theme').options, ['Standard', 'Sleek', 'Liquid']);
-  assert.deepEqual(def.settings.map((s) => [s.key, s.type, s.default]), [['sendDocFolder', 'text', ''], ['theme', 'select', 'Standard'], ['themeWholeApp', 'boolean', false], ['openCache', 'boolean', true]]);
+  assert.deepEqual(def.settings.map((s) => [s.key, s.type, s.default]), [['sendDocFolder', 'text', ''], ['theme', 'select', 'Standard'], ['themeWholeApp', 'boolean', false], ['fastOpen', 'boolean', true], ['openCache', 'boolean', true]]);
 });
 
 test('pick: uploads, polls the job, toasts success, remembers the room', async () => {
@@ -1954,4 +1954,66 @@ test('open cache: an unreadable cache falls back to the worker', async () => {
   w.reply({ id: 1, ok: true, docJson: {}, threads: [], docId: null }); // put rejects: swallowed
   await tick();
   assert.deepEqual(got, [1], 'the real reply still reaches CardMirror');
+});
+
+
+// ---- fast first open
+// Expected trees are fast-xml-parser 4.5.6's output with CardMirror's options (captured once).
+const FXP_CASES = [["<?xml version=\"1.0\" standalone=\"yes\"?>\r\n<a x=\"1\"><b/>  <c>t &amp; &#65; &nbsp;</c>\n</a>",[{"?xml":[{"#text":""}],":@":{"version":"1.0","standalone":"yes"}},{"a":[{"b":[]},{"#text":"  "},{"c":[{"#text":"t & &#65; &nbsp;"}]},{"#text":"\n"}],":@":{"x":"1"}}]],["<a>&amp;lt; &apos;&#x26;&#x3E;&#x3e;</a>",[{"a":[{"#text":"&lt; '&>&#x3e;"}]}]],["<a>a<!--c-->b</a>",[{"a":[{"#text":"ab"}]}]],["x<a>y</a>",[{"a":[{"#text":"y"}]}]],["x<?pi a=\"1\"?><a/>",[{"#text":"x"},{"?pi":[{"#text":""}],":@":{"a":"1"}},{"a":[]}]],["<w:p><w:r><w:rPr><w:highlight w:val=\"cyan\"/></w:rPr><w:t xml:space=\"preserve\"> hi </w:t></w:r></w:p>",[{"w:p":[{"w:r":[{"w:rPr":[{"w:highlight":[],":@":{"w:val":"cyan"}}]},{"w:t":[{"#text":" hi "}],":@":{"xml:space":"preserve"}}]}]}]],["<a b='s&quot;' c=\"x>y\"/>",[{"a":[],":@":{"b":"s\"","c":"x>y"}}]]];
+
+test('makeFastXml: same tree as fast-xml-parser, null for what it leaves to it', () => {
+  const fast = openCache().makeFastXml();
+  for (const [xml, want] of FXP_CASES) assert.equal(JSON.stringify(fast(xml)), JSON.stringify(want), xml);
+  for (const xml of ['<!DOCTYPE a><a/>', '<a><![CDATA[x]]></a>', '<a><b></a>', '<a>', '<a b/>', '<a x = "1"/>', '<a"b>x</a"b>', '<__proto__/>', '<' + 'd>'.repeat(102) + '</d>'.repeat(102)]) {
+    assert.equal(fast(xml), null, xml);
+  }
+});
+
+test('patchParserSource: wraps the one parser built with the exact options, else null', () => {
+  const { patchParserSource, PARSER_OPTS } = openCache();
+  const worker = (opts) => `(function(){"use strict";const Yo={XMLParser:class{constructor(o){this.o=o}parse(x){return 'slow:'+x}}};const Zo=new Yo.XMLParser(${opts});self.ze=function(n){return Zo.parse(n)};})();`;
+  const src = patchParserSource(worker(PARSER_OPTS));
+  assert.ok(src);
+  const posted = [];
+  const self = { postMessage: (m) => posted.push(m) };
+  new Function('self', src)(self);
+  assert.deepEqual(self.ze('<a>x</a>'), [{ a: [{ '#text': 'x' }] }]);
+  assert.equal(self.ze('<!DOCTYPE a><a/>'), 'slow:<!DOCTYPE a><a/>');
+  // The worker posts the first blocks of a long doc before the full reply.
+  const block = (n) => ({ type: 'paragraph', content: [{ type: 'text', text: 'x'.repeat(n) }] });
+  self.postMessage({ id: 7, ok: true, docJson: { type: 'doc', content: [block(7000), block(7000), block(10)] } });
+  assert.equal(posted.length, 2);
+  assert.deepEqual(posted[0].duPreview.content.length, 2);
+  assert.equal(posted[0].id, 7);
+  assert.equal(posted[1].docJson.content.length, 3);
+  // A short doc has no preview.
+  self.postMessage({ id: 8, ok: true, docJson: { type: 'doc', content: [block(10)] } });
+  assert.equal(posted.length, 3);
+  assert.equal(patchParserSource(worker(PARSER_OPTS.replace('trimValues:!1', 'trimValues:!0'))), null);
+  assert.equal(patchParserSource(worker(PARSER_OPTS) + worker(PARSER_OPTS)), null);
+  assert.equal(patchParserSource(null), null);
+});
+
+test('open hook: a cache miss goes to route first; the fast worker itself is never routed', async () => {
+  const { patchWorkerPostMessage } = openCache();
+  const sent = [];
+  const proto = { postMessage(m) { sent.push([this.name, m]); } };
+  const routed = [];
+  let take = true;
+  patchWorkerPostMessage(proto, { store: null, version: () => 'v', route: async (w, m) => { routed.push([w.name, m.id]); return take; } });
+  const cm = Object.assign(Object.create(proto), { name: 'cm' });
+  const fast = Object.assign(Object.create(proto), { name: 'fast', __duFastWorker: true });
+  const bytes = new Uint8Array(10);
+  cm.postMessage({ id: 1, bytes });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(routed, [['cm', 1]]);
+  assert.deepEqual(sent, []);
+  take = false;
+  cm.postMessage({ id: 2, bytes });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(sent.map(([w, m]) => [w, m.id]), [['cm', 2]]);
+  fast.postMessage({ id: 3, bytes });
+  assert.deepEqual(sent.map(([w, m]) => [w, m.id]), [['cm', 2], ['fast', 3]]);
+  cm.postMessage({ id: 4, bytes, format: 'docx' }); // not an open request
+  assert.equal(sent.length, 3);
 });
