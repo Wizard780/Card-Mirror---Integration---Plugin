@@ -51,6 +51,26 @@ For development you can instead use **Load plugin from file…** → `plugin/plu
 Both upload commands ask for the room code (pre-filled with the last one). Pasting the whole room URL works too.
 Uploads are never retried automatically. If a toast says to check the room, look before uploading again.
 
+## Watch a room for drops
+
+- **Watch SpeechDrop room…**: asks for the room code (pre-filled with the last one) and keeps watching it in the
+  background, even with no dialog open, until you stop it or quit CardMirror. A small **Watching room ab12** item in
+  CardMirror's status bar shows which room; it says "every 5 s" when the live connection isn't up and
+  "reconnecting…" if the helper restarts or the connection drops (it keeps retrying on its own). Click it to browse
+  the room. Running the command with another code switches rooms.
+- When someone uploads a file, a card in the bottom right says **Smith R2 1NC.docx dropped in room ab12** with an
+  **Open** button. Files already in the room when you started, and files you upload with this plugin, don't count.
+  Several files at once share one card (up to three listed, then "Browse room"). It never takes the keyboard from
+  your document and fades after 20 s (it stays while the mouse is on it).
+- **Open newest SpeechDrop drop**: opens the newest drop you haven't opened, even after the card faded. Give it a
+  shortcut in CardMirror's keyboard settings for a no-mouse path.
+- **Turn auto-open of SpeechDrop drops on or off** (off at first, remembered): new `.docx`/`.cmir` drops open by
+  themselves. With CardMirror's **Three-pane workspace** on (Settings → General → Workspace), CardMirror asks which
+  pane to open a file into; the plugin answers with the pane next to the one you're in (right of pane 1, otherwise
+  the one to its left). In a normal single-document window CardMirror opens it in a new window, and plugins can't
+  change that. Other file types (PDFs and so on) still get the card instead of opening.
+- **Stop watching SpeechDrop room**: stops and removes the status item.
+
 ## Tabroom
 
 - **Log in to Tabroom…**: email, then password (hidden). The helper trades them for a session token and keeps
