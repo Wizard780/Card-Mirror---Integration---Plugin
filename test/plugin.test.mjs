@@ -471,11 +471,24 @@ test('watch: our own upload to the watched room is not announced, whether the pu
     await spin();
     assert.equal(after.drops.length, 0);
     // A second file with the same name later is someone else's.
-    after.state.abc12 = W(3, [{ ...mine, index: 7 }, mine, B, A]);
+    after.state.abc12 = W(3, [{ ...mine, index: 7, ctime: 9 }, mine, B, A]);
     await spin();
     assert.deepEqual(drop(after), ['a.docx']);
   } finally {
     await cmd('sdUnwatch').run(after.api);
+  }
+});
+
+test('watch: a deleted file shifting the others to new slots is not news', async () => {
+  const h = watchHarness();
+  h.state.abc12 = W(1, [C, B, A]);
+  await cmd('sdWatch').run(h.api);
+  try {
+    h.state.abc12 = W(2, [{ ...C, index: 1 }, { ...B, index: 0 }]);
+    await spin();
+    assert.equal(h.drops.length, 0);
+  } finally {
+    await cmd('sdUnwatch').run(h.api);
   }
 });
 
@@ -586,15 +599,30 @@ test('DOM drop toast: one file reads "X dropped in room R · Open"; a burst list
     dom.button('Open').dispatch('click');
     dom.button('×').dispatch('click');
     assert.deepEqual(got, [['open', '3:Smith R2 1NC.docx'], ['x']]);
-    const five = [1, 2, 3, 4, 5].map((i) => ({ key: `${i}:f${i}.docx`, name: `f${i}.docx` }));
+    const five = [1, 2, 3, 4, 5].map((i) => ({ key: `f${i}.docx|${i}`, name: `f${i}.docx` }));
     domUI.dropToast(spec(five));
     assert.equal(toasts().length, 1, 'still one toast');
-    assert.deepEqual(dom.all(toast).filter((n) => n.dataset.key).map((n) => n.dataset.key), ['1:f1.docx', '2:f2.docx', '3:f3.docx']);
+    assert.deepEqual(dom.all(toast).filter((n) => n.dataset.key).map((n) => n.dataset.key), ['f1.docx|1', 'f2.docx|2', 'f3.docx|3']);
     assert.equal(text(toast.children[0]), '5 files dropped in room ab12×');
     dom.button('2 more · Browse room').dispatch('click');
     assert.deepEqual(got.at(-1), ['browse']);
     domUI.dropToast(null);
     assert.equal(toasts().length, 0);
+    // Removed while hovered (an Open click): the next toast still fades on its own.
+    const realSet = globalThis.setTimeout;
+    const timers = [];
+    globalThis.setTimeout = (fn, ms) => { timers.push(ms); return 0; };
+    try {
+      domUI.dropToast(spec(five.slice(0, 1)));
+      toasts()[0].dispatch('mouseenter');
+      domUI.dropToast(null);
+      timers.length = 0;
+      domUI.dropToast(spec(five.slice(1, 2)));
+      assert.deepEqual(timers, [20000]);
+      domUI.dropToast(null);
+    } finally {
+      globalThis.setTimeout = realSet;
+    }
   } finally {
     globalThis.document = saved;
   }

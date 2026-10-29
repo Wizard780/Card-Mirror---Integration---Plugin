@@ -1818,9 +1818,10 @@ textarea.du-cmp-text{resize:none;min-height:0}
     dropToast(spec) {
       const t = dropUI;
       clearTimeout(t.timer);
-      if (!spec || !spec.files.length) { if (t.node) t.node.remove(); t.node = null; return; }
+      if (!spec || !spec.files.length) { if (t.node) t.node.remove(); t.node = null; t.hover = false; return; }
       ensureStyle();
       if (!t.node || !t.node.parentNode) {
+        t.hover = false; // a node removed under the pointer never got its mouseleave
         t.node = el('div', { class: `du-drop${look}`, data: { du: 'drop' }, attrs: { role: 'status', 'aria-live': 'polite' } });
         t.node.addEventListener('mouseenter', () => { t.hover = true; clearTimeout(t.timer); });
         t.node.addEventListener('mouseleave', () => { t.hover = false; t.arm(); });
@@ -1884,7 +1885,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
       };
       const mo = new MutationObserver(tryPick);
       mo.observe(document.body, { childList: true });
-      const timer = setTimeout(() => stop(), 30000);
+      const timer = setTimeout(() => stop(), 120000); // cut short once the open job ends
       function stop() { mo.disconnect(); clearTimeout(timer); }
       tryPick();
       return stop;
@@ -2961,7 +2962,8 @@ textarea.du-cmp-text{resize:none;min-height:0}
   // room when watching started and isn't our own upload. New files get one toast;
   // with auto-open on, new docs open beside the current one instead.
   const DOC_RE = /\.(docx|cmir)$/i;
-  const fileKey = (f) => `${f.index}:${f.name}`;
+  // Name + upload time: a slot index could be reused if SpeechDrop ever compacted its list.
+  const fileKey = (f) => `${f.name}|${f.ctime ?? `#${f.index}`}`;
   // pending: in the toast now; recent: announced and not opened yet, for the Open-newest command.
   const watch = { api: null, room: '', gen: 0, state: '', seen: new Set(), pending: [], recent: [], held: [] };
   // Our own uploads: count in flight per room, then names to skip once seen.
@@ -3022,7 +3024,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
     }
     for (const f of auto) {
       const gen = watch.gen;
-      openQueue = openQueue.then(() => (watch.gen === gen ? openFile(api, room, f, true) : null));
+      openQueue = openQueue.then(() => (watch.gen === gen ? openFile(api, room, f, true) : null)).catch(() => {});
     }
   }
 
@@ -3033,9 +3035,10 @@ textarea.du-cmp-text{resize:none;min-height:0}
     try {
       const r = await runJob(api, '/speechdrop/open', { room, index: f.index, name: f.name }, u.sleep);
       api.showToast(openedToast(r));
-      if (beside) { const t = setTimeout(stop, 5000); if (t && t.unref) t.unref(); } // "Open into…" can trail the helper's answer
+      if (beside) { const t = setTimeout(stop, 10000); if (t && t.unref) t.unref(); } // "Open into…" can trail the helper's answer
     } catch (err) {
       stop();
+      if (beside && watch.room === room) watch.recent = [f, ...watch.recent]; // "Open newest" can retry it
       api.showToast(message(err.message, { browse: true, room, name: f.name }));
     }
   }
