@@ -198,37 +198,152 @@
   }
 
   // ---------------------------------------------------------------- Focus blur
-  // After Monocle (trymonocle.app), which blurs every window but the one you're in.
-  // Here: with two or three docs side by side, the panes you're not in soften behind a
-  // frosted, grainy layer, and plugin and CardMirror dialogs blur what's behind them
-  // instead of only dimming it. Pointing at a soft pane clears it after a beat, so a
-  // reference doc beside your speech stays readable. Numbers from Monocle's own demo
-  // (site.css): 12.5px blur, 1.2 saturation, faint grain, a .75s ease out
-  // and a .45s return. Ambient is the lighter half; Deep is Monocle's default look.
+  // After Monocle (trymonocle.app): plugin and CardMirror dialogs blur what's behind
+  // them instead of only dimming it. Docs side by side are never blurred, only what
+  // sits under a dialog. Numbers from Monocle's own demo (site.css): 12.5px blur,
+  // 1.2 saturation, faint grain. Ambient is the lighter half; Deep is Monocle's look.
+  // The frost fades in with its dialog (MOTION_CSS): animating the blur radius itself
+  // repaints the whole window every frame, fading its opacity is composited.
   const FOCUS_MODES = ['Off', 'Ambient', 'Deep'];
-  const GRAIN = `url("data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192"><filter id="n"><feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="2" stitchTiles="stitch"/><feColorMatrix values="0 0 0 0 .5 0 0 0 0 .5 0 0 0 0 .5 0 0 0 .2 0"/></filter><rect width="100%" height="100%" filter="url(#n)"/></svg>')}") 0 0/192px`;
-  const CM_OVERLAYS = '.pmd-route-overlay,.pmd-bulk-overlay,.pmd-settings-overlay,.pmd-save-as-overlay,.pmd-select-speech-overlay,.pmd-reference-overlay,.pmd-qc-add-overlay,.pmd-learn-manage-overlay,.pmd-learn-session-overlay';
+  const GRAIN = `url("data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192"><filter id="n"><feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="2" stitchTiles="stitch"/><feColorMatrix values="0 0 0 0 .5 0 0 0 0 .5 0 0 0 0 .5 0 0 0 .2 0"/></filter><rect width="100%" height="100%" filter="url(#n)"/></svg>')}")`;
+  const CM_OVERLAYS = '.pmd-route-overlay,.pmd-bulk-overlay,.pmd-settings-overlay,.pmd-save-as-overlay,.pmd-select-speech-overlay,.pmd-reference-overlay,.pmd-qc-add-overlay,.pmd-learn-manage-overlay,.pmd-learn-session-overlay,.pmd-confirm-backdrop,.pmd-prompt-overlay,.pmd-clod-overlay,.pmd-bench-overlay';
   const FOCUS_CSS = `
 :root.du-focus-ambient{--du-fb:3.5px;--du-fs:1.1;--du-fd:1}
 :root.du-focus-deep{--du-fb:12.5px;--du-fs:1.2;--du-fd:.96}
 :root.du-focus-deep[data-theme="dark"],:root.du-focus-deep.du-app-liquid{--du-fd:.82}
-:root:is(.du-focus-ambient,.du-focus-deep) .pmd-pane::after{content:"";position:absolute;inset:0;z-index:3;pointer-events:none;opacity:0;
-  backdrop-filter:blur(var(--du-fb)) saturate(var(--du-fs)) brightness(var(--du-fd));background:${GRAIN};
-  transition:opacity .45s cubic-bezier(.22,.61,.36,1)}
-:root:is(.du-focus-ambient,.du-focus-deep) .pmd-pane :is(.pmd-pane-chip,.pmd-pane-footer){position:relative;z-index:4}
-:root:is(.du-focus-ambient,.du-focus-deep) .pmd-multi-row:not([data-active="1"]):has(.pmd-pane-focused) .pmd-pane:not(.pmd-pane-focused)::after{opacity:1;transition-duration:.75s}
-:root:is(.du-focus-ambient,.du-focus-deep) .pmd-multi-row:not([data-active="1"]) .pmd-pane:not(.pmd-pane-focused):hover::after{opacity:0;transition-duration:.32s;transition-delay:.15s}
 html:root:is(.du-focus-ambient,.du-focus-deep) :is(.du-scrim,${CM_OVERLAYS}){background-color:color-mix(in srgb,var(--pmd-c-overlay,rgba(0,0,0,.4)) 45%,transparent);
-  background-image:${GRAIN.replace(' 0 0/192px', '')};background-size:192px;
-  backdrop-filter:blur(var(--du-fb)) saturate(var(--du-fs)) brightness(var(--du-fd));animation:du-frost .4s cubic-bezier(.22,.61,.36,1)}
-@keyframes du-frost{from{backdrop-filter:blur(0) saturate(1) brightness(1);background-color:transparent}}
-@media (prefers-reduced-motion:reduce){:root .pmd-pane::after{transition:none!important}html:root :is(.du-scrim,${CM_OVERLAYS}){animation:none!important}}`;
+  background-image:${GRAIN};background-size:192px;backdrop-filter:blur(var(--du-fb)) saturate(var(--du-fs)) brightness(var(--du-fd))}`;
+
+  // ---------------------------------------------------------------- Motion
+  // CardMirror's dialogs and menus appear in one frame; here they ease in. Individual
+  // translate/scale compose with a dialog's own centering transform instead of
+  // replacing it. The doc switcher (⌃Tab) stays instant on purpose, like the OS one.
+  const EASE_OUT = 'cubic-bezier(.16,1,.3,1)';
+  const CM_DIALOGS = '.pmd-confirm,.pmd-settings-dialog,.pmd-prompt-dialog,.pmd-clod-dialog,.pmd-save-as-dialog,.pmd-qc-add-dialog,.pmd-qcs,.pmd-bulk-dialog,.pmd-reference-dialog,.pmd-select-speech-dialog,.pmd-list-pick-dialog,.pmd-route-dialog,.pmd-learn-session,.pmd-learn-manage';
+  const CM_POPS = '.pmd-nav-context-menu,.pmd-doc-menu,.pmd-pane-chip-dropdown,.pmd-font-size-picker,.pmd-color-picker,.pmd-voice-menu,.pmd-send-recent-flyout,.pmd-qctags-popover,.pmd-find-bar';
+  const MOTION_CSS = `
+html:root :is(.du-scrim,${CM_OVERLAYS}){animation:du-fade .26s ${EASE_OUT}}
+html:root :is(${CM_DIALOGS}){animation:du-rise .34s ${EASE_OUT}}
+html:root :is(${CM_POPS}){animation:du-pop .2s ${EASE_OUT}}
+html:root .du-scrim.du-leaving{animation:du-fade-out .18s ease-in forwards;pointer-events:none}
+html:root .du-leaving .du-dialog{animation:du-sink .18s ease-in forwards}
+@keyframes du-fade{from{opacity:0}}
+@keyframes du-rise{from{opacity:0;translate:0 10px;scale:.97}}
+@keyframes du-pop{from{opacity:0;translate:0 -4px;scale:.98}}
+@keyframes du-fade-out{to{opacity:0}}
+@keyframes du-sink{to{opacity:0;translate:0 6px;scale:.98}}
+@media (prefers-reduced-motion:reduce){html:root :is(.du-scrim,.du-dialog,${CM_OVERLAYS},${CM_DIALOGS},${CM_POPS}){animation:none!important}}
+html:root[data-motion="reduce"] :is(.du-scrim,.du-dialog,${CM_OVERLAYS},${CM_DIALOGS},${CM_POPS}){animation:none!important}`;
+  const reducedMotion = () => (typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches) || document.documentElement?.dataset.motion === 'reduce';
+
+  // Heading jumps glide. CardMirror lands a jump in one frame, then for a few frames
+  // reads where the heading is drawn and nudges the scroll while lazily laid-out cards
+  // settle. So the scroll still lands exactly where CardMirror puts it, and only the
+  // picture moves: the doc is drawn back where it was and slides home (a transform, so
+  // nothing reflows). The transform is lifted at the top of every frame, before
+  // CardMirror's read, and put back after layout, just before paint (a ResizeObserver
+  // callback runs there); otherwise CardMirror chases it and eats the slide. Chromium
+  // also stops scroll anchoring while an ancestor's transform changes, so cards that lay
+  // themselves out as the slide reveals them (content-visibility) would shove the page a
+  // screen for a frame; the glide does the anchoring itself, at both of those points.
+  // A long jump starts at most half a screen out. Any wheel, click or key ends it.
+  const GLIDE_MS = 380;
+  let glide = null;
+  const editorScrollers = () => [...document.querySelectorAll('#app, .pmd-pane-body')];
+  function stopGlide() {
+    if (!glide) return 0;
+    cancelAnimationFrame(glide.raf);
+    glide.ro.disconnect();
+    glide.dom.style.transform = '';
+    glide.dom.style.willChange = '';
+    const left = glide.offset;
+    glide = null;
+    return left;
+  }
+  // What the jump scrolled to (CardMirror and the plugin both call scrollIntoView on it).
+  let jumpTarget = null;
+  function watchJumpTargets() {
+    const proto = typeof Element === 'function' && Element.prototype;
+    if (!proto || !proto.scrollIntoView || proto.scrollIntoView.__du) return;
+    const native = proto.scrollIntoView;
+    proto.scrollIntoView = Object.assign(function (...args) { jumpTarget = this; return native.apply(this, args); }, { __du: true });
+  }
+  // Call before the jump; the returned function, run in the next animation frame, starts
+  // the glide. That frame callback must be queued before CardMirror's (it is: ours is
+  // queued as the input arrives, CardMirror's as it handles it) so ours stays first.
+  function armGlide() {
+    const before = new Map(editorScrollers().map((s) => [s, s.scrollTop]));
+    jumpTarget = null;
+    return () => {
+      const carried = stopGlide(); // a jump mid-glide starts from where the doc is drawn
+      if (reducedMotion()) return;
+      let hit = null;
+      for (const [s, top] of before) {
+        const d = s.scrollTop - top + carried;
+        if (s.isConnected && Math.abs(d) > 24 && (!hit || Math.abs(d) > Math.abs(hit.d))) hit = { s, d };
+      }
+      const dom = hit && hit.s.querySelector('.ProseMirror');
+      if (!dom || typeof ResizeObserver !== 'function') return;
+      const from = Math.sign(hit.d) * Math.min(Math.abs(hit.d), hit.s.clientHeight / 2);
+      const s = hit.s;
+      const docTop = (n) => n.getBoundingClientRect().top - s.getBoundingClientRect().top + s.scrollTop;
+      const anchor = jumpTarget && dom.contains(jumpTarget) ? jumpTarget : null; // the heading jumped to
+      let anchorAt = anchor ? docTop(anchor) : 0;
+      const hold = () => { // the anchor moved in the page, so move the view with it
+        if (!anchor || !anchor.isConnected) return;
+        const now = docTop(anchor);
+        if (Math.abs(now - anchorAt) >= 1) s.scrollTop += now - anchorAt;
+        anchorAt = now;
+      };
+      const t0 = performance.now();
+      const g = { dom, offset: from, raf: 0 };
+      g.ro = new ResizeObserver(() => {
+        g.ro.disconnect();
+        if (glide !== g) return;
+        hold();
+        dom.style.transform = `translateY(${g.offset}px)`;
+      });
+      const frame = (now) => {
+        dom.style.transform = '';
+        hold();
+        const t = Math.min(1, (now - t0) / GLIDE_MS);
+        if (t >= 1) return void stopGlide();
+        g.offset = from * (1 - t) ** 4; // quartic ease out
+        g.raf = requestAnimationFrame(frame);
+        g.ro.observe(dom); // a fresh observation reports once, after this frame's layout
+      };
+      dom.style.willChange = 'transform';
+      glide = g;
+      frame(t0);
+    };
+  }
+  // A jump of the plugin's own: glides when it can, and a glide that can't start never stops the jump.
+  function glideAround(jump) {
+    let go = null;
+    try { go = armGlide(); } catch { /* jumps without the glide */ }
+    jump();
+    if (go && typeof requestAnimationFrame === 'function') requestAnimationFrame(go);
+  }
+  // CardMirror's outline jumps: a click on a row, or Enter / ↑↓ in its search box.
+  // The jump runs synchronously inside CardMirror's handler, so the glide starts on
+  // the next frame, before it is painted.
+  let navPress = false; // pressed on an outline row; the jump comes on release
+  function onGlideInput(e) {
+    const t = e.target && e.target.closest ? e.target : null;
+    if (e.type === 'pointerdown') navPress = !!(t && t.closest('.pmd-nav-list li'));
+    const jump = e.type === 'pointerup' ? navPress
+      : e.type === 'keydown' && /^(Enter|ArrowUp|ArrowDown)$/.test(e.key) && !!(t && t.closest('.pmd-nav-search-input'));
+    if (e.type === 'pointerup') navPress = false;
+    if (jump) { requestAnimationFrame(armGlide()); return; }
+    if (e.type !== 'pointerup' && !navPress) stopGlide();
+  }
+
   let focusMode = null;
   function applyFocusBlur(raw) {
     const mode = FOCUS_MODES.includes(raw) ? raw : 'Ambient';
     if (mode === focusMode || typeof document === 'undefined' || !document.documentElement) return;
     focusMode = mode;
-    if (!document.getElementById('du-focus-style')) (document.head || document.body).append(el('style', { id: 'du-focus-style', textContent: FOCUS_CSS }));
+    if (!document.getElementById('du-focus-style')) (document.head || document.body).append(el('style', { id: 'du-focus-style', textContent: FOCUS_CSS + MOTION_CSS }));
     const root = document.documentElement.classList;
     root.toggle('du-focus-ambient', mode === 'Ambient');
     root.toggle('du-focus-deep', mode === 'Deep');
@@ -584,8 +699,8 @@ html:root:is(.du-focus-ambient,.du-focus-deep) :is(.du-scrim,${CM_OVERLAYS}){bac
 .du-dialog{box-sizing:border-box;width:min(var(--du-w,520px),100%);max-height:80vh;display:flex;flex-direction:column;
   background:var(--pmd-c-bg);color:var(--pmd-c-text);border:1px solid var(--pmd-c-border-soft);border-radius:10px;
   box-shadow:0 18px 50px var(--pmd-c-shadow-deep,rgba(0,0,0,.28));overflow:hidden;outline:none;
-  animation:du-in .18s cubic-bezier(.25,1,.5,1)}
-@keyframes du-in{from{opacity:0;transform:translateY(6px)}}
+  animation:du-in .34s cubic-bezier(.16,1,.3,1)}
+@keyframes du-in{from{opacity:0;transform:translateY(10px) scale(.97)}}
 @media (prefers-reduced-motion:reduce){.du-dialog{animation:none}}
 .du-dialog *{box-sizing:border-box}
 .du-head{padding:16px 20px 10px}
@@ -765,8 +880,8 @@ textarea.du-cmp-text{resize:none;min-height:0}
   --du-muted:color-mix(in srgb,var(--pmd-c-text) 56%,var(--pmd-c-bg));-webkit-font-smoothing:antialiased}
 .du-scrim.du-sleek{background:color-mix(in srgb,var(--pmd-c-overlay,rgba(0,0,0,.4)) 75%,transparent);backdrop-filter:blur(6px) saturate(1.05)}
 .du-sleek .du-dialog{border-radius:14px;border:1px solid var(--du-line);font-size:13px;
-  box-shadow:0 28px 70px -16px rgba(0,0,0,.42),0 10px 24px -10px rgba(0,0,0,.22);animation:du-in-sleek .16s cubic-bezier(.2,.9,.3,1)}
-@keyframes du-in-sleek{from{opacity:0;transform:translateY(4px) scale(.985)}}
+  box-shadow:0 28px 70px -16px rgba(0,0,0,.42),0 10px 24px -10px rgba(0,0,0,.22);animation:du-in-sleek .34s cubic-bezier(.16,1,.3,1)}
+@keyframes du-in-sleek{from{opacity:0;transform:translateY(8px) scale(.975)}}
 @media (prefers-reduced-motion:reduce){.du-sleek .du-dialog{animation:none}}
 .du-sleek .du-head{padding:14px 16px 8px}
 .du-sleek .du-title{font-size:14px;font-weight:600;letter-spacing:-.01em}
@@ -827,7 +942,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
   --du-soft:rgba(255,255,255,.04);--du-soft-2:rgba(122,162,247,.10);--du-muted:#7090a8;--du-ease:cubic-bezier(.16,1,.3,1);color-scheme:dark}
 .du-scrim.du-liquid{background:rgba(4,6,12,.38);backdrop-filter:blur(6px) saturate(120%)}
 .du-liquid .du-dialog{position:relative;color:var(--pmd-c-text);background:rgba(8,12,18,.72);backdrop-filter:blur(48px) saturate(180%);
-  border:1px solid rgba(255,255,255,.08);border-radius:16px;animation:du-in-liquid .25s var(--du-ease);
+  border:1px solid rgba(255,255,255,.08);border-radius:16px;animation:du-in-liquid .36s var(--du-ease);
   box-shadow:0 8px 40px rgba(0,0,0,.65),0 2px 8px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.18),0 0 30px rgba(122,162,247,.08)}
 .du-liquid .du-dialog::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;pointer-events:none;z-index:1;
   background:linear-gradient(90deg,transparent,rgba(255,255,255,.18) 30%,rgba(255,255,255,.25) 50%,rgba(255,255,255,.18) 70%,transparent)}
@@ -944,7 +1059,12 @@ textarea.du-cmp-text{resize:none;min-height:0}
     return {
       dialog, head, body, foot, scrim,
       onDismiss: (fn) => { onDismiss = fn; },
-      close: () => { scrim.remove(); if (prev && prev.focus) prev.focus(); },
+      close: () => {
+        if (prev && prev.focus) prev.focus();
+        if (!scrim.classList || reducedMotion()) return scrim.remove();
+        scrim.classList.add('du-leaving'); // fades out, then goes
+        setTimeout(() => scrim.remove(), 180);
+      },
     };
   }
 
@@ -3930,9 +4050,11 @@ textarea.du-cmp-text{resize:none;min-height:0}
     if (!c) return api.showToast(`Couldn't find "${short(tag)}" any more.`);
     try {
       const Sel = view.state.selection.constructor;
-      if (Sel && Sel.near) view.dispatch(view.state.tr.setSelection(Sel.near(view.state.doc.resolve(Math.min(c.from + 2, view.state.doc.content.size)))).scrollIntoView());
-      const dom = view.nodeDOM && view.nodeDOM(c.from);
-      if (dom && dom.scrollIntoView) dom.scrollIntoView({ block: 'center' });
+      glideAround(() => {
+        if (Sel && Sel.near) view.dispatch(view.state.tr.setSelection(Sel.near(view.state.doc.resolve(Math.min(c.from + 2, view.state.doc.content.size)))).scrollIntoView());
+        const dom = view.nodeDOM && view.nodeDOM(c.from);
+        if (dom && dom.scrollIntoView) dom.scrollIntoView({ block: 'center' });
+      });
       if (view.focus) view.focus();
     } catch {
       api.showToast(`Couldn't jump to "${short(tag)}".`);
@@ -4179,9 +4301,11 @@ textarea.du-cmp-text{resize:none;min-height:0}
     if (!at) return api.showToast(`Couldn't find "${short(h.text)}" any more.`);
     try {
       const Sel = view.state.selection.constructor;
-      if (Sel && Sel.near) view.dispatch(view.state.tr.setSelection(Sel.near(view.state.doc.resolve(Math.min(at.pos + 1, view.state.doc.content.size)))).scrollIntoView());
-      const dom = view.nodeDOM && view.nodeDOM(at.pos);
-      if (dom && dom.scrollIntoView) dom.scrollIntoView({ block: 'start' });
+      glideAround(() => {
+        if (Sel && Sel.near) view.dispatch(view.state.tr.setSelection(Sel.near(view.state.doc.resolve(Math.min(at.pos + 1, view.state.doc.content.size)))).scrollIntoView());
+        const dom = view.nodeDOM && view.nodeDOM(at.pos);
+        if (dom && dom.scrollIntoView) dom.scrollIntoView({ block: 'start' });
+      });
       if (view.focus) view.focus();
     } catch {
       api.showToast(`Couldn't jump to "${short(h.text)}".`);
@@ -4377,7 +4501,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
     if (!isSwitcherKey(e) || !switcherKeyOn() || inHostField(e.target)) return;
     e.preventDefault();
     e.stopPropagation(); // CardMirror's own ⌘P never sees it
-    if (e.repeat || switcherBusy || document.querySelector('.du-scrim')) return; // a plugin dialog is already up
+    if (e.repeat || switcherBusy || document.querySelector('.du-scrim:not(.du-leaving)')) return; // a plugin dialog is already up
     if (!lastApi) {
       // No command has run this launch: press the command's own ⌘⇧P, which CardMirror runs with the api.
       if (typeof KeyboardEvent === 'function') window.dispatchEvent(new KeyboardEvent('keydown', { key: 'P', code: 'KeyP', shiftKey: true, metaKey: isMac(), ctrlKey: !isMac(), bubbles: true, cancelable: true }));
@@ -4628,6 +4752,11 @@ textarea.du-cmp-text{resize:none;min-height:0}
     if (window.__duSwitcherKey) window.removeEventListener('keydown', window.__duSwitcherKey, true);
     window.__duSwitcherKey = onSwitcherKey;
     window.addEventListener('keydown', onSwitcherKey, true);
+    const glideEvents = ['pointerdown', 'pointerup', 'keydown', 'wheel'];
+    if (window.__duGlideInput) for (const t of glideEvents) window.removeEventListener(t, window.__duGlideInput, true);
+    window.__duGlideInput = onGlideInput;
+    for (const t of glideEvents) window.addEventListener(t, onGlideInput, { capture: true, passive: true });
+    watchJumpTargets();
   }
   if (window.__debateUploaderTest) window.__debateUploaderSwitcher = { headingsIn, switcherScore, switcherItems, isSwitcherKey, onSwitcherKey, panes };
   if (window.__debateUploaderTest) window.__debateUploaderWatch = { pickerFor, besideSlot, domUI };
@@ -4665,7 +4794,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
         type: 'select',
         options: FOCUS_MODES,
         default: 'Ambient',
-        description: "After Monocle: with docs side by side, the panes you're not in soften behind frosted glass (point at one to clear it), and dialogs blur what's behind them. Ambient is light, Deep is strong.",
+        description: "After Monocle: dialogs blur what's behind them instead of only dimming it. Docs side by side are never blurred. Ambient is light, Deep is strong.",
       },
       {
         key: 'fastOpen',

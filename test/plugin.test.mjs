@@ -2473,7 +2473,8 @@ test('quick switcher: ⌘P opens it and CardMirror never sees the key; not again
   await cmd('quickSwitcher').run(h.api); // CardMirror has handed over the api
   const saved = globalThis.document;
   let scrim = false;
-  globalThis.document = { querySelector: (sel) => (sel === '.du-scrim' && scrim ? {} : null) };
+  // scrim: false, 'open', or 'leaving' (a closed dialog still fading out)
+  globalThis.document = { querySelector: (sel) => (sel.startsWith('.du-scrim') && (scrim === 'open' || (scrim === 'leaving' && !sel.includes(':not(.du-leaving)'))) ? {} : null) };
   const mac = /mac/i.test(globalThis.navigator?.platform || '');
   const press = (o = {}) => ({ key: 'p', code: 'KeyP', metaKey: mac, ctrlKey: !mac, prevented: 0, stopped: 0,
     preventDefault() { this.prevented++; }, stopPropagation() { this.stopped++; }, ...o });
@@ -2484,11 +2485,16 @@ test('quick switcher: ⌘P opens it and CardMirror never sees the key; not again
     await tick();
     assert.equal(h.searches.length, 2);
     assert.deepEqual([ev.prevented, ev.stopped], [1, 1]);
-    scrim = true;
+    scrim = 'open';
     const again = press();
     SW().onSwitcherKey(again);
     await tick();
     assert.equal(h.searches.length, 2, 'a second ⌘P over a dialog opens nothing');
+    scrim = 'leaving';
+    SW().onSwitcherKey(press());
+    await tick();
+    assert.equal(h.searches.length, 3, 'a dialog fading out does not hold ⌘P');
+    scrim = 'open';
     assert.equal(again.prevented, 1, 'and still never reaches CardMirror');
     const other = press({ key: 's', code: 'KeyS' });
     SW().onSwitcherKey(other);
@@ -2500,7 +2506,7 @@ test('quick switcher: ⌘P opens it and CardMirror never sees the key; not again
     const modal = press({ target: { tagName: 'DIV', closest: (sel) => (sel.includes('dialog') ? {} : null) } });
     SW().onSwitcherKey(modal);
     await tick();
-    assert.deepEqual([inField.prevented, modal.prevented, h.searches.length], [0, 0, 2], "CardMirror's own fields and dialogs keep ⌘P");
+    assert.deepEqual([inField.prevented, modal.prevented, h.searches.length], [0, 0, 3], "CardMirror's own fields and dialogs keep ⌘P");
     // Two quick presses before the dialog is up open one switcher.
     let release;
     window.__debateUploaderUI.editorView = () => new Promise((r) => { release = r; });
@@ -2509,7 +2515,7 @@ test('quick switcher: ⌘P opens it and CardMirror never sees the key; not again
     SW().onSwitcherKey(press());
     release(null);
     await tick();
-    assert.equal(h.searches.length, 3, 'one switcher for two quick presses');
+    assert.equal(h.searches.length, 4, 'one switcher for two quick presses');
   } finally {
     globalThis.document = saved;
   }
