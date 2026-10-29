@@ -183,15 +183,55 @@
     lastApi = api;
     const get = (k) => { try { return api.settings && api.settings.get(k); } catch { return undefined; } };
     applyTheme(get('theme'), get('themeWholeApp'));
+    applyFocusBlur(get('focusBlur'));
     if (lookWatched || !api.settings || typeof api.settings.onChanged !== 'function') return;
     lookWatched = true;
     api.settings.onChanged((key) => { if (key === 'theme' || key === 'themeWholeApp') applyTheme(get('theme'), get('themeWholeApp')); });
+    api.settings.onChanged((key) => { if (key === 'focusBlur') applyFocusBlur(get('focusBlur')); });
   }
   function storedTheme() {
     try {
       const s = JSON.parse(localStorage.getItem(`plugin:${ID}`) || '{}').__settings || {};
       applyTheme(s.theme, s.themeWholeApp);
+      applyFocusBlur(s.focusBlur);
     } catch { /* storage unreadable: themes apply when a command runs */ }
+  }
+
+  // ---------------------------------------------------------------- Focus blur
+  // After Monocle (trymonocle.app), which blurs every window but the one you're in.
+  // Here: with two or three docs side by side, the panes you're not in soften behind a
+  // frosted, grainy layer, and plugin and CardMirror dialogs blur what's behind them
+  // instead of only dimming it. Pointing at a soft pane clears it after a beat, so a
+  // reference doc beside your speech stays readable. Numbers from Monocle's own demo
+  // (site.css): 12.5px blur, 1.2 saturation, faint grain, a .75s ease out
+  // and a .45s return. Ambient is the lighter half; Deep is Monocle's default look.
+  const FOCUS_MODES = ['Off', 'Ambient', 'Deep'];
+  const GRAIN = `url("data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192"><filter id="n"><feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="2" stitchTiles="stitch"/><feColorMatrix values="0 0 0 0 .5 0 0 0 0 .5 0 0 0 0 .5 0 0 0 .2 0"/></filter><rect width="100%" height="100%" filter="url(#n)"/></svg>')}") 0 0/192px`;
+  const CM_OVERLAYS = '.pmd-route-overlay,.pmd-bulk-overlay,.pmd-settings-overlay,.pmd-save-as-overlay,.pmd-select-speech-overlay,.pmd-reference-overlay,.pmd-qc-add-overlay,.pmd-learn-manage-overlay,.pmd-learn-session-overlay';
+  const FOCUS_CSS = `
+:root.du-focus-ambient{--du-fb:3.5px;--du-fs:1.1;--du-fd:1}
+:root.du-focus-deep{--du-fb:12.5px;--du-fs:1.2;--du-fd:.96}
+:root.du-focus-deep[data-theme="dark"],:root.du-focus-deep.du-app-liquid{--du-fd:.82}
+:root:is(.du-focus-ambient,.du-focus-deep) .pmd-pane::after{content:"";position:absolute;inset:0;z-index:3;pointer-events:none;opacity:0;
+  backdrop-filter:blur(var(--du-fb)) saturate(var(--du-fs)) brightness(var(--du-fd));background:${GRAIN};
+  transition:opacity .45s cubic-bezier(.22,.61,.36,1)}
+:root:is(.du-focus-ambient,.du-focus-deep) .pmd-pane :is(.pmd-pane-chip,.pmd-pane-footer){position:relative;z-index:4}
+:root:is(.du-focus-ambient,.du-focus-deep) .pmd-multi-row:not([data-active="1"]):has(.pmd-pane-focused) .pmd-pane:not(.pmd-pane-focused)::after{opacity:1;transition-duration:.75s}
+:root:is(.du-focus-ambient,.du-focus-deep) .pmd-multi-row:not([data-active="1"]) .pmd-pane:not(.pmd-pane-focused):hover::after{opacity:0;transition-duration:.32s;transition-delay:.15s}
+html:root:is(.du-focus-ambient,.du-focus-deep) :is(.du-scrim,${CM_OVERLAYS}){background-color:color-mix(in srgb,var(--pmd-c-overlay,rgba(0,0,0,.4)) 45%,transparent);
+  background-image:${GRAIN.replace(' 0 0/192px', '')};background-size:192px;
+  backdrop-filter:blur(var(--du-fb)) saturate(var(--du-fs)) brightness(var(--du-fd));animation:du-frost .4s cubic-bezier(.22,.61,.36,1)}
+@keyframes du-frost{from{backdrop-filter:blur(0) saturate(1) brightness(1);background-color:transparent}}
+@media (prefers-reduced-motion:reduce){:root .pmd-pane::after{transition:none!important}html:root :is(.du-scrim,${CM_OVERLAYS}){animation:none!important}}`;
+  let focusMode = null;
+  function applyFocusBlur(raw) {
+    const mode = FOCUS_MODES.includes(raw) ? raw : 'Ambient';
+    if (mode === focusMode || typeof document === 'undefined' || !document.documentElement) return;
+    focusMode = mode;
+    if (!document.getElementById('du-focus-style')) (document.head || document.body).append(el('style', { id: 'du-focus-style', textContent: FOCUS_CSS }));
+    const root = document.documentElement.classList;
+    root.toggle('du-focus-ambient', mode === 'Ambient');
+    root.toggle('du-focus-deep', mode === 'Deep');
   }
 
   // ---------------------------------------------------------------- Whole-app theme
@@ -1984,7 +2024,9 @@ textarea.du-cmp-text{resize:none;min-height:0}
       const all = doms();
       if (!all.length) return null;
       patch(all[0]);
-      const dom = (lastFocused && lastFocused.isConnected && lastFocused.pmViewDesc && lastFocused) || all.find((n) => n.offsetParent !== null) || all[0];
+      // Then the multi-doc workspace's focused slot, then any editor on screen.
+      const slot = document.querySelector ? document.querySelector('.pmd-pane-focused .pmd-pane-body .ProseMirror') : null;
+      const dom = (lastFocused && lastFocused.isConnected && lastFocused.pmViewDesc && lastFocused) || (slot && slot.pmViewDesc && slot) || all.find((n) => n.offsetParent !== null) || all[0];
       const ok = (v) => (v && v.docView && v.dom === dom ? v : null);
       if (ok(views.get(dom))) return views.get(dom);
       const sel = window.getSelection();
@@ -4056,16 +4098,16 @@ textarea.du-cmp-text{resize:none;min-height:0}
   }
 
   // ---------------------------------------------------------------- Quick switcher
-  // One box over favorites, CardMirror's recents, Search my files and the open doc's
-  // headings. ⌘P (Ctrl+P elsewhere) belongs to CardMirror's "Insert Received Card (At
-  // Cursor)", and a plugin's default key never beats a built-in one, so the plugin
-  // takes ⌘P itself in the capture phase (setting "quickSwitcherKey", on by default).
-  // Its own default key ⌘⇧P is free, and is how a ⌘P before any plugin command has run
-  // gets CardMirror to hand over the api.
+  // One box over the docs already open in this window and their headings: it only
+  // switches, it never opens a file. ⌘P (Ctrl+P elsewhere) belongs to CardMirror's
+  // "Insert Received Card (At Cursor)", and a plugin's default key never beats a built-in
+  // one, so the plugin takes ⌘P itself in the capture phase (setting "quickSwitcherKey",
+  // on by default). Its own default key ⌘⇧P is free, and is how a ⌘P before any plugin
+  // command has run gets CardMirror to hand over the api.
   const SWITCHER_LIMIT = 50;
   const HEADING_KINDS = { pocket: 'Pocket', hat: 'Hat', block: 'Block', tag: 'Tag' };
-  // Ties go to the doc's outline, then another file's block, favorites, recents, card tags, file cards.
-  const rankOf = (it) => (it.heading ? (it.heading.name === 'tag' ? 4 : 0) : it.card ? (it.kind === 'Heading' ? 1 : 5) : it.kind === 'Favorite' ? 2 : 3);
+  // Ties go to this doc's outline, a doc itself, another doc's outline, this doc's card tags, then another's.
+  const rankOf = (it) => (it.heading ? (it.heading.name === 'tag' ? 3 : 0) + (it.doc.current ? 0 : 2) : 1);
   const isMac = () => typeof navigator !== 'undefined' && /mac/i.test(navigator.platform || '');
   const baseName = (s) => String(s || '').replace(/\.(cmir|docx)$/i, '');
 
@@ -4103,56 +4145,35 @@ textarea.du-cmp-text{resize:none;min-height:0}
     return score + (flat(label).includes(flat(query)) ? 4 : 0);
   }
 
-  // Search my files hits. Hits found by their block's name (not their tag) fold into one
-  // "Heading" row per file and block, so a block in another file shows once, not per card.
-  function evidenceRows(query, results, openDoc) {
-    const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-    const all = (text) => words.every((w) => text.toLowerCase().includes(w));
-    const blocks = new Map();
-    const rows = [];
-    for (const c of results) {
-      if (openDoc && baseName(c.file) === openDoc) continue; // the open doc's own headings cover it
-      const block = c.headings[c.headings.length - 1] || '';
-      if (block && all(block) && !all(c.tag)) {
-        const key = `${c.path}\n${block}`;
-        const g = blocks.get(key);
-        if (g) { g.n++; if (c.ordinal < g.card.ordinal) g.card = c; continue; }
-        const row = { kind: 'Heading', key: `block:${key}`, card: c, n: 1, label: block, file: c.file, context: [c.file, ...c.headings.slice(0, -1)] };
-        blocks.set(key, row);
-        rows.push(row);
-      } else {
-        rows.push({ kind: 'File card', key: `card:${c.path}#${c.ordinal}`, card: c, label: c.tag, file: c.file,
-          sub: [c.cite || 'Analytic', block].filter(Boolean).join(' · '), context: [c.cite, ...c.headings, c.file] });
-      }
+  // The open docs and their headings, ranked as one list. A heading's doc name is part of
+  // its context, so "main jainism" finds the Main hat in the Jainism file.
+  // docs: [{ key, name, current, slot, headings }], the current doc first.
+  function switcherItems(query, docs) {
+    const pool = [];
+    for (const d of docs) {
+      const name = baseName(d.name);
+      pool.push({ kind: 'Doc', key: `d:${d.key}`, doc: d, label: name, sub: d.current ? 'This doc' : slotLabel(d.slot), file: '', context: [] });
+      d.headings.forEach((h, i) => pool.push({ kind: 'Heading', key: `h:${d.key}:${i}`, doc: d, heading: { ...h, index: i }, label: h.text, file: name,
+        sub: `${HEADING_KINDS[h.name]}${h.parent ? ` · ${h.parent}` : ''}`, context: [h.parent, name], outline: h.name !== 'tag' }));
     }
-    for (const r of rows) if (r.kind === 'Heading') r.sub = `Block · ${plural(r.n, 'matching card')}`;
-    return rows;
-  }
-
-  // Favorites, recents and the doc's headings plus the evidence rows, ranked as one list.
-  function switcherItems(query, { favs = [], recents = [], headings = [], docTitle = '', evidence = [] }) {
-    const favSet = new Set(favs.map((f) => f.handle));
-    const file = (f, kind) => ({ kind, key: `${kind}:${f.handle}`, entry: f, label: baseName(f.filename), file: f.filename, sub: f.handle, context: [f.filename, f.handle] });
-    const pool = [
-      ...headings.map((h, i) => ({ kind: 'Heading', key: `h:${i}`, heading: { ...h, index: i }, label: h.text, file: docTitle,
-        sub: `${HEADING_KINDS[h.name]}${h.parent ? ` · ${h.parent}` : ''}`, context: [h.parent], outline: h.name !== 'tag' })),
-      ...favs.map((f) => file(f, 'Favorite')),
-      ...recents.filter((r) => !favSet.has(r.handle)).map((r) => file(r, 'Recent')),
-      ...evidence,
-    ];
     const q = query.trim();
+    const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+    // A heading needs a word of its own: one that hits only the doc's name is the doc's row.
+    const own = (it) => it.kind === 'Doc' || words.some((w) => `${it.label}\n${it.heading.parent}`.toLowerCase().includes(w));
     const scored = [];
     pool.forEach((it, i) => {
-      // An empty box lists favorites, recents, then the doc's outline (tags left out: too many).
-      const score = q ? switcherScore(q, it.label, it.context) : it.kind === 'Heading' ? (it.outline ? 1 : 0) : 2;
+      // An empty box lists the open docs, then this doc's outline (tags left out: too many).
+      const score = q ? (own(it) ? switcherScore(q, it.label, it.context) : 0) : it.kind === 'Doc' ? 2 : it.outline && it.doc.current ? 1 : 0;
       if (score) scored.push({ it, score, i });
     });
     scored.sort((a, b) => b.score - a.score || (q ? rankOf(a.it) - rankOf(b.it) || a.it.label.length - b.it.label.length : 0) || a.i - b.i);
-    return scored.slice(0, SWITCHER_LIMIT).map(({ it }) => ({ ...it, where: [it.kind, it.file].filter(Boolean) }));
+    return scored.slice(0, SWITCHER_LIMIT).map(({ it }) => ({ ...it, where: it.kind === 'Doc' ? ['Doc'] : [it.kind, it.file].filter(Boolean) }));
   }
+  const slotLabel = (slot) => (/^slot\d$/.test(slot || '') ? `Open in slot ${slot.slice(4)}` : 'Open');
 
   // Positions may have moved since the switcher opened: find the heading by order and text.
   function goToHeading(api, view, h) {
+    if (!view) return api.showToast(`Couldn't reach "${short(h.text)}".`);
     const now = headingsIn(view.state.doc);
     const at = now[h.index] && now[h.index].text === h.text ? now[h.index] : now.find((x) => x.name === h.name && x.text === h.text);
     if (!at) return api.showToast(`Couldn't find "${short(h.text)}" any more.`);
@@ -4169,52 +4190,159 @@ textarea.du-cmp-text{resize:none;min-height:0}
 
   const homeScreen = () => (typeof document !== 'undefined' && document.querySelector('.pmd-home-screen')) || null;
 
+  // Not a CardMirror API. In the multi-doc workspace each open doc has its own editor
+  // (.pmd-pane-editor) that CardMirror moves in and out of its slot's .pmd-pane-body
+  // as you switch, keeping it alive while it's off screen. Every doc is shown once when
+  // it opens, so watching the bodies catches each one; ProseMirror keeps the doc on the
+  // editor's .ProseMirror (pmViewDesc.node) even while it's detached, and clears it when
+  // the doc closes. A doc opened before the plugin loaded is read off its slot's
+  // document menu by name instead (no headings until it's been on screen once).
+  const panes = (() => {
+    const seen = new Map(); // editor el -> { slot, name, at }
+    const watched = new WeakSet();
+    const paneOf = (n) => n && n.closest && n.closest('.pmd-pane');
+    function note(el, now) {
+      const pane = paneOf(el);
+      if (!pane) return;
+      const chip = pane.querySelector('.pmd-pane-chip-name');
+      const old = seen.get(el);
+      seen.set(el, { slot: pane.dataset.slot || '', name: (chip && chip.textContent) || (old && old.name) || 'Untitled', at: now ? Date.now() : (old ? old.at : 0) });
+    }
+    function scan() {
+      for (const body of document.querySelectorAll('.pmd-pane-body')) {
+        if (!watched.has(body)) {
+          watched.add(body);
+          new MutationObserver((muts) => {
+            for (const m of muts) for (const n of m.addedNodes) if (n.classList && n.classList.contains('pmd-pane-editor')) note(n, true);
+          }).observe(body, { childList: true });
+        }
+        for (const el of body.children) if (el.classList.contains('pmd-pane-editor')) note(el, false);
+      }
+      const focused = document.querySelector('.pmd-pane-focused .pmd-pane-body > .pmd-pane-editor');
+      if (focused && seen.has(focused)) seen.get(focused).at = Date.now();
+    }
+    // Opening the menu arms CardMirror's "click outside closes it" listener a tick later;
+    // a press on the page then disarms it, so it can't eat a later click on the real menu.
+    function shut(menu) {
+      if (menu) menu.remove();
+      setTimeout(() => { try { document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); } catch { /* no PointerEvent: harmless leftover */ } }, 0);
+    }
+    // The names in a slot's document menu, read and closed before it paints.
+    function menuNames(pane) {
+      const btn = pane.querySelector('.pmd-pane-chip-stack');
+      if (!btn || btn.hidden) return null;
+      btn.click();
+      const menu = document.querySelector('.pmd-pane-chip-dropdown');
+      if (!menu) return null;
+      // The doc on screen is already known; only the ones behind it can be missing.
+      const names = [...menu.querySelectorAll('.pmd-pane-chip-dropdown-row:not(.pmd-active) .pmd-pane-chip-dropdown-name')].map((n) => n.textContent);
+      shut(menu);
+      return names;
+    }
+    // [{ key, name, slot, el, pm, at }] for every doc open in this window's slots.
+    function list() {
+      if (typeof document === 'undefined' || !document.querySelectorAll) return [];
+      scan();
+      const out = [];
+      for (const [el, e] of seen) {
+        const pm = el.querySelector('.ProseMirror');
+        if (!pm || !pm.pmViewDesc) { seen.delete(el); continue; } // closed
+        out.push({ key: `${e.slot}:${e.name}:${out.length}`, ...e, el, pm });
+      }
+      for (const pane of document.querySelectorAll('.pmd-pane')) {
+        const btn = pane.querySelector('.pmd-pane-chip-stack');
+        const n = btn && !btn.hidden ? parseInt(btn.textContent, 10) || 0 : 0;
+        const mine = out.filter((d) => d.slot === pane.dataset.slot);
+        if (n <= mine.length) continue;
+        const names = menuNames(pane) || [];
+        const left = mine.filter((d) => !d.el.isConnected).map((d) => d.name);
+        for (const name of names) {
+          const i = left.indexOf(name);
+          if (i >= 0) { left.splice(i, 1); continue; }
+          out.push({ key: `${pane.dataset.slot}:${name}:${out.length}`, slot: pane.dataset.slot, name, el: null, pm: null, at: 0 });
+        }
+      }
+      return out.sort((a, b) => b.at - a.at);
+    }
+    // Bring a doc up the way a click would: its pane, or its row in the slot's document
+    // menu. Resolves with the doc's .ProseMirror once it's on screen, or null.
+    async function show(d) {
+      const shown = () => (d.el ? d.el.isConnected && d.pm : null);
+      const all = [...document.querySelectorAll('.pmd-pane')];
+      if (!shown()) {
+        const order = [...all.filter((p) => p.dataset.slot === d.slot), ...all.filter((p) => p.dataset.slot !== d.slot)];
+        for (const pane of order) {
+          const btn = pane.querySelector('.pmd-pane-chip-stack');
+          if (!btn || btn.hidden) continue;
+          // Same name twice in a slot: try each until it's this doc.
+          for (let k = 0; ; k++) {
+            btn.click();
+            const menu = document.querySelector('.pmd-pane-chip-dropdown');
+            // A doc known by name only is behind the one on screen, so never the active row.
+            const rows = menu ? [...menu.querySelectorAll(`.pmd-pane-chip-dropdown-row${d.el ? '' : ':not(.pmd-active)'} .pmd-pane-chip-dropdown-name`)].filter((r) => r.textContent === d.name) : [];
+            const row = rows[k];
+            if (!row) { shut(menu); break; }
+            row.click();
+            shut(null);
+            if (!d.el) { d.pm = pane.querySelector('.pmd-pane-body > .pmd-pane-editor .ProseMirror'); return focus(pane, d.pm); }
+            if (shown()) break;
+          }
+          if (shown()) break;
+        }
+      }
+      const pm = shown();
+      return pm ? focus(paneOf(pm), pm) : null;
+    }
+    function focus(pane, pm) {
+      if (!pm) return null;
+      // Another slot is expanded to full width: put the layout back so this one shows.
+      if (pane && pane.hidden) {
+        const back = document.querySelector('.pmd-multi-row[data-expanded] .pmd-pane:not([hidden]) .pmd-pane-chip-expand');
+        if (back) back.click();
+      }
+      if (pane && typeof MouseEvent === 'function') pane.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); // CardMirror's own "focus this slot"
+      if (pm.focus) pm.focus();
+      return pm.contains && pm.contains(document.activeElement) ? pm : null; // a hidden pane takes no focus
+    }
+    return { scan, list, show };
+  })();
+
   async function quickSwitcher(api) {
     const u = ui();
     // Read the doc before the dialog takes focus (reaching the view may nudge the caret).
-    // The home screen covers the doc, so its headings are left out there.
+    // The home screen covers the doc, so there's no current doc there.
     let view = null;
     if (!homeScreen() || homeScreen().hidden) {
       try { view = u.editorView ? await u.editorView() : await editor.view(u.sleep); } catch { view = null; }
     }
-    const headings = view ? headingsIn(view.state.doc) : [];
     const info = typeof api.docInfo === 'function' ? api.docInfo() : null;
-    const docTitle = !view ? '' : (info && info.docTitle) || 'This doc';
-    const recents = readList(RECENTS_KEY).filter((r) => r && typeof r.handle === 'string' && typeof r.filename === 'string');
-    const local = { favs: favorites(), recents, headings, docTitle };
-    let evidenceOff = false; // helper down or no folders: the other rows still work
+    const open = (u.openDocs || panes.list)();
+    const here = view && view.dom && view.dom.closest ? view.dom.closest('.pmd-pane-editor') : null;
+    const docs = open.map((d) => ({ ...d, current: !!here && d.el === here }));
+    if (view && !docs.some((d) => d.current)) docs.unshift({ key: 'this', name: (info && info.docTitle) || 'This doc', current: true, slot: '' }); // one doc per window
+    docs.sort((a, b) => b.current - a.current);
+    for (const d of docs) {
+      const node = d.current ? view.state.doc : d.pm && d.pm.pmViewDesc && d.pm.pmViewDesc.node;
+      try { d.headings = node ? headingsIn(node) : []; } catch { d.headings = []; }
+    }
     const HINT = '↑↓ · Enter to go · Esc to close';
     await u.search({
       title: 'Quick switcher',
-      placeholder: 'Heading, file or card',
+      placeholder: 'Open doc or heading',
       openLabel: 'Go',
       status: HINT,
       empty: '',
-      onQuery: async (q) => {
-        let evidence = [];
-        let status = HINT;
-        let again = false;
-        if (q.trim() && !evidenceOff) {
-          try {
-            const r = await call(api, '/evidence/search', { query: q, limit: 60 });
-            evidence = evidenceRows(q, r.results, baseName(docTitle));
-            if (r.scanning) { again = true; status = `${HINT} · ${indexStatus(r)}`; }
-            if (!r.folders || !r.folders.length) evidenceOff = true;
-          } catch {
-            evidenceOff = true;
-          }
-        }
-        if (evidenceOff && q.trim()) status = `${HINT} · Search my files is off`;
-        return { items: switcherItems(q, { ...local, evidence }), status, again,
-          empty: q.trim() ? 'No matches.' : 'Nothing here yet. Open a doc or star a file.' };
-      },
-      onOpen: (it) => {
-        if (it.heading) return goToHeading(api, view, it.heading);
-        if (it.entry) {
-          const home = homeScreen();
-          return home ? openFavorite(home, it.entry) : api.showToast(`Couldn't open "${it.entry.filename}" from here. Use the home screen.`);
-        }
-        if (it.card) return openEvidence(api, it.card);
+      onQuery: async (q) => ({ items: switcherItems(q, docs), status: HINT,
+        empty: q.trim() ? 'No matches in your open docs.' : 'No docs open.' }),
+      onOpen: async (it) => {
+        const d = it.doc;
+        if (d.current) return it.heading ? goToHeading(api, view, it.heading) : view && view.focus && view.focus();
+        const pm = await (u.showDoc || panes.show)(d);
+        if (!pm) return api.showToast(`Couldn't switch to "${short(baseName(d.name))}". Is it still open?`);
+        if (!it.heading) return;
+        let to = null;
+        try { to = u.editorView ? await u.editorView(d) : await editor.view(u.sleep); } catch { to = null; }
+        goToHeading(api, to, it.heading);
       },
     });
   }
@@ -4485,6 +4613,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
       storedTheme();
       try { installHome(); } catch { /* home screen stays as CardMirror draws it */ }
       try { renderChip(); } catch { /* the watch chip waits for the status bar */ }
+      try { panes.scan(); } catch { /* the switcher still has the doc you're in */ }
     };
     tick();
     setInterval(tick, 1000);
@@ -4500,7 +4629,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
     window.__duSwitcherKey = onSwitcherKey;
     window.addEventListener('keydown', onSwitcherKey, true);
   }
-  if (window.__debateUploaderTest) window.__debateUploaderSwitcher = { headingsIn, switcherScore, evidenceRows, switcherItems, isSwitcherKey, onSwitcherKey };
+  if (window.__debateUploaderTest) window.__debateUploaderSwitcher = { headingsIn, switcherScore, switcherItems, isSwitcherKey, onSwitcherKey, panes };
   if (window.__debateUploaderTest) window.__debateUploaderWatch = { pickerFor, besideSlot, domUI };
 
   window.__registerCardMirrorPlugin && window.__registerCardMirrorPlugin({
@@ -4531,6 +4660,14 @@ textarea.du-cmp-text{resize:none;min-height:0}
         description: 'Also restyles the home screen, ribbon, sidebar, status bar and menus. Your document page keeps its normal look. Unofficial: a CardMirror update may undo parts until the plugin is updated.',
       },
       {
+        key: 'focusBlur',
+        label: 'Focus blur',
+        type: 'select',
+        options: FOCUS_MODES,
+        default: 'Ambient',
+        description: "After Monocle: with docs side by side, the panes you're not in soften behind frosted glass (point at one to clear it), and dialogs blur what's behind them. Ambient is light, Deep is strong.",
+      },
+      {
         key: 'fastOpen',
         label: 'Open big files faster',
         type: 'boolean',
@@ -4556,7 +4693,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
       {
         id: `${ID}.quickSwitcher`,
         label: 'Quick switcher…',
-        keywords: ['switch', 'jump', 'go to', 'heading', 'block', 'pocket', 'hat', 'tag', 'favorite', 'recent', 'open', 'file', 'card', 'search'],
+        keywords: ['switch', 'jump', 'go to', 'heading', 'block', 'pocket', 'hat', 'tag', 'open', 'doc', 'slot', 'pane', 'search'],
         // ⌘P itself is taken by the capture listener above (see Quick switcher).
         defaultKey: 'Mod-Shift-p',
         run: (api) => withPrefs(api, () => openSwitcher(api)),
