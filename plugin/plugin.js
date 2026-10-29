@@ -287,15 +287,16 @@ html:root[data-motion="reduce"] :is(.du-scrim,.du-dialog,${CM_OVERLAYS},${CM_DIA
       if (!dom || typeof ResizeObserver !== 'function') return;
       const from = Math.sign(hit.d) * Math.min(Math.abs(hit.d), hit.s.clientHeight / 2);
       const s = hit.s;
-      const docTop = (n) => n.getBoundingClientRect().top - s.getBoundingClientRect().top + s.scrollTop;
+      const viewTop = (n) => n.getBoundingClientRect().top - s.getBoundingClientRect().top; // read with no transform on
       const jt = window.__duJumpTarget;
       const anchor = jt && dom.contains(jt) ? jt : null; // the heading jumped to
-      let anchorAt = anchor ? docTop(anchor) : 0;
-      const hold = () => { // the anchor moved in the page, so move the view with it
+      const anchorAt = anchor ? viewTop(anchor) : 0;
+      // Keeps the heading where the jump drew it. Chromium's anchoring and CardMirror's
+      // refine sometimes fix the same shift first; measuring on screen never doubles it.
+      const hold = () => {
         if (!anchor || !s.contains(anchor)) return; // the doc left this pane
-        const now = docTop(anchor);
-        if (Math.abs(now - anchorAt) >= 1) s.scrollTop += now - anchorAt;
-        anchorAt = now;
+        const off = viewTop(anchor) - anchorAt;
+        if (Math.abs(off) >= 1) s.scrollTop += off;
       };
       const t0 = performance.now();
       const g = { dom, s, offset: from, raf: 0 };
