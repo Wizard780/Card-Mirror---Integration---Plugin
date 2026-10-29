@@ -222,6 +222,31 @@ own open, so a moved or deleted file gets CardMirror's usual message. Favorites 
 once to add it. This is unofficial: CardMirror has no home-screen API, so a CardMirror update that reshapes the home
 screen can hide the list until the plugin is updated. Your favorites stay saved.
 
+## Quick switcher (⌘P)
+
+**⌘P** (Ctrl+P on Windows), or **Quick switcher…** in the command palette (⌘⇧P), opens one search box over:
+
+- **Headings** in the open doc: pockets, hats, blocks and card tags. Enter puts the caret in that heading and
+  scrolls to it.
+- **Favorites** and CardMirror's **Recent** files. Enter opens the file through CardMirror's own Recent row, like
+  clicking it on the home screen.
+- **Search my files** (when evidence folders are set and the helper is running). A block found by its name in
+  another file shows once, as a Heading row; Enter opens that file at the block's first card. Other hits are
+  File card rows.
+
+Every word you type has to match. Whole-word and whole-phrase matches rank first; on a tie the open doc's
+pockets, hats and blocks come first, then another file's block, favorites, recents, card tags and file cards. Each
+row shows its kind and file on the right. An empty box lists your favorites, recents and the doc's outline.
+↑↓ moves, Enter goes, Esc closes.
+
+CardMirror binds ⌘P to **Insert Received Card (At Cursor)**, and a plugin's own shortcut can never take a key
+CardMirror already uses. So the plugin catches ⌘P before CardMirror does. That card is still one keystroke away
+with ⌘⌥P (at the end of the doc), the receive pill or the command palette. To give ⌘P back, turn off
+**Open the quick switcher with ⌘P** in the plugin's settings; the switcher stays on ⌘⇧P. If ⌘P is pressed before any
+plugin command has run since CardMirror started, the plugin presses ⌘⇧P for you so CardMirror connects it to the
+helper. If you rebind the switcher in Settings → Keyboard shortcuts, that first ⌘P still opens it, just without
+Search my files until you run a plugin command.
+
 ## Settings
 
 - **Interface theme** (Settings → Plugins → Debate Uploader) changes the look of every plugin dialog:
@@ -240,6 +265,8 @@ screen can hide the list until the plugin is updated. Your favorites stay saved.
   color variables and a few elements (`#ribbon`, `#status-bar`, `.pmd-nav-panel`, and since 0.11.1 its dialogs (Settings and the rest), their backdrops, menus, popovers and toasts, found from CardMirror's own styles), so a CardMirror update may
   undo parts of it until the plugin catches up. Turn it off, or set the theme to Standard, to undo it at once. (0.7.0's "Sleek interface" switch is now this dropdown; pick
   Sleek again if you had it on.)
+- **Open the quick switcher with ⌘P** (on by default): see [Quick switcher](#quick-switcher-p). Off gives ⌘P
+  back to CardMirror's Insert Received Card (At Cursor).
 - **Open big files faster** (on by default): the first open of a `.docx` (nothing cached) parses with a faster XML
   reader and shows the first pages while CardMirror lays out the rest. Measured on real files (median of 5, headless
   Chrome, CardMirror 1.16.0): first card on screen for 30 MB of document text 1.70 s → 0.55 s, 20 MB 1.13 s → 0.45 s,
