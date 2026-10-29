@@ -219,7 +219,7 @@ html:root:is(.du-focus-ambient,.du-focus-deep) :is(.du-scrim,${CM_OVERLAYS}){bac
   // translate/scale compose with a dialog's own centering transform instead of
   // replacing it. The doc switcher (⌃Tab) stays instant on purpose, like the OS one.
   const EASE_OUT = 'cubic-bezier(.16,1,.3,1)';
-  const CM_DIALOGS = '.pmd-confirm,.pmd-settings-dialog,.pmd-prompt-dialog,.pmd-clod-dialog,.pmd-save-as-dialog,.pmd-qc-add-dialog,.pmd-qcs,.pmd-bulk-dialog,.pmd-reference-dialog,.pmd-select-speech-dialog,.pmd-list-pick-dialog,.pmd-route-dialog,.pmd-learn-session,.pmd-learn-manage';
+  const CM_DIALOGS = '.pmd-confirm,.pmd-settings-dialog,.pmd-prompt-dialog,.pmd-clod-dialog,.pmd-save-as-dialog,.pmd-qc-add-dialog,.pmd-qcs:not(.pmd-qcs-pulse),.pmd-bulk-dialog,.pmd-reference-dialog,.pmd-select-speech-dialog,.pmd-list-pick-dialog,.pmd-route-dialog,.pmd-learn-session,.pmd-learn-manage';
   const CM_POPS = '.pmd-nav-context-menu,.pmd-doc-menu,.pmd-pane-chip-dropdown,.pmd-font-size-picker,.pmd-color-picker,.pmd-voice-menu,.pmd-send-recent-flyout,.pmd-qctags-popover,.pmd-find-bar';
   const MOTION_CSS = `
 html:root :is(.du-scrim,${CM_OVERLAYS}){animation:du-fade .26s ${EASE_OUT}}
@@ -261,25 +261,26 @@ html:root[data-motion="reduce"] :is(.du-scrim,.du-dialog,${CM_OVERLAYS},${CM_DIA
     return left;
   }
   // What the jump scrolled to (CardMirror and the plugin both call scrollIntoView on it).
-  let jumpTarget = null;
+  // Kept on window so a reloaded plugin reads what the one wrapper (installed once) saw.
   function watchJumpTargets() {
     const proto = typeof Element === 'function' && Element.prototype;
     if (!proto || !proto.scrollIntoView || proto.scrollIntoView.__du) return;
     const native = proto.scrollIntoView;
-    proto.scrollIntoView = Object.assign(function (...args) { jumpTarget = this; return native.apply(this, args); }, { __du: true });
+    proto.scrollIntoView = Object.assign(function (...args) { window.__duJumpTarget = this; return native.apply(this, args); }, { __du: true });
   }
   // Call before the jump; the returned function, run in the next animation frame, starts
   // the glide. That frame callback must be queued before CardMirror's (it is: ours is
   // queued as the input arrives, CardMirror's as it handles it) so ours stays first.
   function armGlide() {
     const before = new Map(editorScrollers().map((s) => [s, s.scrollTop]));
-    jumpTarget = null;
+    window.__duJumpTarget = null;
     return () => {
+      const was = glide && glide.s;
       const carried = stopGlide(); // a jump mid-glide starts from where the doc is drawn
       if (reducedMotion()) return;
       let hit = null;
       for (const [s, top] of before) {
-        const d = s.scrollTop - top + carried;
+        const d = s.scrollTop - top + (s === was ? carried : 0);
         if (s.isConnected && Math.abs(d) > 24 && (!hit || Math.abs(d) > Math.abs(hit.d))) hit = { s, d };
       }
       const dom = hit && hit.s.querySelector('.ProseMirror');
@@ -287,16 +288,17 @@ html:root[data-motion="reduce"] :is(.du-scrim,.du-dialog,${CM_OVERLAYS},${CM_DIA
       const from = Math.sign(hit.d) * Math.min(Math.abs(hit.d), hit.s.clientHeight / 2);
       const s = hit.s;
       const docTop = (n) => n.getBoundingClientRect().top - s.getBoundingClientRect().top + s.scrollTop;
-      const anchor = jumpTarget && dom.contains(jumpTarget) ? jumpTarget : null; // the heading jumped to
+      const jt = window.__duJumpTarget;
+      const anchor = jt && dom.contains(jt) ? jt : null; // the heading jumped to
       let anchorAt = anchor ? docTop(anchor) : 0;
       const hold = () => { // the anchor moved in the page, so move the view with it
-        if (!anchor || !anchor.isConnected) return;
+        if (!anchor || !s.contains(anchor)) return; // the doc left this pane
         const now = docTop(anchor);
         if (Math.abs(now - anchorAt) >= 1) s.scrollTop += now - anchorAt;
         anchorAt = now;
       };
       const t0 = performance.now();
-      const g = { dom, offset: from, raf: 0 };
+      const g = { dom, s, offset: from, raf: 0 };
       g.ro = new ResizeObserver(() => {
         g.ro.disconnect();
         if (glide !== g) return;
@@ -343,7 +345,9 @@ html:root[data-motion="reduce"] :is(.du-scrim,.du-dialog,${CM_OVERLAYS},${CM_DIA
     const mode = FOCUS_MODES.includes(raw) ? raw : 'Ambient';
     if (mode === focusMode || typeof document === 'undefined' || !document.documentElement) return;
     focusMode = mode;
-    if (!document.getElementById('du-focus-style')) (document.head || document.body).append(el('style', { id: 'du-focus-style', textContent: FOCUS_CSS + MOTION_CSS }));
+    const tag = document.getElementById('du-focus-style'); // a reloaded plugin brings its own rules
+    if (tag) tag.textContent = FOCUS_CSS + MOTION_CSS;
+    else (document.head || document.body).append(el('style', { id: 'du-focus-style', textContent: FOCUS_CSS + MOTION_CSS }));
     const root = document.documentElement.classList;
     root.toggle('du-focus-ambient', mode === 'Ambient');
     root.toggle('du-focus-deep', mode === 'Deep');
