@@ -688,7 +688,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
 .du-pickbar{position:fixed;left:50%;bottom:48px;transform:translateX(-50%);z-index:100000;display:flex;align-items:center;gap:10px;
   padding:8px 10px 8px 16px;border-radius:10px;background:var(--pmd-c-bg);color:var(--pmd-c-text);border:1px solid var(--pmd-c-border-soft);
   box-shadow:0 12px 34px var(--pmd-c-shadow-deep,rgba(0,0,0,.28));font-family:var(--pmd-ui-font,system-ui,sans-serif);font-size:.88rem}
-.du-drop{position:fixed;right:16px;bottom:44px;z-index:99998;box-sizing:border-box;width:min(400px,calc(100vw - 32px));display:flex;flex-direction:column;gap:2px;
+.du-drop{position:fixed;right:16px;bottom:64px;z-index:99998;box-sizing:border-box;width:min(400px,calc(100vw - 32px));display:flex;flex-direction:column;gap:2px;
   padding:8px 8px 8px 14px;border-radius:10px;background:var(--pmd-c-bg);color:var(--pmd-c-text);border:1px solid var(--pmd-c-border-soft);
   box-shadow:0 12px 34px var(--pmd-c-shadow-deep,rgba(0,0,0,.28));font-family:var(--pmd-ui-font,system-ui,sans-serif);font-size:.86rem;line-height:1.35;
   animation:du-in .18s cubic-bezier(.25,1,.5,1)}
@@ -713,9 +713,8 @@ textarea.du-cmp-text{resize:none;min-height:0}
 .du-watch[data-state="polling"] .du-dot,.du-watch[data-state="connecting"] .du-dot{background:var(--pmd-c-text-faint,#999)}
 .du-watch[data-state="retrying"]{color:var(--pmd-c-warning)}
 .du-watch[data-state="retrying"] .du-dot{background:var(--pmd-c-warning)}
-.du-drop.du-sleek{border-radius:12px;border-color:var(--du-line);font-size:13px;background:color-mix(in srgb,var(--pmd-c-bg) 92%,transparent);
-  backdrop-filter:blur(14px) saturate(1.1);box-shadow:0 18px 44px -12px rgba(0,0,0,.4)}
-.du-drop.du-sleek .du-drop-head,.du-drop.du-sleek .du-drop-name span,.du-drop.du-sleek .du-drop-more{font-size:12px;color:var(--du-muted)}
+.du-drop.du-sleek{border-radius:12px;border-color:var(--du-line-2);font-size:13px;box-shadow:0 18px 44px -12px rgba(0,0,0,.4)}
+.du-drop.du-sleek .du-drop-head,.du-drop.du-sleek .du-drop-name span,.du-drop.du-sleek .du-drop-more{font-size:12px}
 .du-drop.du-liquid{color:var(--pmd-c-text);background:rgba(8,12,18,.72);backdrop-filter:blur(48px) saturate(180%);border:1px solid rgba(255,255,255,.08);
   border-radius:16px;box-shadow:0 8px 40px rgba(0,0,0,.65),inset 0 1px 0 rgba(255,255,255,.18),0 0 30px rgba(122,162,247,.08)}
 /* Sleek interface: monochrome, built from the theme's own text and page colors */
