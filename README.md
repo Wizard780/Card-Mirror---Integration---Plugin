@@ -289,14 +289,16 @@ helper. If you rebind the switcher in Settings → Keyboard shortcuts, that firs
   color variables and a few elements (`#ribbon`, `#status-bar`, `.pmd-nav-panel`, and since 0.11.1 its dialogs (Settings and the rest), their backdrops, menus, popovers and toasts, found from CardMirror's own styles), so a CardMirror update may
   undo parts of it until the plugin catches up. Turn it off, or set the theme to Standard, to undo it at once. (0.7.0's "Sleek interface" switch is now this dropdown; pick
   Sleek again if you had it on.)
-- **Focus blur** (Ambient by default; Off, Ambient or Deep), after [Monocle](https://trymonocle.app/), which blurs
-  every window but the one you're in. With two or three docs side by side, the panes you're not in soften behind
-  frosted glass with a faint grain. Point at one and it clears after a beat, so a reference doc next to your speech
-  stays readable; click into it and it becomes the clear one. Plugin dialogs and CardMirror's own dialogs blur what's
-  behind them instead of only dimming it. Ambient is a light blur (3.5 px) that keeps the shape of the page; Deep
-  is Monocle's look (12.5 px, a little more saturation, slightly dimmed in dark mode). The blur is a layer over
-  the pane, not a filter on the document, so scrolling and typing cost the same as with it off (measured with a
-  30 MB doc under the blur). Expanded slots, and a single doc, are never blurred.
+- **Focus blur** (Ambient by default; Off, Ambient or Deep), after [Monocle](https://trymonocle.app/). Plugin
+  dialogs and CardMirror's own dialogs blur what's behind them, with a faint grain, instead of only dimming it.
+  Docs side by side are never blurred (since 0.15.0; 0.14.0 frosted the panes you weren't in). Ambient is a light
+  blur (3.5 px) that keeps the shape of the page; Deep is Monocle's look (12.5 px, a little more saturation,
+  slightly dimmed in dark mode).
+- **Motion** (always on, off under the system's or CardMirror's reduce-motion setting): dialogs and their blur fade
+  and rise in instead of appearing in one frame, menus and popovers drop in, and plugin dialogs fade out when they
+  close. Jumping to a heading (a click or Enter / ↑↓ in the outline, a heading in the quick switcher, Go to card in
+  Card Check) glides the last half screen instead of snapping. The scroll still lands exactly where CardMirror puts
+  it; only the drawn page slides home, and any wheel, click or key ends the slide at once.
 - **Open the quick switcher with ⌘P** (on by default): see [Quick switcher](#quick-switcher-p). Off gives ⌘P
   back to CardMirror's Insert Received Card (At Cursor).
 - **Open big files faster** (on by default): the first open of a `.docx` (nothing cached) parses with a faster XML
