@@ -234,7 +234,7 @@ screen can hide the list until the plugin is updated. Your favorites stay saved.
   another file shows once, as a Heading row; Enter opens that file at the block's first card. Other hits are
   File card rows.
 
-Every word you type has to match. Whole-word and whole-phrase matches rank first; on a tie the open doc's
+Every word you type has to match. Matches at the start of a word, and the whole phrase, rank first; on a tie the open doc's
 pockets, hats and blocks come first, then another file's block, favorites, recents, card tags and file cards. Each
 row shows its kind and file on the right. An empty box lists your favorites, recents and the doc's outline.
 ↑↓ moves, Enter goes, Esc closes.
@@ -242,7 +242,7 @@ row shows its kind and file on the right. An empty box lists your favorites, rec
 CardMirror binds ⌘P to **Insert Received Card (At Cursor)**, and a plugin's own shortcut can never take a key
 CardMirror already uses. So the plugin catches ⌘P before CardMirror does. That card is still one keystroke away
 with ⌘⌥P (at the end of the doc), the receive pill or the command palette. To give ⌘P back, turn off
-**Open the quick switcher with ⌘P** in the plugin's settings; the switcher stays on ⌘⇧P. If ⌘P is pressed before any
+**Open the quick switcher with ⌘P** in the plugin's settings; the switcher stays on ⌘⇧P. ⌘P typed in one of CardMirror's own text fields or dialogs (Settings, the shortcut recorder) is left to CardMirror. If ⌘P is pressed before any
 plugin command has run since CardMirror started, the plugin presses ⌘⇧P for you so CardMirror connects it to the
 helper. If you rebind the switcher in Settings → Keyboard shortcuts, that first ⌘P still opens it, just without
 Search my files until you run a plugin command.

@@ -2104,7 +2104,9 @@ test('quick switcher: ⌘P on a Mac, Ctrl+P elsewhere, nothing else held', () =>
   assert.equal(isSwitcherKey(k({ metaKey: true }), false), false);
   assert.equal(isSwitcherKey(k({ metaKey: true, shiftKey: true }), true), false, "⌘⇧P is the command's own binding");
   assert.equal(isSwitcherKey(k({ metaKey: true, altKey: true }), true), false, '⌘⌥P stays Insert Received Card (At End)');
-  assert.equal(isSwitcherKey({ key: 'π', code: 'KeyP', metaKey: true }, true), true, 'any layout');
+  assert.equal(isSwitcherKey({ key: 'π', code: 'KeyP', metaKey: true }, true), true, 'a non-Latin layout goes by position');
+  assert.equal(isSwitcherKey({ key: 'l', code: 'KeyP', metaKey: true }, true), false, "Dvorak's ⌘L is not ⌘P");
+  assert.equal(isSwitcherKey({ key: 'p', code: 'KeyR', metaKey: true }, true), true, "Dvorak's ⌘P is");
   assert.equal(isSwitcherKey({ key: 'o', code: 'KeyO', metaKey: true }, true), false);
 });
 
@@ -2188,6 +2190,23 @@ test('quick switcher: ⌘P opens it and CardMirror never sees the key; not again
     const other = press({ key: 's', code: 'KeyS' });
     SW().onSwitcherKey(other);
     assert.equal(other.prevented, 0, 'other keys pass through');
+    scrim = false;
+    const field = { tagName: 'INPUT', closest: () => null };
+    const inField = press({ target: field });
+    SW().onSwitcherKey(inField);
+    const modal = press({ target: { tagName: 'DIV', closest: (sel) => (sel.includes('dialog') ? {} : null) } });
+    SW().onSwitcherKey(modal);
+    await tick();
+    assert.deepEqual([inField.prevented, modal.prevented, h.searches.length], [0, 0, 2], "CardMirror's own fields and dialogs keep ⌘P");
+    // Two quick presses before the dialog is up open one switcher.
+    let release;
+    window.__debateUploaderUI.editorView = () => new Promise((r) => { release = r; });
+    SW().onSwitcherKey(press());
+    await tick();
+    SW().onSwitcherKey(press());
+    release(null);
+    await tick();
+    assert.equal(h.searches.length, 3, 'one switcher for two quick presses');
   } finally {
     globalThis.document = saved;
   }

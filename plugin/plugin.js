@@ -3880,7 +3880,9 @@ textarea.du-cmp-text{resize:none;min-height:0}
 
   // ⌘P on a Mac, Ctrl+P elsewhere, nothing else held.
   function isSwitcherKey(e, mac = isMac()) {
-    if (e.code !== 'KeyP' && String(e.key).toLowerCase() !== 'p') return false;
+    // A Latin letter names the key (Dvorak's ⌘L sits where QWERTY's P is); other scripts fall back to the position.
+    const key = String(e.key || '').toLowerCase();
+    if (/^[a-z]$/.test(key) ? key !== 'p' : e.code !== 'KeyP') return false;
     if (e.altKey || e.shiftKey) return false;
     return mac ? !!e.metaKey && !e.ctrlKey : !!e.ctrlKey && !e.metaKey;
   }
@@ -3890,22 +3892,34 @@ textarea.du-cmp-text{resize:none;min-height:0}
       return s.quickSwitcherKey !== false;
     } catch { return true; }
   }
+  // CardMirror's own fields and dialogs (shortcut recorder, palette, Settings) keep their ⌘P.
+  function inHostField(t) {
+    if (!t || !t.closest) return false;
+    if (t.closest('.du-scrim')) return false;
+    return /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || '') || !!t.closest('[role="dialog"], [aria-modal="true"]');
+  }
+  let switcherBusy = false; // opening (reaching the view can take a moment) or open
+  async function openSwitcher(api) {
+    if (switcherBusy) return;
+    switcherBusy = true;
+    try { await quickSwitcher(api); } finally { switcherBusy = false; }
+  }
   function onSwitcherKey(e) {
-    if (!isSwitcherKey(e) || !switcherKeyOn()) return;
+    if (!isSwitcherKey(e) || !switcherKeyOn() || inHostField(e.target)) return;
     e.preventDefault();
     e.stopPropagation(); // CardMirror's own ⌘P never sees it
-    if (e.repeat || document.querySelector('.du-scrim')) return; // a plugin dialog is already up
+    if (e.repeat || switcherBusy || document.querySelector('.du-scrim')) return; // a plugin dialog is already up
     if (!lastApi) {
       // No command has run this launch: press the command's own ⌘⇧P, which CardMirror runs with the api.
       if (typeof KeyboardEvent === 'function') window.dispatchEvent(new KeyboardEvent('keydown', { key: 'P', code: 'KeyP', shiftKey: true, metaKey: isMac(), ctrlKey: !isMac(), bubbles: true, cancelable: true }));
       if (lastApi) return;
       // Not bound (rebound in Settings, or no plugin host): everything but Search my files still works.
-      const offline = { showToast() {}, flowPost: async () => ({ ok: false, error: 'app-not-running' }), docInfo: () => null };
-      quickSwitcher(offline).catch(() => {});
+      const offline = { showToast: (m) => console.warn(`[debate-uploader] ${m}`), flowPost: async () => ({ ok: false, error: 'app-not-running' }), docInfo: () => null };
+      openSwitcher(offline).catch(() => {});
       return;
     }
     const api = lastApi;
-    withPrefs(api, () => quickSwitcher(api)).catch(() => {});
+    withPrefs(api, () => openSwitcher(api)).catch(() => {});
   }
 
   // ---------------------------------------------------------------- Text compare
@@ -4138,7 +4152,12 @@ textarea.du-cmp-text{resize:none;min-height:0}
   if (window.__debateUploaderTest) window.__debateUploaderOpenCache = { patchWorkerPostMessage, lruOrder, idbStore, makeFastXml, patchParserSource, PARSER_OPTS };
   if (window.__debateUploaderTest) window.__debateUploaderClipboard = { boldCopiedHTML, unboldCopiedHTML }; // only when tests ask
   if (window.__debateUploaderTest) window.__debateUploaderCompare = compareTexts;
-  if (!window.__debateUploaderTest && typeof window.addEventListener === 'function') window.addEventListener('keydown', onSwitcherKey, true);
+  if (!window.__debateUploaderTest && typeof window.addEventListener === 'function') {
+    // A reloaded plugin replaces its listener instead of adding a second one.
+    if (window.__duSwitcherKey) window.removeEventListener('keydown', window.__duSwitcherKey, true);
+    window.__duSwitcherKey = onSwitcherKey;
+    window.addEventListener('keydown', onSwitcherKey, true);
+  }
   if (window.__debateUploaderTest) window.__debateUploaderSwitcher = { headingsIn, switcherScore, evidenceRows, switcherItems, isSwitcherKey, onSwitcherKey };
 
   window.__registerCardMirrorPlugin && window.__registerCardMirrorPlugin({
@@ -4197,7 +4216,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
         keywords: ['switch', 'jump', 'go to', 'heading', 'block', 'pocket', 'hat', 'tag', 'favorite', 'recent', 'open', 'file', 'card', 'search'],
         // ⌘P itself is taken by the capture listener above (see Quick switcher).
         defaultKey: 'Mod-Shift-p',
-        run: (api) => withPrefs(api, () => quickSwitcher(api)),
+        run: (api) => withPrefs(api, () => openSwitcher(api)),
       },
       {
         id: `${ID}.clearOpenCache`,
