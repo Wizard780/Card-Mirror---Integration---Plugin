@@ -244,28 +244,32 @@ screen can hide the list until the plugin is updated. Your favorites stay saved.
 
 ## Quick switcher (⌘P)
 
-**⌘P** (Ctrl+P on Windows), or **Quick switcher…** in the command palette (⌘⇧P), opens one search box over:
+**⌘P** (Ctrl+P on Windows), or **Quick switcher…** in the command palette (⌘⇧P), opens one search box over the
+docs already open in this window. It only switches; it never opens a file (use Search my files or the home screen
+for that).
 
-- **Headings** in the open doc: pockets, hats, blocks and card tags. Enter puts the caret in that heading and
-  scrolls to it.
-- **Favorites** and CardMirror's **Recent** files. Enter opens the file through CardMirror's own Recent row, like
-  clicking it on the home screen.
-- **Search my files** (when evidence folders are set and the helper is running). A block found by its name in
-  another file shows once, as a Heading row; Enter opens that file at the block's first card. Other hits are
-  File card rows.
+- **Docs**: every doc open in the multi-doc workspace's slots, including ones stacked behind another doc in the
+  same slot. Enter brings the doc up in its slot and puts you in it, the same as picking it from the slot's
+  document menu.
+- **Headings** in those docs: pockets, hats, blocks and card tags. Enter switches to that doc if it isn't the one
+  you're in, puts the caret in the heading and scrolls to it.
 
-Every word you type has to match. Matches at the start of a word, and the whole phrase, rank first; on a tie the open doc's
-pockets, hats and blocks come first, then another file's block, favorites, recents, card tags and file cards. Each
-row shows its kind and file on the right. An empty box lists your favorites, recents and the doc's outline.
-↑↓ moves, Enter goes, Esc closes.
+A heading's doc name counts toward the match, so **main jainism** finds the Main hat in the Jainism file. Every word
+you type has to match, and a heading needs at least one word of its own (typing just a doc's name lists that doc,
+not every heading in it). Matches at the start of a word, and the whole phrase, rank first; on a tie this doc's
+pockets, hats and blocks come first, then docs, then other docs' headings, then card tags. Each row shows its kind
+and doc on the right. An empty box lists the open docs (this one first, then most recently used) and this doc's
+outline. ↑↓ moves, Enter goes, Esc closes.
+
+A doc that was already open when the plugin loaded (say, right after a plugin update) and has stayed behind another
+doc since is listed by name; its headings show up once it has been on screen.
 
 CardMirror binds ⌘P to **Insert Received Card (At Cursor)**, and a plugin's own shortcut can never take a key
 CardMirror already uses. So the plugin catches ⌘P before CardMirror does. That card is still one keystroke away
 with ⌘⌥P (at the end of the doc), the receive pill or the command palette. To give ⌘P back, turn off
 **Open the quick switcher with ⌘P** in the plugin's settings; the switcher stays on ⌘⇧P. ⌘P typed in one of CardMirror's own text fields or dialogs (Settings, the shortcut recorder) is left to CardMirror. If ⌘P is pressed before any
 plugin command has run since CardMirror started, the plugin presses ⌘⇧P for you so CardMirror connects it to the
-helper. If you rebind the switcher in Settings → Keyboard shortcuts, that first ⌘P still opens it, just without
-Search my files until you run a plugin command.
+helper. If you rebind the switcher in Settings → Keyboard shortcuts, that first ⌘P still opens it.
 
 ## Settings
 
@@ -285,6 +289,14 @@ Search my files until you run a plugin command.
   color variables and a few elements (`#ribbon`, `#status-bar`, `.pmd-nav-panel`, and since 0.11.1 its dialogs (Settings and the rest), their backdrops, menus, popovers and toasts, found from CardMirror's own styles), so a CardMirror update may
   undo parts of it until the plugin catches up. Turn it off, or set the theme to Standard, to undo it at once. (0.7.0's "Sleek interface" switch is now this dropdown; pick
   Sleek again if you had it on.)
+- **Focus blur** (Ambient by default; Off, Ambient or Deep), after [Monocle](https://trymonocle.app/), which blurs
+  every window but the one you're in. With two or three docs side by side, the panes you're not in soften behind
+  frosted glass with a faint grain. Point at one and it clears after a beat, so a reference doc next to your speech
+  stays readable; click into it and it becomes the clear one. Plugin dialogs and CardMirror's own dialogs blur what's
+  behind them instead of only dimming it. Ambient is a light blur (3.5 px) that keeps the shape of the page; Deep
+  is Monocle's look (12.5 px, a little more saturation, slightly dimmed in dark mode). The blur is a layer over
+  the pane, not a filter on the document, so scrolling and typing cost the same as with it off (measured with a
+  30 MB doc under the blur). Expanded slots, and a single doc, are never blurred.
 - **Open the quick switcher with ⌘P** (on by default): see [Quick switcher](#quick-switcher-p). Off gives ⌘P
   back to CardMirror's Insert Received Card (At Cursor).
 - **Open big files faster** (on by default): the first open of a `.docx` (nothing cached) parses with a faster XML
