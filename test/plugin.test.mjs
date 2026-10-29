@@ -42,10 +42,10 @@ function harness({ prefs = {}, responses = [], settings = {}, storage = {}, room
   return { api, calls, toasts, prompts, store, prefsReply, prefsSets };
 }
 
-test('registers twenty-four commands and one setting under the plugin id', () => {
+test('registers twenty-eight commands and one setting under the plugin id', () => {
   assert.equal(def.id, 'debate-uploader');
   assert.equal(def.apiVersion, 1);
-  assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.boldEmphasis', 'debate-uploader.cardCheck', 'debate-uploader.cardCheckLast', 'debate-uploader.caselistCardSearch', 'debate-uploader.caselistScout', 'debate-uploader.caselistSearch', 'debate-uploader.caselistTeam', 'debate-uploader.caselistUpload', 'debate-uploader.clearOpenCache', 'debate-uploader.emailChain', 'debate-uploader.evidenceFolders', 'debate-uploader.evidenceSearch', 'debate-uploader.gmailForget', 'debate-uploader.gmailSetup', 'debate-uploader.markCards', 'debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdPick', 'debate-uploader.sdZip', 'debate-uploader.setFolder',
+  assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.boldEmphasis', 'debate-uploader.cardCheck', 'debate-uploader.cardCheckLast', 'debate-uploader.caselistCardSearch', 'debate-uploader.caselistScout', 'debate-uploader.caselistSearch', 'debate-uploader.caselistTeam', 'debate-uploader.caselistUpload', 'debate-uploader.clearOpenCache', 'debate-uploader.emailChain', 'debate-uploader.evidenceFolders', 'debate-uploader.evidenceSearch', 'debate-uploader.gmailForget', 'debate-uploader.gmailSetup', 'debate-uploader.markCards', 'debate-uploader.sdAutoOpen', 'debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdOpenDrop', 'debate-uploader.sdPick', 'debate-uploader.sdUnwatch', 'debate-uploader.sdWatch', 'debate-uploader.sdZip', 'debate-uploader.setFolder',
  'debate-uploader.tabroomLogin', 'debate-uploader.tabroomLogout', 'debate-uploader.tabroomRounds', 'debate-uploader.textCompare']);
   assert.deepEqual(def.settings.find((s) => s.key === 'theme').options, ['Standard', 'Sleek', 'Liquid']);
   assert.deepEqual(def.settings.map((s) => [s.key, s.type, s.default]), [['sendDocFolder', 'text', ''], ['theme', 'select', 'Standard'], ['themeWholeApp', 'boolean', false], ['fastOpen', 'boolean', true], ['openCache', 'boolean', true]]);
@@ -348,6 +348,258 @@ test('browse: wrong room toasts without a list; cancel does nothing; open errors
   }
 });
 
+// Watch harness: /speechdrop/watch answers from `h.state[room]`, which the test
+// changes over time ({version, files, live} or an Error); every answer yields a
+// macrotask, like the helper's long-poll. /speechdrop/open and /speechdrop/upload
+// are jobs. The fake UI records drop toast specs, chip states and beside-picks.
+function watchHarness({ room = 'abc12', storage = {}, uploadDuring } = {}) {
+  const h = harness({ room, storage });
+  h.state = { abc12: W(1, [B, A]), xyz99: W(1, []) };
+  const jobs = new Map();
+  let n = 0;
+  h.api.flowPost = async (app, route, body) => {
+    const pr = h.prefsReply(route, body); if (pr) return pr;
+    h.calls.push({ app, route, body });
+    await new Promise((r) => setImmediate(r));
+    if (route === '/speechdrop/watch') {
+      const r = h.state[body.room];
+      return r instanceof Error ? { ok: false, error: r.message } : ok({ ok: true, ...r });
+    }
+    if (route === '/speechdrop/open') { jobs.set(`O${++n}`, { name: body.name, path: `/d/${body.name}`, app: 'CardMirror' }); return ok({ ok: true, job: `O${n}` }); }
+    if (route === '/speechdrop/upload') { jobs.set(`U${++n}`, { room: body.room, name: body.file.name }); return ok({ ok: true, job: `U${n}` }); }
+    if (route === '/job') {
+      if (uploadDuring && body.id.startsWith('U')) {
+        uploadDuring(h);
+        await spin(); // the watch loop sees the push before the upload job answers
+      }
+      return ok({ state: 'done', result: jobs.get(body.id) });
+    }
+    return ok({ ok: true });
+  };
+  h.drops = []; h.chips = []; h.besides = [];
+  Object.assign(window.__debateUploaderUI, {
+    dropToast: (spec) => { if (spec) h.drops.push(spec); h.toast = spec; },
+    watchStatus: (spec) => h.chips.push(spec && { room: spec.room, state: spec.state, auto: spec.auto }),
+    armBesidePick: (name) => { h.besides.push(name); return () => {}; },
+  });
+  h.watchCalls = (r) => h.calls.filter((c) => c.route === '/speechdrop/watch' && (!r || c.body.room === r));
+  h.opens = () => h.calls.filter((c) => c.route === '/speechdrop/open').map((c) => c.body);
+  return h;
+}
+const spin = async (n = 20) => { for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r)); };
+const drop = (h) => h.toast && h.toast.files.map((f) => f.name);
+
+test('watch: starts from the last room, ignores files already there, toasts a new drop, Open opens it, stop ends polling', async () => {
+  const h = watchHarness({ storage: { lastRoom: 'abc12' } });
+  await cmd('sdWatch').run(h.api);
+  try {
+    assert.deepEqual(h.prompts.map((p) => p[1]), ['abc12']);
+    assert.equal(h.toasts.at(-1), 'Watching room abc12 for new drops.');
+    assert.deepEqual(h.chips.at(-1), { room: 'abc12', state: 'live', auto: false });
+    await spin();
+    assert.equal(h.drops.length, 0, 'files already in the room are not news');
+    assert.ok(h.watchCalls().length > 2, 'keeps long-polling after the command returns');
+    assert.ok(h.watchCalls().slice(1).every((c) => c.body.version === 1), 'passes the last version');
+    h.state.abc12 = W(2, [C, B, A]);
+    await spin();
+    assert.deepEqual(drop(h), ['2NR.docx']);
+    assert.equal(h.toast.room, 'abc12');
+    await h.toast.onOpen(h.toast.files[0].key);
+    assert.deepEqual(h.opens(), [{ room: 'abc12', index: 3, name: '2NR.docx' }]);
+    assert.equal(h.toasts.at(-1), 'Opened "2NR.docx" in CardMirror');
+    assert.equal(h.toast, null, 'opening the only drop hides the toast');
+    assert.deepEqual(h.besides, [], 'a manual Open goes through CardMirror as usual');
+  } finally {
+    await cmd('sdUnwatch').run(h.api);
+  }
+  assert.equal(h.toasts.at(-1), 'Stopped watching room abc12.');
+  assert.equal(h.chips.at(-1), null);
+  await spin(5);
+  const n = h.watchCalls().length;
+  await spin();
+  assert.equal(h.watchCalls().length, n, 'no polling after stop');
+  await cmd('sdUnwatch').run(h.api);
+  assert.equal(h.toasts.at(-1), 'Not watching a SpeechDrop room.');
+});
+
+test('watch: several files at once are one toast, newest first; a later drop joins it; dismiss clears it', async () => {
+  const h = watchHarness();
+  h.state.abc12 = W(1, []);
+  await cmd('sdWatch').run(h.api);
+  try {
+    h.state.abc12 = W(2, [C, B, A]);
+    await spin();
+    assert.equal(h.drops.length, 1, 'one toast for the burst');
+    assert.deepEqual(drop(h), ['2NR.docx', '1NC.docx', 'cards.pdf']);
+    const D = { index: 4, name: '1AR.docx', ctime: 1 };
+    h.state.abc12 = W(3, [D, C, B, A]);
+    await spin();
+    assert.deepEqual(drop(h), ['1AR.docx', '2NR.docx', '1NC.docx', 'cards.pdf']);
+    h.toast.onDismiss();
+    assert.equal(h.toast, null);
+    await cmd('sdOpenDrop').run(h.api);
+    assert.deepEqual(h.opens(), [{ room: 'abc12', index: 4, name: '1AR.docx' }], 'the keyboard command still opens the newest after a dismiss');
+  } finally {
+    await cmd('sdUnwatch').run(h.api);
+  }
+});
+
+test('watch: our own upload to the watched room is not announced, whether the push comes during or after it', async () => {
+  const mine = { index: 5, name: 'a.docx', ctime: 1 };
+  const theirs = { index: 6, name: 'Smith R2 1NC.docx', ctime: 2 };
+  // The socket push lands while the upload job is still running.
+  const during = watchHarness({ uploadDuring: (h) => { h.state.abc12 = W(2, [mine, B, A]); } });
+  await cmd('sdWatch').run(during.api);
+  try {
+    await spin();
+    await cmd('sdPick').run(during.api);
+    await spin();
+    assert.ok(during.watchCalls().some((c) => c.body.version === 2), 'the push was seen');
+    assert.equal(during.drops.length, 0, 'held during the upload, then recognized as ours');
+    during.state.abc12 = W(3, [theirs, mine, B, A]);
+    await spin();
+    assert.deepEqual(drop(during), ['Smith R2 1NC.docx']);
+  } finally {
+    await cmd('sdUnwatch').run(during.api);
+  }
+  // The push lands after the upload finished.
+  const after = watchHarness();
+  await cmd('sdWatch').run(after.api);
+  try {
+    await cmd('sdPick').run(after.api);
+    after.state.abc12 = W(2, [mine, B, A]);
+    await spin();
+    assert.equal(after.drops.length, 0);
+    // A second file with the same name later is someone else's.
+    after.state.abc12 = W(3, [{ ...mine, index: 7 }, mine, B, A]);
+    await spin();
+    assert.deepEqual(drop(after), ['a.docx']);
+  } finally {
+    await cmd('sdUnwatch').run(after.api);
+  }
+});
+
+test('watch: helper down or restarted retries quietly, shows it in the chip, and re-announces nothing', async () => {
+  const h = watchHarness();
+  h.state.abc12 = W(5, [B, A]);
+  await cmd('sdWatch').run(h.api);
+  try {
+    const toasts = h.toasts.length;
+    h.state.abc12 = new Error('app-not-running');
+    await spin();
+    assert.equal(h.chips.at(-1).state, 'retrying');
+    // Restarted helper: its room counts from version 1 again, polling over HTTP at first.
+    h.state.abc12 = W(1, [B, A], false);
+    await spin();
+    assert.equal(h.chips.at(-1).state, 'polling');
+    assert.equal(h.watchCalls().at(-1).body.version, 1, 'adopts the new helper version');
+    h.state.abc12 = W(2, [C, B, A], true);
+    await spin();
+    assert.equal(h.chips.at(-1).state, 'live');
+    assert.deepEqual(drop(h), ['2NR.docx'], 'only the file that is really new');
+    assert.equal(h.toasts.length, toasts, 'no toast per failed poll');
+  } finally {
+    await cmd('sdUnwatch').run(h.api);
+  }
+});
+
+test('watch: switching rooms stops the old one; same room says so; a bad room never starts', async () => {
+  const h = watchHarness();
+  await cmd('sdWatch').run(h.api);
+  try {
+    await cmd('sdWatch').run(h.api);
+    assert.equal(h.toasts.at(-1), 'Already watching room abc12.');
+    assert.equal(h.prompts.at(-1)[1], 'abc12', 'pre-filled with the watched room');
+    window.__debateUploaderUI.prompt = async () => 'xyz99';
+    await cmd('sdWatch').run(h.api);
+    assert.equal(h.toasts.at(-1), 'Watching room xyz99 for new drops (stopped watching abc12).');
+    assert.deepEqual(h.chips.at(-1), { room: 'xyz99', state: 'live', auto: false });
+    await spin(5);
+    const n = h.watchCalls('abc12').length;
+    h.state.abc12 = W(2, [C, B, A]);
+    await spin();
+    assert.equal(h.watchCalls('abc12').length, n, 'the old room is no longer polled');
+    assert.equal(h.drops.length, 0);
+    assert.equal(h.store.get('lastRoom'), 'xyz99');
+  } finally {
+    await cmd('sdUnwatch').run(h.api);
+  }
+  const bad = watchHarness();
+  bad.state.abc12 = new Error('no_room');
+  await cmd('sdWatch').run(bad.api);
+  assert.equal(bad.toasts.at(-1), 'No SpeechDrop room "abc12". Check the code.');
+  assert.deepEqual(bad.chips, []);
+  await cmd('sdOpenDrop').run(bad.api);
+  assert.match(bad.toasts.at(-1), /^Not watching a SpeechDrop room/);
+});
+
+test('auto-open: off by default; the toggle is saved; new docs open beside the current doc, one at a time; other files still toast', async () => {
+  const h = watchHarness();
+  h.state.abc12 = W(1, []);
+  await cmd('sdWatch').run(h.api);
+  try {
+    assert.equal(h.chips.at(-1).auto, false);
+    await cmd('sdAutoOpen').run(h.api);
+    assert.equal(h.store.get('autoOpenDrops'), true);
+    assert.deepEqual(h.prefsSets.at(-1), ['autoOpenDrops', true], 'mirrored to the helper');
+    assert.match(h.toasts.at(-1), /^Auto-open is on/);
+    assert.equal(h.chips.at(-1).auto, true);
+    h.state.abc12 = W(2, [C, B, A]);
+    await spin(40);
+    assert.deepEqual(h.opens().map((o) => o.name), ['2NR.docx', '1NC.docx'], 'docs open in drop order, newest first');
+    assert.deepEqual(h.besides, ['2NR.docx', '1NC.docx']);
+    assert.deepEqual(drop(h), ['cards.pdf'], 'a PDF is offered, not opened');
+    await cmd('sdAutoOpen').run(h.api);
+    assert.equal(h.store.get('autoOpenDrops'), false);
+    assert.equal(h.toasts.at(-1), 'Auto-open is off: new drops show a toast with Open.');
+  } finally {
+    await cmd('sdUnwatch').run(h.api);
+  }
+});
+
+test('auto-open: the pane picker match and the slot beside the focused one', () => {
+  const { pickerFor, besideSlot } = window.__debateUploaderWatch;
+  assert.equal(pickerFor('Open Smith R2 1NC.docx into…', 'Smith R2 1NC.docx'), true);
+  assert.equal(pickerFor('Open Smith R2 1NC (2).docx into…', 'Smith R2 1NC.docx'), true, 'a re-download saved as "(2)"');
+  assert.equal(pickerFor('Open Smith R2 1NC v2.docx into…', 'Smith R2 1NC.docx'), false);
+  assert.equal(pickerFor('Open 2 files into…', 'Smith R2 1NC.docx'), false);
+  assert.equal(pickerFor('Open Untitled into…', 'Smith R2 1NC.docx'), false);
+  const all = [true, true, true];
+  assert.deepEqual([besideSlot(0, all), besideSlot(1, all), besideSlot(2, all), besideSlot(-1, all)], [1, 0, 1, 1]);
+  assert.equal(besideSlot(0, [true, false, true]), 2, 'skips a slot that is not on screen');
+});
+
+test('DOM drop toast: one file reads "X dropped in room R · Open"; a burst lists rows keyed by data, three at most', () => {
+  const dom = fakeDom();
+  const saved = globalThis.document;
+  globalThis.document = dom.doc;
+  const { domUI } = window.__debateUploaderWatch;
+  try {
+    const got = [];
+    const spec = (files) => ({ room: 'ab12', files, onOpen: (k) => got.push(['open', k]), onDismiss: () => got.push(['x']), onBrowse: () => got.push(['browse']), onTimeout: () => {} });
+    domUI.dropToast(spec([{ key: '3:Smith R2 1NC.docx', name: 'Smith R2 1NC.docx' }]));
+    const toasts = () => dom.all(dom.doc.body).filter((n) => n.dataset.du === 'drop');
+    const toast = toasts()[0];
+    const text = (n) => n._text + n.children.map(text).join('');
+    assert.equal(toast.attrs.role, 'status');
+    assert.equal(text(toast.children[0]), 'Smith R2 1NC.docx dropped in room ab12Open×');
+    dom.button('Open').dispatch('click');
+    dom.button('×').dispatch('click');
+    assert.deepEqual(got, [['open', '3:Smith R2 1NC.docx'], ['x']]);
+    const five = [1, 2, 3, 4, 5].map((i) => ({ key: `${i}:f${i}.docx`, name: `f${i}.docx` }));
+    domUI.dropToast(spec(five));
+    assert.equal(toasts().length, 1, 'still one toast');
+    assert.deepEqual(dom.all(toast).filter((n) => n.dataset.key).map((n) => n.dataset.key), ['1:f1.docx', '2:f2.docx', '3:f3.docx']);
+    assert.equal(text(toast.children[0]), '5 files dropped in room ab12×');
+    dom.button('2 more · Browse room').dispatch('click');
+    assert.deepEqual(got.at(-1), ['browse']);
+    domUI.dropToast(null);
+    assert.equal(toasts().length, 0);
+  } finally {
+    globalThis.document = saved;
+  }
+});
+
 test('tabroom login: email pre-fills, password is a secret prompt, only the email is remembered', async () => {
   const h = harness({ storage: { tabroomEmail: 'old@x.com' },
     responses: [ok({ ok: true, job: 'j' }), ok({ state: 'done', result: { loggedIn: true } })] });
@@ -587,6 +839,7 @@ function fakeDom() {
   class El {
     constructor(tag) { this.tagName = tag.toUpperCase(); this.children = []; this.listeners = {}; this.style = { setProperty() {} }; this.value = ''; this._text = ''; this.dataset = {}; this.attrs = {}; }
     get textContent() { return this._text; }
+    get parentNode() { return this.parent || null; }
     set textContent(v) { this._text = String(v); for (const c of this.children) c.parent = null; this.children = []; }
     setAttribute(k, v) { this.attrs[k] = String(v); }
     contains(n) { for (let x = n; x; x = x.parent) if (x === this) return true; return false; }

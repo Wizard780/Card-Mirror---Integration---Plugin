@@ -132,7 +132,7 @@
 
   // CardMirror wipes a file-loaded plugin's storage at every launch, so settings are
   // mirrored to the helper and restored before each command.
-  const PREF_KEYS = ['caselistTarget', 'scoutCaselist', 'sendDocFolder', 'lastRoom', 'tabroomEmail', 'emailChain', 'emailBody'];
+  const PREF_KEYS = ['caselistTarget', 'scoutCaselist', 'sendDocFolder', 'lastRoom', 'tabroomEmail', 'emailChain', 'emailBody', 'autoOpenDrops'];
   const restored = new WeakSet();
   async function restorePrefs(api) {
     if (restored.has(api)) return;
@@ -168,7 +168,7 @@
       lookTheme = theme;
       look = lookClass(theme);
       if (typeof document !== 'undefined') {
-        for (const n of document.querySelectorAll('.du-scrim, .du-pickbar')) {
+        for (const n of document.querySelectorAll('.du-scrim, .du-pickbar, .du-drop')) {
           n.classList.remove('du-sleek', 'du-liquid');
           if (look) n.classList.add(...look.trim().split(' '));
         }
@@ -688,6 +688,36 @@ textarea.du-cmp-text{resize:none;min-height:0}
 .du-pickbar{position:fixed;left:50%;bottom:48px;transform:translateX(-50%);z-index:100000;display:flex;align-items:center;gap:10px;
   padding:8px 10px 8px 16px;border-radius:10px;background:var(--pmd-c-bg);color:var(--pmd-c-text);border:1px solid var(--pmd-c-border-soft);
   box-shadow:0 12px 34px var(--pmd-c-shadow-deep,rgba(0,0,0,.28));font-family:var(--pmd-ui-font,system-ui,sans-serif);font-size:.88rem}
+.du-drop{position:fixed;right:16px;bottom:44px;z-index:99998;box-sizing:border-box;width:min(400px,calc(100vw - 32px));display:flex;flex-direction:column;gap:2px;
+  padding:8px 8px 8px 14px;border-radius:10px;background:var(--pmd-c-bg);color:var(--pmd-c-text);border:1px solid var(--pmd-c-border-soft);
+  box-shadow:0 12px 34px var(--pmd-c-shadow-deep,rgba(0,0,0,.28));font-family:var(--pmd-ui-font,system-ui,sans-serif);font-size:.86rem;line-height:1.35;
+  animation:du-in .18s cubic-bezier(.25,1,.5,1)}
+@media (prefers-reduced-motion:reduce){.du-drop{animation:none}}
+.du-drop *{box-sizing:border-box}
+.du-drop-head{display:flex;align-items:center;gap:8px;min-height:28px;color:var(--pmd-c-text-muted);font-size:.8rem}
+.du-drop-head>span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.du-drop-row{display:flex;align-items:center;gap:8px;min-height:30px}
+.du-drop-name{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.du-drop-name b{font-weight:600}
+.du-drop-name span{color:var(--pmd-c-text-muted)}
+.du-drop .du-btn{flex:none;padding:3px 11px;font-size:.82rem}
+.du-drop-x{flex:none;width:24px;height:24px;display:grid;place-items:center;padding:0;border:0;border-radius:6px;background:transparent;
+  color:var(--pmd-c-text-muted);font:inherit;font-size:15px;line-height:1;cursor:pointer}
+.du-drop-x:hover{background:var(--pmd-c-button-hover,rgba(0,0,0,.05));color:var(--pmd-c-text)}
+.du-drop-x:focus-visible{outline:2px solid var(--pmd-c-focus);outline-offset:1px}
+.du-drop-more{align-self:flex-start;margin:2px 0 0;padding:2px 0;border:0;background:transparent;color:var(--pmd-c-text-muted);font:inherit;font-size:.8rem;
+  text-decoration:underline;text-underline-offset:2px;cursor:pointer}
+.du-drop-more:hover{color:var(--pmd-c-text)}
+.du-watch{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;cursor:pointer}
+.du-watch .du-dot{background:var(--pmd-c-success)}
+.du-watch[data-state="polling"] .du-dot,.du-watch[data-state="connecting"] .du-dot{background:var(--pmd-c-text-faint,#999)}
+.du-watch[data-state="retrying"]{color:var(--pmd-c-warning)}
+.du-watch[data-state="retrying"] .du-dot{background:var(--pmd-c-warning)}
+.du-drop.du-sleek{border-radius:12px;border-color:var(--du-line);font-size:13px;background:color-mix(in srgb,var(--pmd-c-bg) 92%,transparent);
+  backdrop-filter:blur(14px) saturate(1.1);box-shadow:0 18px 44px -12px rgba(0,0,0,.4)}
+.du-drop.du-sleek .du-drop-head,.du-drop.du-sleek .du-drop-name span,.du-drop.du-sleek .du-drop-more{font-size:12px;color:var(--du-muted)}
+.du-drop.du-liquid{color:var(--pmd-c-text);background:rgba(8,12,18,.72);backdrop-filter:blur(48px) saturate(180%);border:1px solid rgba(255,255,255,.08);
+  border-radius:16px;box-shadow:0 8px 40px rgba(0,0,0,.65),inset 0 1px 0 rgba(255,255,255,.18),0 0 30px rgba(122,162,247,.08)}
 /* Sleek interface: monochrome, built from the theme's own text and page colors */
 .du-sleek{--du-line:color-mix(in srgb,var(--pmd-c-text) 10%,transparent);--du-line-2:color-mix(in srgb,var(--pmd-c-text) 17%,transparent);
   --du-soft:color-mix(in srgb,var(--pmd-c-text) 4%,transparent);--du-soft-2:color-mix(in srgb,var(--pmd-c-text) 8%,transparent);
@@ -1782,7 +1812,129 @@ textarea.du-cmp-text{resize:none;min-height:0}
         input.click();
       });
     },
+
+    // Room-watch drop toast: one non-modal card, bottom right, never takes focus.
+    // Called with the whole list of unopened drops each time (null hides it), so
+    // a burst of uploads is one toast, not ten.
+    dropToast(spec) {
+      const t = dropUI;
+      clearTimeout(t.timer);
+      if (!spec || !spec.files.length) { if (t.node) t.node.remove(); t.node = null; return; }
+      ensureStyle();
+      if (!t.node || !t.node.parentNode) {
+        t.node = el('div', { class: `du-drop${look}`, data: { du: 'drop' }, attrs: { role: 'status', 'aria-live': 'polite' } });
+        t.node.addEventListener('mouseenter', () => { t.hover = true; clearTimeout(t.timer); });
+        t.node.addEventListener('mouseleave', () => { t.hover = false; t.arm(); });
+        t.node.addEventListener('focusin', () => { t.hover = true; clearTimeout(t.timer); });
+        t.node.addEventListener('focusout', () => { t.hover = false; t.arm(); });
+        document.body.append(t.node);
+      }
+      const { room, files } = spec;
+      const close = el('button', { type: 'button', class: 'du-drop-x', textContent: '×', onclick: () => spec.onDismiss(), attrs: { 'aria-label': 'Dismiss' } });
+      const openBtn = (f) => {
+        const b = button('Open', true, () => spec.onOpen(f.key));
+        b.setAttribute('aria-label', `Open ${f.name}`);
+        return b;
+      };
+      t.node.textContent = '';
+      if (files.length === 1) {
+        const f = files[0];
+        t.node.append(el('div', { class: 'du-drop-row', data: { key: f.key } }, [
+          el('span', { class: 'du-drop-name' }, [el('b', { textContent: f.name }), el('span', { textContent: ` dropped in room ${room}` })]),
+          openBtn(f), close,
+        ]));
+      } else {
+        const shown = files.slice(0, 3);
+        t.node.append(el('div', { class: 'du-drop-head' }, [el('span', { textContent: `${files.length} files dropped in room ${room}` }), close]));
+        for (const f of shown) {
+          t.node.append(el('div', { class: 'du-drop-row', data: { key: f.key } }, [el('span', { class: 'du-drop-name', textContent: f.name }), openBtn(f)]));
+        }
+        if (files.length > shown.length) {
+          t.node.append(el('button', { type: 'button', class: 'du-drop-more', textContent: `${files.length - shown.length} more · Browse room`, onclick: () => spec.onBrowse() }));
+        }
+      }
+      t.arm = () => { clearTimeout(t.timer); if (!t.hover) t.timer = setTimeout(() => spec.onTimeout(), DROP_TOAST_MS); };
+      t.arm();
+    },
+
+    // Status-bar chip while a room is watched (null removes it). Re-attached every
+    // second (CardMirror can rebuild its status bar), see watchChipTick.
+    watchStatus(spec) {
+      chip.spec = spec;
+      renderChip();
+    },
+
+    // Auto-open "beside": CardMirror's pane workspace asks "Open X into…" with a
+    // button per slot. Pick the slot next to the focused one for this one file.
+    // Returns a function that stops waiting. No panes (single-doc mode): no-op.
+    armBesidePick(name) {
+      if (typeof document === 'undefined' || !document.querySelector || !document.querySelector('.pmd-pane[data-slot]')) return () => {};
+      const tryPick = () => {
+        for (const o of document.querySelectorAll('.pmd-route-overlay')) {
+          const head = o.querySelector('.pmd-route-header');
+          if (!head || !pickerFor(head.textContent || '', name)) continue;
+          const buttons = Array.from(o.querySelectorAll('.pmd-route-btn'));
+          const slots = Array.from(document.querySelectorAll('.pmd-pane[data-slot]'));
+          const focused = slots.find((p) => p.classList.contains('pmd-pane-focused'));
+          const ids = slots.filter((p) => p === focused || p.offsetWidth > 0).map((p) => p.dataset.slot);
+          const at = ['slot1', 'slot2', 'slot3'].indexOf(focused ? focused.dataset.slot : '');
+          const target = besideSlot(at, ['slot1', 'slot2', 'slot3'].map((id) => ids.includes(id)));
+          if (buttons[target]) { buttons[target].click(); stop(); }
+          return;
+        }
+      };
+      const mo = new MutationObserver(tryPick);
+      mo.observe(document.body, { childList: true });
+      const timer = setTimeout(() => stop(), 30000);
+      function stop() { mo.disconnect(); clearTimeout(timer); }
+      tryPick();
+      return stop;
+    },
   };
+
+  const DROP_TOAST_MS = 20000;
+  const dropUI = { node: null, timer: null, hover: false, arm: () => {} };
+  const chip = { spec: null, node: null };
+  function renderChip() {
+    if (typeof document === 'undefined') return;
+    const spec = chip.spec;
+    if (!spec) { if (chip.node) chip.node.remove(); chip.node = null; return; }
+    const bar = document.getElementById('status-bar');
+    if (!bar) return;
+    ensureStyle();
+    if (!chip.node) {
+      chip.node = el('button', { type: 'button', class: 'status-segment du-watch', data: { du: 'watch' }, onclick: () => chip.spec && chip.spec.onClick() },
+        [el('span', { class: 'du-dot', attrs: { 'aria-hidden': 'true' } }), el('span', { data: { du: 'watch-text' } })]);
+    }
+    const state = spec.state;
+    const text = `Watching room ${spec.room}${state === 'polling' ? ' · every 5 s' : state === 'retrying' ? ' · reconnecting…' : state === 'connecting' ? ' · connecting…' : ''}${spec.auto ? ' · auto-open' : ''}`;
+    chip.node.dataset.state = state;
+    chip.node.children[1].textContent = text;
+    const label = `Watching SpeechDrop room ${spec.room} for new drops${spec.auto ? ', opening them automatically' : ''}. Click to browse the room.`;
+    chip.node.setAttribute('aria-label', label);
+    chip.node.title = label;
+    if (chip.node.parentNode !== bar) {
+      const spacer = Array.from(bar.children).find((c) => c.classList && c.classList.contains('status-spacer'));
+      if (spacer) bar.insertBefore(chip.node, spacer); else bar.append(chip.node);
+    }
+  }
+
+  // "Open Smith 1NC.docx into…", or the "Smith 1NC (2).docx" a re-download is saved as.
+  function pickerFor(header, name) {
+    const m = /^Open (.+) into…$/.exec(String(header).trim());
+    if (!m) return false;
+    const got = m[1];
+    if (got === name) return true;
+    const dot = name.lastIndexOf('.');
+    const stem = dot > 0 ? name.slice(0, dot) : name;
+    const ext = dot > 0 ? name.slice(dot) : '';
+    return got.startsWith(stem) && got.endsWith(ext) && /^ \(\d+\)$/.test(got.slice(stem.length, got.length - ext.length));
+  }
+  // The slot right of the focused one (left of the last), skipping slots not on screen.
+  function besideSlot(focused, present) {
+    const order = focused <= 0 ? [1, 2, 0] : focused === 1 ? [0, 2] : [1, 0];
+    return order.find((i) => i !== focused && present[i]) ?? (focused === 0 ? 1 : 0);
+  }
 
   const ui = () => window.__debateUploaderUI || domUI;
 
@@ -2709,7 +2861,13 @@ textarea.du-cmp-text{resize:none;min-height:0}
     }
 
     api.showToast(`Uploading to SpeechDrop room ${room}…`);
-    const result = await runJob(api, '/speechdrop/upload', body, u.sleep);
+    let result;
+    ownUploadStart(room); // a watched room must not announce our own upload
+    try {
+      result = await runJob(api, '/speechdrop/upload', body, u.sleep);
+    } finally {
+      ownUploadEnd(room, result ? result.name : body.file && body.file.name);
+    }
     remember(api, 'lastRoom', room);
     api.showToast(`Uploaded "${result.name}" to SpeechDrop room ${result.room}`);
   }
@@ -2721,11 +2879,11 @@ textarea.du-cmp-text{resize:none;min-height:0}
       : 'unknown time';
   }
 
-  async function browse(api) {
+  async function browse(api, presetRoom) {
     const u = ui();
     const ctx = { browse: true, room: '' };
     try {
-      const raw = await u.prompt('SpeechDrop room code', api.storage.get('lastRoom') || '');
+      const raw = presetRoom || await u.prompt('SpeechDrop room code', api.storage.get('lastRoom') || '');
       if (raw == null) return;
       const room = normalizeRoom(raw);
       ctx.room = room;
@@ -2796,6 +2954,187 @@ textarea.du-cmp-text{resize:none;min-height:0}
     } catch (err) {
       api.showToast(message(err.message, ctx));
     }
+  }
+
+  // ---------------------------------------------------------------- Watch a room
+  // Browse's live list, kept running in the background after the dialog closes,
+  // until "Stop watching" or CardMirror quits. A file is new when it wasn't in the
+  // room when watching started and isn't our own upload. New files get one toast;
+  // with auto-open on, new docs open beside the current one instead.
+  const DOC_RE = /\.(docx|cmir)$/i;
+  const fileKey = (f) => `${f.index}:${f.name}`;
+  // pending: in the toast now; recent: announced and not opened yet, for the Open-newest command.
+  const watch = { api: null, room: '', gen: 0, state: '', seen: new Set(), pending: [], recent: [], held: [] };
+  // Our own uploads: count in flight per room, then names to skip once seen.
+  const own = { inflight: new Map(), names: new Map() };
+  let openQueue = Promise.resolve(); // auto-opens one at a time: one slot picker at a time
+
+  function ownUploadStart(room) { own.inflight.set(room, (own.inflight.get(room) || 0) + 1); }
+  function ownUploadEnd(room, name) {
+    if (name) own.names.set(`${room}/${name}`, Date.now() + 120000);
+    const left = (own.inflight.get(room) || 1) - 1;
+    if (left > 0) { own.inflight.set(room, left); return; }
+    own.inflight.delete(room);
+    if (watch.room === room && watch.held.length) {
+      const held = watch.held;
+      watch.held = [];
+      announce(held);
+    }
+  }
+  function notOwn(room, files) {
+    const now = Date.now();
+    for (const [k, until] of own.names) if (until < now) own.names.delete(k);
+    return files.filter((f) => !own.names.delete(`${room}/${f.name}`));
+  }
+
+  const autoOpen = (api) => api.storage.get('autoOpenDrops') === true;
+  function showStatus() {
+    const u = ui();
+    if (!u.watchStatus) return;
+    if (!watch.room) return u.watchStatus(null);
+    const { api, room } = watch;
+    u.watchStatus({ room, state: watch.state, auto: autoOpen(api), onClick: () => withPrefs(api, () => browse(api, room)) });
+  }
+  function showDrops() {
+    const u = ui();
+    if (!u.dropToast) return;
+    if (!watch.pending.length) return u.dropToast(null);
+    const { api, room } = watch;
+    u.dropToast({
+      room,
+      files: watch.pending.map((f) => ({ key: fileKey(f), name: f.name })),
+      onOpen: (key) => openDrop(key),
+      onDismiss: () => { watch.pending = []; showDrops(); },
+      onTimeout: () => { watch.pending = []; showDrops(); }, // still openable with "Open newest SpeechDrop drop"
+      onBrowse: () => { watch.pending = []; showDrops(); withPrefs(api, () => browse(api, room)); },
+    });
+  }
+
+  function announce(files) {
+    const { api, room } = watch;
+    const fresh = notOwn(room, files);
+    if (!fresh.length) return;
+    const auto = autoOpen(api) ? fresh.filter((f) => DOC_RE.test(f.name)) : [];
+    const rest = fresh.filter((f) => !auto.includes(f));
+    if (rest.length) {
+      watch.pending = [...rest, ...watch.pending];
+      watch.recent = [...rest, ...watch.recent].slice(0, 20);
+      showDrops();
+    }
+    for (const f of auto) {
+      const gen = watch.gen;
+      openQueue = openQueue.then(() => (watch.gen === gen ? openFile(api, room, f, true) : null));
+    }
+  }
+
+  async function openFile(api, room, f, beside) {
+    const u = ui();
+    const stop = beside && u.armBesidePick ? u.armBesidePick(f.name) : () => {};
+    api.showToast(`Opening "${f.name}"…`);
+    try {
+      const r = await runJob(api, '/speechdrop/open', { room, index: f.index, name: f.name }, u.sleep);
+      api.showToast(openedToast(r));
+      if (beside) { const t = setTimeout(stop, 5000); if (t && t.unref) t.unref(); } // "Open into…" can trail the helper's answer
+    } catch (err) {
+      stop();
+      api.showToast(message(err.message, { browse: true, room, name: f.name }));
+    }
+  }
+
+  function openDrop(key) {
+    const f = key ? watch.recent.find((p) => fileKey(p) === key) : watch.recent[0];
+    if (!f) return null;
+    watch.pending = watch.pending.filter((p) => p !== f);
+    watch.recent = watch.recent.filter((p) => p !== f);
+    showDrops();
+    return openFile(watch.api, watch.room, f, false);
+  }
+
+  function stopWatching() {
+    watch.gen++;
+    watch.room = '';
+    watch.state = '';
+    watch.pending = [];
+    watch.recent = [];
+    watch.held = [];
+    showDrops();
+    showStatus();
+  }
+
+  async function watchLoop(gen, version) {
+    const u = ui();
+    let failures = 0;
+    while (watch.gen === gen) {
+      const asked = Date.now();
+      try {
+        const res = await call(watch.api, '/speechdrop/watch', { room: watch.room, version });
+        if (watch.gen !== gen) return;
+        failures = 0;
+        const same = res.version === version;
+        version = res.version; // a restarted helper counts from 1 again
+        const state = res.live ? 'live' : 'polling';
+        if (state !== watch.state) { watch.state = state; showStatus(); }
+        const fresh = res.files.filter((f) => !watch.seen.has(fileKey(f)));
+        for (const f of fresh) watch.seen.add(fileKey(f));
+        if (fresh.length) {
+          if (own.inflight.get(watch.room)) watch.held.push(...fresh); // sorted out when the upload ends
+          else announce(fresh);
+        }
+        if (same && Date.now() - asked < 100) await u.sleep(250); // an older helper answers at once: don't spin
+      } catch {
+        if (watch.gen !== gen) return;
+        // Helper restarting, socket dropped, network down: say so in the chip, retry quietly.
+        // Under the helper's 30 s idle limit, so its socket for the room stays open.
+        if (watch.state !== 'retrying') { watch.state = 'retrying'; showStatus(); }
+        await u.sleep(Math.min(8000, 1000 * 2 ** Math.min(failures++, 3)));
+      }
+    }
+  }
+
+  async function watchRoom(api) {
+    const u = ui();
+    const ctx = { browse: true, room: '' };
+    try {
+      const raw = await u.prompt('SpeechDrop room code to watch', watch.room || api.storage.get('lastRoom') || '');
+      if (raw == null) return;
+      const room = normalizeRoom(raw);
+      ctx.room = room;
+      if (!room) return api.showToast(`"${String(raw).trim()}" doesn't look like a SpeechDrop room code.`);
+      if (room === watch.room) return api.showToast(`Already watching room ${room}.`);
+      const res = await call(api, '/speechdrop/watch', { room, version: 0 });
+      const before = watch.room;
+      stopWatching();
+      const gen = watch.gen;
+      Object.assign(watch, { api, room, state: res.live ? 'live' : 'polling', seen: new Set(res.files.map(fileKey)) });
+      remember(api, 'lastRoom', room);
+      showStatus();
+      api.showToast(`Watching room ${room} for new drops${before ? ` (stopped watching ${before})` : ''}.`);
+      watchLoop(gen, res.version);
+    } catch (err) {
+      api.showToast(message(err.message, ctx));
+    }
+  }
+
+  function unwatchRoom(api) {
+    if (!watch.room) return api.showToast('Not watching a SpeechDrop room.');
+    const room = watch.room;
+    stopWatching();
+    api.showToast(`Stopped watching room ${room}.`);
+  }
+
+  function toggleAutoOpen(api) {
+    const on = !autoOpen(api);
+    remember(api, 'autoOpenDrops', on);
+    showStatus();
+    api.showToast(on
+      ? `Auto-open is on: new docs dropped in a watched room open by themselves${watch.room ? '' : ' (run "Watch SpeechDrop room…" to start)'}.`
+      : 'Auto-open is off: new drops show a toast with Open.');
+  }
+
+  function openNewestDrop(api) {
+    if (!watch.room) return api.showToast('Not watching a SpeechDrop room. Run "Watch SpeechDrop room…" first.');
+    if (!watch.recent.length) return api.showToast(`No new drops in room ${watch.room}.`);
+    return openDrop(null);
   }
 
   async function tabroomLogin(api) {
@@ -3931,6 +4270,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
     const tick = () => {
       storedTheme();
       try { installHome(); } catch { /* home screen stays as CardMirror draws it */ }
+      try { renderChip(); } catch { /* the watch chip waits for the status bar */ }
     };
     tick();
     setInterval(tick, 1000);
@@ -3940,6 +4280,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
   if (window.__debateUploaderTest) window.__debateUploaderOpenCache = { patchWorkerPostMessage, lruOrder, idbStore, makeFastXml, patchParserSource, PARSER_OPTS };
   if (window.__debateUploaderTest) window.__debateUploaderClipboard = { boldCopiedHTML, unboldCopiedHTML }; // only when tests ask
   if (window.__debateUploaderTest) window.__debateUploaderCompare = compareTexts;
+  if (window.__debateUploaderTest) window.__debateUploaderWatch = { pickerFor, besideSlot, domUI };
 
   window.__registerCardMirrorPlugin && window.__registerCardMirrorPlugin({
     id: ID,
@@ -4014,6 +4355,34 @@ textarea.du-cmp-text{resize:none;min-height:0}
         keywords: ['speechdrop', 'browse', 'open', 'download', 'room'],
         defaultKey: null,
         run: (api) => withPrefs(api, () => browse(api)),
+      },
+      {
+        id: `${ID}.sdWatch`,
+        label: 'Watch SpeechDrop room…',
+        keywords: ['speechdrop', 'watch', 'room', 'drop', 'new', 'opponent', 'notify', 'live'],
+        defaultKey: null,
+        run: (api) => withPrefs(api, () => watchRoom(api)),
+      },
+      {
+        id: `${ID}.sdUnwatch`,
+        label: 'Stop watching SpeechDrop room',
+        keywords: ['speechdrop', 'watch', 'stop', 'room', 'drop'],
+        defaultKey: null,
+        run: (api) => unwatchRoom(api),
+      },
+      {
+        id: `${ID}.sdOpenDrop`,
+        label: 'Open newest SpeechDrop drop',
+        keywords: ['speechdrop', 'open', 'drop', 'new', 'opponent', 'watch'],
+        defaultKey: null,
+        run: (api) => openNewestDrop(api),
+      },
+      {
+        id: `${ID}.sdAutoOpen`,
+        label: 'Turn auto-open of SpeechDrop drops on or off',
+        keywords: ['speechdrop', 'auto', 'open', 'drop', 'watch', 'split', 'pane'],
+        defaultKey: null,
+        run: (api) => withPrefs(api, () => toggleAutoOpen(api)),
       },
       {
         id: `${ID}.sdZip`,
