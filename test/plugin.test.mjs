@@ -48,7 +48,7 @@ test('registers twenty-nine commands and the settings under the plugin id', () =
   assert.deepEqual(def.commands.map((c) => c.id).sort(), ['debate-uploader.boldEmphasis', 'debate-uploader.cardCheck', 'debate-uploader.cardCheckLast', 'debate-uploader.caselistCardSearch', 'debate-uploader.caselistScout', 'debate-uploader.caselistSearch', 'debate-uploader.caselistTeam', 'debate-uploader.caselistUpload', 'debate-uploader.clearOpenCache', 'debate-uploader.emailChain', 'debate-uploader.evidenceFolders', 'debate-uploader.evidenceSearch', 'debate-uploader.gmailForget', 'debate-uploader.gmailSetup', 'debate-uploader.markCards', 'debate-uploader.quickSwitcher', 'debate-uploader.sdAutoOpen', 'debate-uploader.sdBrowse', 'debate-uploader.sdNewest', 'debate-uploader.sdOpenDrop', 'debate-uploader.sdPick', 'debate-uploader.sdUnwatch', 'debate-uploader.sdWatch', 'debate-uploader.sdZip', 'debate-uploader.setFolder',
  'debate-uploader.tabroomLogin', 'debate-uploader.tabroomLogout', 'debate-uploader.tabroomRounds', 'debate-uploader.textCompare']);
   assert.deepEqual(def.settings.find((s) => s.key === 'theme').options, ['Standard', 'Sleek', 'Liquid']);
-  assert.deepEqual(def.settings.map((s) => [s.key, s.type, s.default]), [['sendDocFolder', 'text', ''], ['theme', 'select', 'Standard'], ['themeWholeApp', 'boolean', false], ['fastOpen', 'boolean', true], ['openCache', 'boolean', true], ['quickSwitcherKey', 'boolean', true]]);
+  assert.deepEqual(def.settings.map((s) => [s.key, s.type, s.default]), [['sendDocFolder', 'text', ''], ['theme', 'select', 'Standard'], ['themeWholeApp', 'boolean', false], ['focusBlur', 'select', 'Ambient'], ['fastOpen', 'boolean', true], ['openCache', 'boolean', true], ['quickSwitcherKey', 'boolean', true]]);
 });
 
 test('pick: uploads, polls the job, toasts success, remembers the room', async () => {
@@ -2312,8 +2312,6 @@ const SWITCH_DOC = () => pm('doc', [
   pm('pocket', [txt('NEG')]),
   pm('block', [txt('Econ DA')]),
 ]);
-const FAVS = [{ handle: '/f/AT Offshoring---MBA.docx', filename: 'AT Offshoring---MBA.docx', format: 'docx' }];
-const RECENTS = [FAVS[0], { handle: '/f/NATO Bad.docx', filename: 'NATO Bad.docx', format: 'docx' }];
 
 test('quick switcher: headings are pockets, hats, blocks and card tags in order, each with its parent', () => {
   const doc = SWITCH_DOC();
@@ -2326,44 +2324,50 @@ test('quick switcher: headings are pockets, hats, blocks and card tags in order,
   assert.deepEqual(hs.map((h) => doc.nodeAt(h.pos).type.name), ['pocket', 'hat', 'block', 'tag', 'tag', 'pocket', 'block'], 'positions point at the heading nodes');
 });
 
-test('quick switcher: "AT offshoring" ranks the open doc\'s block, the same block in another file, the favorite, then a card', () => {
-  const headings = SW().headingsIn(SWITCH_DOC());
-  const evidence = SW().evidenceRows('AT offshoring', [
-    { ...CARD, path: '/ev/Neg.docx', file: 'Neg.docx', ordinal: 9, tag: 'Reshoring fails', headings: ['NEG', 'AT Offshoring'] },
-    { ...CARD, path: '/ev/Neg.docx', file: 'Neg.docx', ordinal: 7, tag: 'Tariffs fail', headings: ['NEG', 'AT Offshoring'] },
-    { ...CARD, path: '/ev/Grid.docx', file: 'Grid.docx', ordinal: 3, tag: 'AT offshoring: they stay', cite: 'Rogan 26', headings: ['AFF'] },
-    { ...CARD, path: '/ev/Data.docx', file: 'Data.docx', ordinal: 1, tag: 'Onshore', headings: ['AT: Offshoring'] }, // the open doc itself
-  ], 'Data');
-  assert.deepEqual(evidence.map((r) => [r.kind, r.label, r.sub, r.card.ordinal]), [
-    ['Heading', 'AT Offshoring', 'Block · 2 matching cards', 7], // one row for the block, opening at its first card
-    ['File card', 'AT offshoring: they stay', 'Rogan 26 · AFF', 3],
-  ]);
-  const items = SW().switcherItems('AT offshoring', { favs: FAVS, recents: RECENTS, headings, docTitle: 'Data', evidence });
-  assert.deepEqual(items.map((i) => [i.label, i.where]), [
-    ['AT: Offshoring', ['Heading', 'Data']],
-    ['AT Offshoring', ['Heading', 'Neg.docx']],
-    ['AT Offshoring---MBA', ['Favorite', 'AT Offshoring---MBA.docx']],
-    ['AT offshoring: they stay', ['File card', 'Grid.docx']],
-    ['Data centers stay onshore', ['Heading', 'Data']], // a tag found through its block comes last
-  ]);
-  assert.equal(items[0].heading.name, 'block');
-  assert.equal(new Set(items.map((i) => i.key)).size, items.length, 'keys are unique');
-  assert.deepEqual(SW().switcherItems('zzz', { favs: FAVS, recents: RECENTS, headings }), []);
+// The Jainism file the "main jainism" report came from: a Main hat under the Impact pocket.
+const JAIN_DOC = () => pm('doc', [
+  pm('pocket', [txt('Impact')]),
+  pm('hat', [txt('Main')]),
+  pm('block', [txt('Impact---2NC')]),
+  pm('hat', [txt('Political')]),
+]);
+const docsFor = (...ds) => ds.map(([name, doc, current = false, slot = 'slot1'], i) => ({ key: String(i), name, current, slot, headings: SW().headingsIn(doc) }));
+
+test('quick switcher: "main jainism" finds the Main hat in the Jainism file, wherever it sits', () => {
+  const docs = docsFor(['AT Offshoring.docx', SWITCH_DOC(), true], ['K---Jainism---Vishwa.docx', JAIN_DOC(), false, 'slot2']);
+  const items = SW().switcherItems('main jainism', docs);
+  assert.deepEqual(items.map((i) => [i.kind, i.label, i.file]), [['Heading', 'Main', 'K---Jainism---Vishwa'], ['Heading', 'Impact---2NC', 'K---Jainism---Vishwa']], 'then the block under it');
+  // Open in the current slot too.
+  const here = SW().switcherItems('main jainism', docsFor(['K---Jainism---Vishwa.docx', JAIN_DOC(), true]));
+  assert.deepEqual(here.map((i) => i.label), ['Main', 'Impact---2NC']);
+  assert.deepEqual(SW().switcherItems('jainism', docs).map((i) => i.kind), ['Doc'], "the doc's name alone lists the doc, not every heading in it");
 });
 
-test('quick switcher: an empty box lists favorites, recents (a starred one once), then the outline without tags', () => {
-  const headings = SW().headingsIn(SWITCH_DOC());
-  const items = SW().switcherItems('  ', { favs: FAVS, recents: RECENTS, headings, docTitle: 'Data' });
-  assert.deepEqual(items.map((i) => [i.kind, i.label]), [
-    ['Favorite', 'AT Offshoring---MBA'], ['Recent', 'NATO Bad'],
-    ['Heading', 'AFF'], ['Heading', 'Case'], ['Heading', 'AT: Offshoring'], ['Heading', 'NEG'], ['Heading', 'Econ DA'],
+test('quick switcher: only open docs and their headings; a doc name ranks the doc first, ties go to this doc', () => {
+  const docs = docsFor(['AT Offshoring.docx', SWITCH_DOC(), true], ['Offshoring DA.docx', pm('doc', [pm('block', [txt('AT: Offshoring')])]), false, 'slot2']);
+  const items = SW().switcherItems('AT offshoring', docs);
+  assert.deepEqual(items.map((i) => [i.kind, i.label, i.doc.key]), [
+    ['Heading', 'AT: Offshoring', '0'], ['Doc', 'AT Offshoring', '0'], ['Heading', 'AT: Offshoring', '1'],
+    ['Heading', 'Data centers stay onshore', '0'], // a card under that block
   ]);
+  assert.deepEqual(items[2].where, ['Heading', 'Offshoring DA']);
+  const byName = SW().switcherItems('offshoring da', docs);
+  assert.deepEqual([byName[0].kind, byName[0].label], ['Doc', 'Offshoring DA']);
+  assert.equal(byName[0].sub, 'Open in slot 2');
+  assert.deepEqual(SW().switcherItems('zzz', docs), []);
 });
 
-test('quick switcher: on a tie a starred file beats a card tag, and a shorter label beats a longer one', () => {
-  const doc = pm('doc', [card(txt('NATO resilient: Trump cannot break the alliance'), 'X 26', txt('b')), pm('block', [txt('NATO bad---long version of the block')]), pm('block', [txt('NATO bad')])]);
-  const items = SW().switcherItems('nato', { favs: [{ handle: '/f/NATO.docx', filename: 'NATO.docx' }], headings: SW().headingsIn(doc), docTitle: 'D' });
-  assert.deepEqual(items.map((i) => i.label), ['NATO bad', 'NATO bad---long version of the block', 'NATO', 'NATO resilient: Trump cannot break the alliance']);
+test('quick switcher: an empty box lists the open docs, then this doc\'s outline without tags', () => {
+  const docs = docsFor(['Data.docx', SWITCH_DOC(), true], ['K---Jainism---Vishwa.docx', JAIN_DOC(), false, 'slot2']);
+  const items = SW().switcherItems('  ', docs);
+  assert.deepEqual(items.map((i) => i.label), ['Data', 'K---Jainism---Vishwa', 'AFF', 'Case', 'AT: Offshoring', 'NEG', 'Econ DA']);
+  assert.equal(items[0].sub, 'This doc');
+});
+
+test('quick switcher: on a tie an outline heading beats a card tag, and a shorter label beats a longer one of the same kind', () => {
+  const doc = pm('doc', [pm('block', [txt('NATO bad for Russia')]), card(txt('NATO'), 'X 25', txt('b')), pm('block', [txt('NATO')])]);
+  const items = SW().switcherItems('nato', docsFor(['D.docx', doc, true]));
+  assert.deepEqual(items.map((i) => [i.kind, i.label, i.heading && i.heading.name]), [['Heading', 'NATO', 'block'], ['Heading', 'NATO bad for Russia', 'block'], ['Heading', 'NATO', 'tag']]);
 });
 
 test('quick switcher: scoring needs every word, prefers word starts, the label, and the whole phrase', () => {
@@ -2391,58 +2395,76 @@ test('quick switcher: ⌘P on a Mac, Ctrl+P elsewhere, nothing else held', () =>
   assert.equal(isSwitcherKey({ key: 'o', code: 'KeyO', metaKey: true }, true), false);
 });
 
-function switcherHarness({ search = () => ({ results: [], ...IDLE }) } = {}) {
-  const h = evidenceHarness({ search, docInfo: () => ({ docId: 'd1', docTitle: 'Data' }) });
+function switcherHarness() {
+  const h = evidenceHarness({ docInfo: () => ({ docId: 'd1', docTitle: 'Data' }) });
   const view = fakeView(SWITCH_DOC());
-  window.__debateUploaderUI.editorView = async () => view;
-  view.state.selection = { constructor: { near: ($pos) => ({ near: $pos }) } };
-  h.setDoc = (doc) => { doc.resolve = (p) => ({ pos: p }); view.state.doc = doc; };
-  h.setDoc(view.state.doc);
+  const other = fakeView(JAIN_DOC());
+  h.shown = [];
+  h.otherDoc = { key: 'j', name: 'K---Jainism---Vishwa.docx', slot: 'slot2', pm: { pmViewDesc: { node: other.state.doc } } };
+  window.__debateUploaderUI.editorView = async (d) => (d ? other : view);
+  window.__debateUploaderUI.openDocs = () => [h.otherDoc];
+  window.__debateUploaderUI.showDoc = async (d) => { h.shown.push(d.name); return h.showFails ? null : {}; };
   h.sels = [];
   h.focused = 0;
-  const origTr = Object.getOwnPropertyDescriptor(view.state, 'tr').get;
-  Object.defineProperty(view.state, 'tr', { get() { const tr = origTr(); tr.setSelection = (sel) => { h.sels.push(sel.near.pos); return tr; }; tr.scrollIntoView = () => tr; return tr; } });
-  view.focus = () => { h.focused++; };
+  for (const v of [view, other]) {
+    v.state.selection = { constructor: { near: ($pos) => ({ near: $pos }) } };
+    v.focus = () => { h.focused++; };
+    const origTr = Object.getOwnPropertyDescriptor(v.state, 'tr').get;
+    Object.defineProperty(v.state, 'tr', { get() { const tr = origTr(); tr.setSelection = (sel) => { h.sels.push([v === view ? 'this' : 'other', sel.near.pos]); return tr; }; tr.scrollIntoView = () => tr; return tr; } });
+  }
+  h.setDoc = (doc) => { doc.resolve = (p) => ({ pos: p }); view.state.doc = doc; };
+  h.setDoc(view.state.doc);
+  other.state.doc.resolve = (p) => ({ pos: p });
   h.view = view;
+  h.other = other;
   return h;
 }
 
-test('quick switcher command: asks Search my files, Enter on a heading puts the caret in it, on a card opens the file there', async () => {
-  const h = switcherHarness({ search: (b) => ({ results: [{ ...CARD, tag: `Reshoring ${b.query}`, headings: [] }], ...IDLE }) });
+test('quick switcher command: never asks Search my files; Enter on a heading here puts the caret in it, on another doc switches there first', async () => {
+  const h = switcherHarness();
   await cmd('quickSwitcher').run(h.api);
   const spec = h.searches[0];
   assert.equal(spec.title, 'Quick switcher');
   assert.equal(spec.openLabel, 'Go');
   assert.equal(spec.onCard, undefined, 'no "Open card only" button');
   const r = await spec.onQuery('econ');
-  assert.deepEqual(h.calls.find((c) => c.route === '/evidence/search').body, { query: 'econ', limit: 60 });
-  assert.deepEqual(r.items.map((i) => [i.kind, i.label]), [['Heading', 'Econ DA'], ['File card', 'Reshoring econ']]);
-  spec.onOpen(r.items[0]);
+  assert.deepEqual(r.items.map((i) => [i.kind, i.label]), [['Heading', 'Econ DA']]);
+  await spec.onOpen(r.items[0]);
   const econ = SW().headingsIn(h.view.state.doc).find((x) => x.text === 'Econ DA');
-  assert.deepEqual(h.sels, [econ.pos + 1]);
+  assert.deepEqual(h.sels, [['this', econ.pos + 1]]);
   assert.equal(h.focused, 1, 'focus goes back to the doc');
-  await spec.onOpen(r.items[1]);
-  assert.deepEqual(h.calls.find((c) => c.route === '/evidence/open').body, { path: '/ev/Grid.docx', ordinal: 3 });
-  const before = h.calls.length;
+  assert.deepEqual(h.shown, [], 'no switch for this doc');
+  const j = await spec.onQuery('main jainism');
+  await spec.onOpen(j.items[0]);
+  const main = SW().headingsIn(h.other.state.doc).find((x) => x.text === 'Main');
+  assert.deepEqual(h.shown, ['K---Jainism---Vishwa.docx']);
+  assert.deepEqual(h.sels.at(-1), ['other', main.pos + 1]);
+  const d = await spec.onQuery('jainism');
+  assert.equal(d.items[0].kind, 'Doc');
+  await spec.onOpen(d.items[0]);
+  assert.equal(h.shown.length, 2, 'Enter on a doc just switches');
+  assert.equal(h.sels.length, 2);
+  h.showFails = true;
+  await spec.onOpen(d.items[0]);
+  assert.equal(h.toasts.at(-1), 'Couldn\'t switch to "K---Jainism---Vishwa". Is it still open?');
+  assert.equal(h.calls.filter((c) => c.route === '/evidence/search').length, 0, 'never searches files on disk');
   const empty = await spec.onQuery('');
-  assert.equal(h.calls.length, before, 'an empty box never asks the helper');
-  assert.deepEqual(empty.items.map((i) => i.label), ['AFF', 'Case', 'AT: Offshoring', 'NEG', 'Econ DA']);
+  assert.deepEqual(empty.items.map((i) => i.label), ['Data', 'K---Jainism---Vishwa', 'AFF', 'Case', 'AT: Offshoring', 'NEG', 'Econ DA']);
 });
 
-test('quick switcher command: helper down keeps the headings and says so; a heading that moved is found by its text', async () => {
+test('quick switcher command: a heading that moved is found by its text', async () => {
   const h = switcherHarness();
-  h.api.flowPost = async () => ({ ok: false, error: 'app-not-running' });
+  window.__debateUploaderUI.openDocs = () => [];
   await cmd('quickSwitcher').run(h.api);
   const spec = h.searches[0];
   const r = await spec.onQuery('grid');
   assert.deepEqual(r.items.map((i) => [i.kind, i.label]), [['Heading', 'Grid collapses']]);
-  assert.match(r.status, /Search my files is off$/);
   h.setDoc(pm('doc', [pm('block', [txt('New block')]), ...SWITCH_DOC().kids]));
-  spec.onOpen(r.items[0]);
+  await spec.onOpen(r.items[0]);
   const now = SW().headingsIn(h.view.state.doc).find((x) => x.text === 'Grid collapses');
-  assert.deepEqual(h.sels, [now.pos + 1]);
+  assert.deepEqual(h.sels, [['this', now.pos + 1]]);
   h.setDoc(pm('doc', []));
-  spec.onOpen(r.items[0]);
+  await spec.onOpen(r.items[0]);
   assert.equal(h.toasts.at(-1), 'Couldn\'t find "Grid collapses" any more.');
 });
 
@@ -2498,9 +2520,13 @@ test('DOM quick switcher: one Go button; ⌘Enter goes like Enter', async () => 
   const saved = { document: globalThis.document, Option: globalThis.Option, ui: window.__debateUploaderUI };
   globalThis.document = dom.doc; globalThis.Option = dom.Option;
   dom.doc.querySelector = () => null; // no home screen
-  dom.doc.querySelectorAll = () => []; // and no editor: only Search my files rows
-  const h = switcherHarness({ search: (b) => ({ results: b.query ? [CARD, { ...CARD, ordinal: 4, tag: `Second ${b.query}` }] : [], ...IDLE }) });
-  delete window.__debateUploaderUI;
+  dom.doc.querySelectorAll = () => [];
+  const h = switcherHarness();
+  const shown = [];
+  const doc = (name, slot) => ({ key: name, name, slot, pm: { pmViewDesc: { node: pm('doc', [pm('block', [txt(`${name} block`)])]) } } });
+  // The real dialog, with no editor in reach: only the other open docs.
+  window.__debateUploaderUI = { ...window.__debateUploaderWatch.domUI, editorView: async () => null,
+    openDocs: () => [doc('Grid.docx', 'slot1'), doc('Grid Second.docx', 'slot2')], showDoc: async (d) => { shown.push(d.name); return {}; } };
   try {
     const running = cmd('quickSwitcher').run(h.api);
     for (let i = 0; i < 300 && !dom.byField('query'); i++) await new Promise((r) => setTimeout(r, 20));
@@ -2511,14 +2537,13 @@ test('DOM quick switcher: one Go button; ⌘Enter goes like Enter', async () => 
     assert.equal(dom.button('Open card only'), undefined);
     input.value = 'grid'; input.dispatch('input');
     await settle();
-    assert.equal(rows().length, 2);
-    assert.match(dom.all(rows()[0]).map((n) => n.textContent).join('|'), /Second grid\|.*File card\|Grid\.docx/, 'the tag match outranks a file-name match');
+    assert.equal(rows().length, 4, 'two docs and their blocks');
+    assert.match(dom.all(rows()[0]).map((n) => n.textContent).join('|'), /^\|*Grid\|Open in slot 1\|+Doc/, 'the shorter doc name first');
     input.dispatch('keydown', { key: 'ArrowDown' });
     input.dispatch('keydown', { key: 'ArrowUp' });
     input.dispatch('keydown', { key: 'Enter', metaKey: true });
     await settle();
-    assert.deepEqual(h.calls.find((c) => c.route === '/evidence/open').body, { path: '/ev/Grid.docx', ordinal: 4 });
-    assert.equal(h.calls.find((c) => c.route === '/evidence/card'), undefined);
+    assert.deepEqual(shown, ['Grid.docx']);
     await running;
     assert.equal(dom.doc.body.children.length, 0, 'dialog closed');
   } finally {
