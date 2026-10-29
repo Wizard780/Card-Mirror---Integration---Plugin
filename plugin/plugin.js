@@ -998,13 +998,14 @@ textarea.du-cmp-text{resize:none;min-height:0}
           const it = items[sel];
           if (!it) return;
           done();
-          (how === 'card' ? spec.onCard : spec.onOpen)(it);
+          (how === 'card' && spec.onCard ? spec.onCard : spec.onOpen)(it);
         };
-        const cardBtn = button('Open card only', false, () => pick('card'));
-        const openBtn = button('Open file', true, () => pick('file'));
-        cardBtn.title = '⌘Enter: just this card, as its own doc';
+        // No onCard (the quick switcher): one button, and ⌘Enter is just Enter.
+        const cardBtn = spec.onCard ? button('Open card only', false, () => pick('card')) : null;
+        const openBtn = button(spec.openLabel || 'Open file', true, () => pick('file'));
+        if (cardBtn) cardBtn.title = '⌘Enter: just this card, as its own doc';
         openBtn.title = 'Enter';
-        d.foot.append(status.node, cardBtn, openBtn);
+        d.foot.append(status.node, ...(cardBtn ? [cardBtn] : []), openBtn);
         d.onDismiss(done);
         const paint = () => rows.forEach((r, i) => {
           r.setAttribute('aria-selected', i === sel ? 'true' : 'false');
@@ -1012,7 +1013,8 @@ textarea.du-cmp-text{resize:none;min-height:0}
         });
         const render = (empty) => {
           list.textContent = '';
-          cardBtn.disabled = openBtn.disabled = !items.length;
+          openBtn.disabled = !items.length;
+          if (cardBtn) cardBtn.disabled = !items.length;
           if (!items.length) { list.append(el('div', { class: 'du-empty', textContent: empty || '' })); rows = []; return; }
           rows = items.map((it, i) => {
             const row = el('div', { class: 'du-row', attrs: { role: 'option' } }, [
