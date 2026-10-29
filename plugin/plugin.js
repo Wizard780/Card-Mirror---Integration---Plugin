@@ -178,7 +178,9 @@
     if (wantApp !== appTheme && typeof document !== 'undefined' && applyAppTheme(wantApp)) appTheme = wantApp;
     else if (appTheme && typeof document !== 'undefined') { try { refreshSurfaces(); } catch { /* keep the last styles */ } }
   }
+  let lastApi = null; // CardMirror hands a plugin its api only when a command runs
   function syncLook(api) {
+    lastApi = api;
     const get = (k) => { try { return api.settings && api.settings.get(k); } catch { return undefined; } };
     applyTheme(get('theme'), get('themeWholeApp'));
     if (lookWatched || !api.settings || typeof api.settings.onChanged !== 'function') return;
@@ -1027,13 +1029,14 @@ textarea.du-cmp-text{resize:none;min-height:0}
           const it = items[sel];
           if (!it) return;
           done();
-          (how === 'card' ? spec.onCard : spec.onOpen)(it);
+          (how === 'card' && spec.onCard ? spec.onCard : spec.onOpen)(it);
         };
-        const cardBtn = button('Open card only', false, () => pick('card'));
-        const openBtn = button('Open file', true, () => pick('file'));
-        cardBtn.title = '⌘Enter: just this card, as its own doc';
+        // No onCard (the quick switcher): one button, and ⌘Enter is just Enter.
+        const cardBtn = spec.onCard ? button('Open card only', false, () => pick('card')) : null;
+        const openBtn = button(spec.openLabel || 'Open file', true, () => pick('file'));
+        if (cardBtn) cardBtn.title = '⌘Enter: just this card, as its own doc';
         openBtn.title = 'Enter';
-        d.foot.append(status.node, cardBtn, openBtn);
+        d.foot.append(status.node, ...(cardBtn ? [cardBtn] : []), openBtn);
         d.onDismiss(done);
         const paint = () => rows.forEach((r, i) => {
           r.setAttribute('aria-selected', i === sel ? 'true' : 'false');
@@ -1041,7 +1044,8 @@ textarea.du-cmp-text{resize:none;min-height:0}
         });
         const render = (empty) => {
           list.textContent = '';
-          cardBtn.disabled = openBtn.disabled = !items.length;
+          openBtn.disabled = !items.length;
+          if (cardBtn) cardBtn.disabled = !items.length;
           if (!items.length) { list.append(el('div', { class: 'du-empty', textContent: empty || '' })); rows = []; return; }
           rows = items.map((it, i) => {
             const row = el('div', { class: 'du-row', attrs: { role: 'option' } }, [
@@ -4051,6 +4055,214 @@ textarea.du-cmp-text{resize:none;min-height:0}
     }
   }
 
+  // ---------------------------------------------------------------- Quick switcher
+  // One box over favorites, CardMirror's recents, Search my files and the open doc's
+  // headings. ⌘P (Ctrl+P elsewhere) belongs to CardMirror's "Insert Received Card (At
+  // Cursor)", and a plugin's default key never beats a built-in one, so the plugin
+  // takes ⌘P itself in the capture phase (setting "quickSwitcherKey", on by default).
+  // Its own default key ⌘⇧P is free, and is how a ⌘P before any plugin command has run
+  // gets CardMirror to hand over the api.
+  const SWITCHER_LIMIT = 50;
+  const HEADING_KINDS = { pocket: 'Pocket', hat: 'Hat', block: 'Block', tag: 'Tag' };
+  // Ties go to the doc's outline, then another file's block, favorites, recents, card tags, file cards.
+  const rankOf = (it) => (it.heading ? (it.heading.name === 'tag' ? 4 : 0) : it.card ? (it.kind === 'Heading' ? 1 : 5) : it.kind === 'Favorite' ? 2 : 3);
+  const isMac = () => typeof navigator !== 'undefined' && /mac/i.test(navigator.platform || '');
+  const baseName = (s) => String(s || '').replace(/\.(cmir|docx)$/i, '');
+
+  // Pockets, hats, blocks and card tags in document order, each with its nearest parent.
+  function headingsIn(doc) {
+    const out = [];
+    const heads = ['', '', ''];
+    doc.descendants((node, pos) => {
+      const name = node.type.name;
+      if (!(name in HEADING_KINDS)) return name === 'card';
+      const text = node.textContent.trim();
+      const level = name === 'tag' ? 3 : HEADINGS[name];
+      if (text) out.push({ pos, name, text, parent: heads.slice(0, level).filter(Boolean).pop() || '' });
+      if (level < 3) { heads[level] = text; heads.fill('', level + 1); }
+      return false;
+    });
+    return out;
+  }
+
+  // Every word must hit the label or a context field. A hit at a word start counts double,
+  // the label triple, and the whole query as words in the label adds a bonus. 0 = no match.
+  function switcherScore(query, label, context = []) {
+    const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+    if (!words.length) return 1;
+    const fields = [[label.toLowerCase(), 3], ...context.filter(Boolean).map((c) => [String(c).toLowerCase(), 1])];
+    let score = 0;
+    for (const w of words) {
+      const start = new RegExp(`(?:^|[^\\p{L}\\p{N}])${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'u');
+      let best = 0;
+      for (const [text, weight] of fields) if (text.includes(w)) best = Math.max(best, weight * (start.test(text) ? 2 : 1));
+      if (!best) return 0;
+      score += best;
+    }
+    const flat = (t) => ` ${t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()} `; // "AT: Offshoring" reads as "at offshoring"
+    return score + (flat(label).includes(flat(query)) ? 4 : 0);
+  }
+
+  // Search my files hits. Hits found by their block's name (not their tag) fold into one
+  // "Heading" row per file and block, so a block in another file shows once, not per card.
+  function evidenceRows(query, results, openDoc) {
+    const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+    const all = (text) => words.every((w) => text.toLowerCase().includes(w));
+    const blocks = new Map();
+    const rows = [];
+    for (const c of results) {
+      if (openDoc && baseName(c.file) === openDoc) continue; // the open doc's own headings cover it
+      const block = c.headings[c.headings.length - 1] || '';
+      if (block && all(block) && !all(c.tag)) {
+        const key = `${c.path}\n${block}`;
+        const g = blocks.get(key);
+        if (g) { g.n++; if (c.ordinal < g.card.ordinal) g.card = c; continue; }
+        const row = { kind: 'Heading', key: `block:${key}`, card: c, n: 1, label: block, file: c.file, context: [c.file, ...c.headings.slice(0, -1)] };
+        blocks.set(key, row);
+        rows.push(row);
+      } else {
+        rows.push({ kind: 'File card', key: `card:${c.path}#${c.ordinal}`, card: c, label: c.tag, file: c.file,
+          sub: [c.cite || 'Analytic', block].filter(Boolean).join(' · '), context: [c.cite, ...c.headings, c.file] });
+      }
+    }
+    for (const r of rows) if (r.kind === 'Heading') r.sub = `Block · ${plural(r.n, 'matching card')}`;
+    return rows;
+  }
+
+  // Favorites, recents and the doc's headings plus the evidence rows, ranked as one list.
+  function switcherItems(query, { favs = [], recents = [], headings = [], docTitle = '', evidence = [] }) {
+    const favSet = new Set(favs.map((f) => f.handle));
+    const file = (f, kind) => ({ kind, key: `${kind}:${f.handle}`, entry: f, label: baseName(f.filename), file: f.filename, sub: f.handle, context: [f.filename, f.handle] });
+    const pool = [
+      ...headings.map((h, i) => ({ kind: 'Heading', key: `h:${i}`, heading: { ...h, index: i }, label: h.text, file: docTitle,
+        sub: `${HEADING_KINDS[h.name]}${h.parent ? ` · ${h.parent}` : ''}`, context: [h.parent], outline: h.name !== 'tag' })),
+      ...favs.map((f) => file(f, 'Favorite')),
+      ...recents.filter((r) => !favSet.has(r.handle)).map((r) => file(r, 'Recent')),
+      ...evidence,
+    ];
+    const q = query.trim();
+    const scored = [];
+    pool.forEach((it, i) => {
+      // An empty box lists favorites, recents, then the doc's outline (tags left out: too many).
+      const score = q ? switcherScore(q, it.label, it.context) : it.kind === 'Heading' ? (it.outline ? 1 : 0) : 2;
+      if (score) scored.push({ it, score, i });
+    });
+    scored.sort((a, b) => b.score - a.score || (q ? rankOf(a.it) - rankOf(b.it) || a.it.label.length - b.it.label.length : 0) || a.i - b.i);
+    return scored.slice(0, SWITCHER_LIMIT).map(({ it }) => ({ ...it, where: [it.kind, it.file].filter(Boolean) }));
+  }
+
+  // Positions may have moved since the switcher opened: find the heading by order and text.
+  function goToHeading(api, view, h) {
+    const now = headingsIn(view.state.doc);
+    const at = now[h.index] && now[h.index].text === h.text ? now[h.index] : now.find((x) => x.name === h.name && x.text === h.text);
+    if (!at) return api.showToast(`Couldn't find "${short(h.text)}" any more.`);
+    try {
+      const Sel = view.state.selection.constructor;
+      if (Sel && Sel.near) view.dispatch(view.state.tr.setSelection(Sel.near(view.state.doc.resolve(Math.min(at.pos + 1, view.state.doc.content.size)))).scrollIntoView());
+      const dom = view.nodeDOM && view.nodeDOM(at.pos);
+      if (dom && dom.scrollIntoView) dom.scrollIntoView({ block: 'start' });
+      if (view.focus) view.focus();
+    } catch {
+      api.showToast(`Couldn't jump to "${short(h.text)}".`);
+    }
+  }
+
+  const homeScreen = () => (typeof document !== 'undefined' && document.querySelector('.pmd-home-screen')) || null;
+
+  async function quickSwitcher(api) {
+    const u = ui();
+    // Read the doc before the dialog takes focus (reaching the view may nudge the caret).
+    // The home screen covers the doc, so its headings are left out there.
+    let view = null;
+    if (!homeScreen() || homeScreen().hidden) {
+      try { view = u.editorView ? await u.editorView() : await editor.view(u.sleep); } catch { view = null; }
+    }
+    const headings = view ? headingsIn(view.state.doc) : [];
+    const info = typeof api.docInfo === 'function' ? api.docInfo() : null;
+    const docTitle = !view ? '' : (info && info.docTitle) || 'This doc';
+    const recents = readList(RECENTS_KEY).filter((r) => r && typeof r.handle === 'string' && typeof r.filename === 'string');
+    const local = { favs: favorites(), recents, headings, docTitle };
+    let evidenceOff = false; // helper down or no folders: the other rows still work
+    const HINT = '↑↓ · Enter to go · Esc to close';
+    await u.search({
+      title: 'Quick switcher',
+      placeholder: 'Heading, file or card',
+      openLabel: 'Go',
+      status: HINT,
+      empty: '',
+      onQuery: async (q) => {
+        let evidence = [];
+        let status = HINT;
+        let again = false;
+        if (q.trim() && !evidenceOff) {
+          try {
+            const r = await call(api, '/evidence/search', { query: q, limit: 60 });
+            evidence = evidenceRows(q, r.results, baseName(docTitle));
+            if (r.scanning) { again = true; status = `${HINT} · ${indexStatus(r)}`; }
+            if (!r.folders || !r.folders.length) evidenceOff = true;
+          } catch {
+            evidenceOff = true;
+          }
+        }
+        if (evidenceOff && q.trim()) status = `${HINT} · Search my files is off`;
+        return { items: switcherItems(q, { ...local, evidence }), status, again,
+          empty: q.trim() ? 'No matches.' : 'Nothing here yet. Open a doc or star a file.' };
+      },
+      onOpen: (it) => {
+        if (it.heading) return goToHeading(api, view, it.heading);
+        if (it.entry) {
+          const home = homeScreen();
+          return home ? openFavorite(home, it.entry) : api.showToast(`Couldn't open "${it.entry.filename}" from here. Use the home screen.`);
+        }
+        if (it.card) return openEvidence(api, it.card);
+      },
+    });
+  }
+
+  // ⌘P on a Mac, Ctrl+P elsewhere, nothing else held.
+  function isSwitcherKey(e, mac = isMac()) {
+    // A Latin letter names the key (Dvorak's ⌘L sits where QWERTY's P is); other scripts fall back to the position.
+    const key = String(e.key || '').toLowerCase();
+    if (/^[a-z]$/.test(key) ? key !== 'p' : e.code !== 'KeyP') return false;
+    if (e.altKey || e.shiftKey) return false;
+    return mac ? !!e.metaKey && !e.ctrlKey : !!e.ctrlKey && !e.metaKey;
+  }
+  function switcherKeyOn() {
+    try {
+      const s = JSON.parse(localStorage.getItem(`plugin:${ID}`) || '{}').__settings || {};
+      return s.quickSwitcherKey !== false;
+    } catch { return true; }
+  }
+  // CardMirror's own fields and dialogs (shortcut recorder, palette, Settings) keep their ⌘P.
+  function inHostField(t) {
+    if (!t || !t.closest) return false;
+    if (t.closest('.du-scrim')) return false;
+    return /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || '') || !!t.closest('[role="dialog"], [aria-modal="true"]');
+  }
+  let switcherBusy = false; // opening (reaching the view can take a moment) or open
+  async function openSwitcher(api) {
+    if (switcherBusy) return;
+    switcherBusy = true;
+    try { await quickSwitcher(api); } finally { switcherBusy = false; }
+  }
+  function onSwitcherKey(e) {
+    if (!isSwitcherKey(e) || !switcherKeyOn() || inHostField(e.target)) return;
+    e.preventDefault();
+    e.stopPropagation(); // CardMirror's own ⌘P never sees it
+    if (e.repeat || switcherBusy || document.querySelector('.du-scrim')) return; // a plugin dialog is already up
+    if (!lastApi) {
+      // No command has run this launch: press the command's own ⌘⇧P, which CardMirror runs with the api.
+      if (typeof KeyboardEvent === 'function') window.dispatchEvent(new KeyboardEvent('keydown', { key: 'P', code: 'KeyP', shiftKey: true, metaKey: isMac(), ctrlKey: !isMac(), bubbles: true, cancelable: true }));
+      if (lastApi) return;
+      // Not bound (rebound in Settings, or no plugin host): everything but Search my files still works.
+      const offline = { showToast: (m) => console.warn(`[debate-uploader] ${m}`), flowPost: async () => ({ ok: false, error: 'app-not-running' }), docInfo: () => null };
+      openSwitcher(offline).catch(() => {});
+      return;
+    }
+    const api = lastApi;
+    withPrefs(api, () => openSwitcher(api)).catch(() => {});
+  }
+
   // ---------------------------------------------------------------- Text compare
   // Words are diffed first (Myers in linear space, after diff-match-patch's bisect);
   // in Characters mode each changed stretch is then diffed letter by letter, so
@@ -4282,6 +4494,13 @@ textarea.du-cmp-text{resize:none;min-height:0}
   if (window.__debateUploaderTest) window.__debateUploaderOpenCache = { patchWorkerPostMessage, lruOrder, idbStore, makeFastXml, patchParserSource, PARSER_OPTS };
   if (window.__debateUploaderTest) window.__debateUploaderClipboard = { boldCopiedHTML, unboldCopiedHTML }; // only when tests ask
   if (window.__debateUploaderTest) window.__debateUploaderCompare = compareTexts;
+  if (!window.__debateUploaderTest && typeof window.addEventListener === 'function') {
+    // A reloaded plugin replaces its listener instead of adding a second one.
+    if (window.__duSwitcherKey) window.removeEventListener('keydown', window.__duSwitcherKey, true);
+    window.__duSwitcherKey = onSwitcherKey;
+    window.addEventListener('keydown', onSwitcherKey, true);
+  }
+  if (window.__debateUploaderTest) window.__debateUploaderSwitcher = { headingsIn, switcherScore, evidenceRows, switcherItems, isSwitcherKey, onSwitcherKey };
   if (window.__debateUploaderTest) window.__debateUploaderWatch = { pickerFor, besideSlot, domUI };
 
   window.__registerCardMirrorPlugin && window.__registerCardMirrorPlugin({
@@ -4325,8 +4544,23 @@ textarea.du-cmp-text{resize:none;min-height:0}
         default: true,
         description: 'Keeps the last 10 big .docx files CardMirror parsed, so reopening an unchanged file skips the parse (about 1 second on a 30 MB file). A changed file is parsed fresh.',
       },
+      {
+        key: 'quickSwitcherKey',
+        label: 'Open the quick switcher with ⌘P',
+        type: 'boolean',
+        default: true,
+        description: "⌘P (Ctrl+P on Windows) opens the quick switcher instead of CardMirror's Insert Received Card (At Cursor). Turn off to give ⌘P back; the switcher stays on ⌘⇧P and in the command palette.",
+      },
     ],
     commands: [
+      {
+        id: `${ID}.quickSwitcher`,
+        label: 'Quick switcher…',
+        keywords: ['switch', 'jump', 'go to', 'heading', 'block', 'pocket', 'hat', 'tag', 'favorite', 'recent', 'open', 'file', 'card', 'search'],
+        // ⌘P itself is taken by the capture listener above (see Quick switcher).
+        defaultKey: 'Mod-Shift-p',
+        run: (api) => withPrefs(api, () => openSwitcher(api)),
+      },
       {
         id: `${ID}.clearOpenCache`,
         label: 'Clear the reopen-faster cache',
