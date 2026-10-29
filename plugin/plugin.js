@@ -4221,6 +4221,12 @@ textarea.du-cmp-text{resize:none;min-height:0}
       const focused = document.querySelector('.pmd-pane-focused .pmd-pane-body > .pmd-pane-editor');
       if (focused && seen.has(focused)) seen.get(focused).at = Date.now();
     }
+    // Opening the menu arms CardMirror's "click outside closes it" listener a tick later;
+    // a press on the page then disarms it, so it can't eat a later click on the real menu.
+    function shut(menu) {
+      if (menu) menu.remove();
+      setTimeout(() => { try { document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); } catch { /* no PointerEvent: harmless leftover */ } }, 0);
+    }
     // The names in a slot's document menu, read and closed before it paints.
     function menuNames(pane) {
       const btn = pane.querySelector('.pmd-pane-chip-stack');
@@ -4228,8 +4234,9 @@ textarea.du-cmp-text{resize:none;min-height:0}
       btn.click();
       const menu = document.querySelector('.pmd-pane-chip-dropdown');
       if (!menu) return null;
-      const names = [...menu.querySelectorAll('.pmd-pane-chip-dropdown-name')].map((n) => n.textContent);
-      menu.remove();
+      // The doc on screen is already known; only the ones behind it can be missing.
+      const names = [...menu.querySelectorAll('.pmd-pane-chip-dropdown-row:not(.pmd-active) .pmd-pane-chip-dropdown-name')].map((n) => n.textContent);
+      shut(menu);
       return names;
     }
     // [{ key, name, slot, el, pm, at }] for every doc open in this window's slots.
@@ -4248,7 +4255,7 @@ textarea.du-cmp-text{resize:none;min-height:0}
         const mine = out.filter((d) => d.slot === pane.dataset.slot);
         if (n <= mine.length) continue;
         const names = menuNames(pane) || [];
-        const left = mine.map((d) => d.name);
+        const left = mine.filter((d) => !d.el.isConnected).map((d) => d.name);
         for (const name of names) {
           const i = left.indexOf(name);
           if (i >= 0) { left.splice(i, 1); continue; }
@@ -4271,10 +4278,12 @@ textarea.du-cmp-text{resize:none;min-height:0}
           for (let k = 0; ; k++) {
             btn.click();
             const menu = document.querySelector('.pmd-pane-chip-dropdown');
-            const rows = menu ? [...menu.querySelectorAll('.pmd-pane-chip-dropdown-name')].filter((r) => r.textContent === d.name) : [];
+            // A doc known by name only is behind the one on screen, so never the active row.
+            const rows = menu ? [...menu.querySelectorAll(`.pmd-pane-chip-dropdown-row${d.el ? '' : ':not(.pmd-active)'} .pmd-pane-chip-dropdown-name`)].filter((r) => r.textContent === d.name) : [];
             const row = rows[k];
-            if (!row) { if (menu) menu.remove(); break; }
+            if (!row) { shut(menu); break; }
             row.click();
+            shut(null);
             if (!d.el) { d.pm = pane.querySelector('.pmd-pane-body > .pmd-pane-editor .ProseMirror'); return focus(pane, d.pm); }
             if (shown()) break;
           }
@@ -4286,9 +4295,14 @@ textarea.du-cmp-text{resize:none;min-height:0}
     }
     function focus(pane, pm) {
       if (!pm) return null;
+      // Another slot is expanded to full width: put the layout back so this one shows.
+      if (pane && pane.hidden) {
+        const back = document.querySelector('.pmd-multi-row[data-expanded] .pmd-pane:not([hidden]) .pmd-pane-chip-expand');
+        if (back) back.click();
+      }
       if (pane && typeof MouseEvent === 'function') pane.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); // CardMirror's own "focus this slot"
       if (pm.focus) pm.focus();
-      return pm;
+      return pm.contains && pm.contains(document.activeElement) ? pm : null; // a hidden pane takes no focus
     }
     return { scan, list, show };
   })();
